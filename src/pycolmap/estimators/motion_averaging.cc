@@ -59,6 +59,10 @@ void BindGlobalPositioner(py::module& m) {
           .def_readwrite("loss_function_scale",
                          &GlobalPositionerOptions::loss_function_scale,
                          "Scaling factor for the loss function.")
+          .def_readwrite("solver_options",
+                         &GlobalPositionerOptions::solver_options,
+                         "Options for the Ceres solver. Using this member "
+                         "requires having PyCeres installed.")
           .def_readwrite("use_parameter_block_ordering",
                          &GlobalPositionerOptions::use_parameter_block_ordering,
                          "Whether to use custom parameter block ordering.");
