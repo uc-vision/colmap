@@ -125,9 +125,6 @@ if(CASPAR_ENABLED AND CUDA_ENABLED)
     # raw ${CMAKE_CURRENT_SOURCE_DIR} which CMake rejects on exported targets.
     set_target_properties(caspar_lib_core PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES "$<BUILD_INTERFACE:${CASPAR_GEN_DIR}>")
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_link_libraries(caspar_lib_core PUBLIC m)
-    endif()
     # Silence warnings from auto-generated Caspar CUDA sources, matching the
     # blanket `-w`/`/W0` policy applied to other thirdparty C++ code above.
     target_compile_options(caspar_lib_core PRIVATE
