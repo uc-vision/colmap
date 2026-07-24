@@ -339,7 +339,8 @@ class GeometricVerifierThread : public Thread {
       RigVerification(database_,
                       cache_,
                       geometry_options_,
-                      verifier_.Options().num_threads);
+                      verifier_.Options().num_threads,
+                      false);
       run_timer.PrintMinutes();
     }
 
