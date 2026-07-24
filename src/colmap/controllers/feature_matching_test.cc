@@ -30,6 +30,7 @@
 #include "colmap/controllers/feature_matching.h"
 
 #include "colmap/feature/types.h"
+#include "colmap/geometry/essential_matrix.h"
 #include "colmap/retrieval/visual_index.h"
 #include "colmap/scene/synthetic.h"
 #include "colmap/util/testing.h"
@@ -180,6 +181,76 @@ TEST(CreateSpatialFeatureMatcher, Nominal) {
 
   EXPECT_GT(database->ReadAllMatches().size(), 0);
   EXPECT_GT(database->ReadTwoViewGeometries().size(), 0);
+}
+
+TEST(CreateSpatialFeatureMatcher, FixedRigGuidedMatching) {
+  const auto test_dir = CreateTestDir();
+  const auto database_path = test_dir / "database.db";
+  auto database = Database::Open(database_path);
+
+  Reconstruction reconstruction;
+  SyntheticDatasetOptions synthetic_dataset_options;
+  synthetic_dataset_options.num_rigs = 1;
+  synthetic_dataset_options.num_cameras_per_rig = 3;
+  synthetic_dataset_options.num_frames_per_rig = 1;
+  synthetic_dataset_options.num_points3D = 50;
+  synthetic_dataset_options.num_points2D_without_point3D = 0;
+  synthetic_dataset_options.camera_has_prior_focal_length = true;
+  synthetic_dataset_options.prior_position = true;
+  SynthesizeDataset(synthetic_dataset_options, &reconstruction, database.get());
+  database->ClearMatches();
+  database->ClearTwoViewGeometries();
+
+  SpatialPairingOptions pairing_options;
+  pairing_options.max_num_neighbors = 1;
+  pairing_options.min_num_neighbors = 1;
+  pairing_options.max_distance = 1e6;
+
+  FeatureMatchingOptions matching_options;
+  matching_options.use_gpu = false;
+  matching_options.num_threads = 1;
+  matching_options.guided_matching = true;
+  matching_options.use_fixed_rig_geometry = true;
+
+  TwoViewGeometryOptions geometry_options;
+  geometry_options.min_num_inliers = 5;
+
+  auto matcher = CreateSpatialFeatureMatcher(
+      pairing_options, matching_options, geometry_options, database_path);
+  ASSERT_NE(matcher, nullptr);
+  matcher->Start();
+  matcher->Wait();
+
+  const std::vector<Image> images = database->ReadAllImages();
+  ASSERT_EQ(images.size(), 3);
+  ASSERT_EQ(database->ReadAllMatches().size(), 3);
+  ASSERT_EQ(database->ReadTwoViewGeometries().size(), 3);
+
+  const Rig rig = database->ReadAllRigs().front();
+  auto camera_from_rig = [&rig](const Image& image) {
+    return rig.IsRefSensor(image.DataId().sensor_id)
+               ? Rigid3d()
+               : rig.SensorFromRig(image.DataId().sensor_id);
+  };
+
+  for (size_t i = 0; i < images.size(); ++i) {
+    for (size_t j = i + 1; j < images.size(); ++j) {
+      const FeatureMatches matches =
+          database->ReadMatches(images[i].ImageId(), images[j].ImageId());
+      const TwoViewGeometry two_view_geometry = database->ReadTwoViewGeometry(
+          images[i].ImageId(), images[j].ImageId());
+      const Rigid3d expected_cam2_from_cam1 =
+          camera_from_rig(images[j]) * Inverse(camera_from_rig(images[i]));
+
+      EXPECT_GE(matches.size(), geometry_options.min_num_inliers);
+      EXPECT_EQ(matches, two_view_geometry.inlier_matches);
+      EXPECT_EQ(two_view_geometry.config, TwoViewGeometry::CALIBRATED_RIG);
+      EXPECT_EQ(two_view_geometry.cam2_from_cam1, expected_cam2_from_cam1);
+      ASSERT_TRUE(two_view_geometry.E.has_value());
+      EXPECT_TRUE(two_view_geometry.E->isApprox(
+          EssentialMatrixFromPose(expected_cam2_from_cam1)));
+    }
+  }
 }
 
 TEST(CreateTransitiveFeatureMatcher, Nominal) {

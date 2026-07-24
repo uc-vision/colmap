@@ -35,6 +35,7 @@
 #include "colmap/scene/database.h"
 #include "colmap/scene/image.h"
 #include "colmap/scene/two_view_geometry.h"
+#include "colmap/sensor/rig.h"
 #include "colmap/util/cache.h"
 #include "colmap/util/types.h"
 
@@ -56,6 +57,7 @@ class FeatureMatcherCache {
   void AccessDatabase(const std::function<void(Database& database)>& func);
 
   const Camera& GetCamera(camera_t camera_id);
+  const Rig& GetRig(rig_t rig_id);
   const Frame& GetFrame(frame_t frame_id);
   const Image& GetImage(image_t image_id);
   const PosePrior* FindImagePosePriorOrNull(image_t image_id);
@@ -94,6 +96,7 @@ class FeatureMatcherCache {
 
  private:
   void MaybeLoadCameras();
+  void MaybeLoadRigs();
   void MaybeLoadFrames();
   void MaybeLoadImages();
   void MaybeLoadPosePriors();
@@ -102,6 +105,7 @@ class FeatureMatcherCache {
   const std::shared_ptr<Database> database_;
   std::mutex database_mutex_;
   std::unique_ptr<std::unordered_map<camera_t, Camera>> cameras_cache_;
+  std::unique_ptr<std::unordered_map<rig_t, Rig>> rigs_cache_;
   std::unique_ptr<std::unordered_map<frame_t, Frame>> frames_cache_;
   std::unique_ptr<std::unordered_map<image_t, Image>> images_cache_;
   std::unique_ptr<std::unordered_map<image_t, PosePrior>> pose_priors_cache_;

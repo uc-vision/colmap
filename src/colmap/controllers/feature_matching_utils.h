@@ -45,6 +45,7 @@ struct FeatureMatcherData {
   image_t image_id2 = kInvalidImageId;
   FeatureMatches matches;
   TwoViewGeometry two_view_geometry;
+  bool fixed_rig_guided_matching = false;
 };
 
 class FeatureMatcherWorker : public Thread {

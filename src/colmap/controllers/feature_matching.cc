@@ -43,10 +43,28 @@
 namespace colmap {
 namespace {
 
+std::vector<std::pair<image_t, image_t>> IntraFrameImagePairs(
+    const std::shared_ptr<FeatureMatcherCache>& cache) {
+  std::vector<std::pair<image_t, image_t>> image_pairs;
+  for (const frame_t frame_id : cache->GetFrameIds()) {
+    std::vector<image_t> image_ids;
+    for (const data_t& data_id : cache->GetFrame(frame_id).ImageIds()) {
+      image_ids.push_back(data_id.id);
+    }
+    for (size_t i = 0; i < image_ids.size(); ++i) {
+      for (size_t j = i + 1; j < image_ids.size(); ++j) {
+        image_pairs.emplace_back(image_ids[i], image_ids[j]);
+      }
+    }
+  }
+  return image_pairs;
+}
+
 void RigVerification(const std::shared_ptr<Database>& database,
                      const std::shared_ptr<FeatureMatcherCache>& cache,
                      const TwoViewGeometryOptions& geometry_options,
-                     const int num_threads) {
+                     const int num_threads,
+                     const bool preserve_same_frame_geometry) {
   std::unordered_map<rig_t, Rig> rigs;
   for (auto& rig : database->ReadAllRigs()) {
     rigs[rig.RigId()] = std::move(rig);
@@ -75,6 +93,9 @@ void RigVerification(const std::shared_ptr<Database>& database,
     frame_t frame_id2 = image_to_frame_ids.at(image_id2);
     if (frame_id1 > frame_id2) {
       std::swap(frame_id1, frame_id2);
+    }
+    if (preserve_same_frame_geometry && frame_id1 == frame_id2) {
+      continue;
     }
     auto& stats = frame_pair_stats[{frame_id1, frame_id2}];
     stats.num_image_pairs += 1;
@@ -201,6 +222,11 @@ class FeatureMatcherThread : public Thread {
       return;
     }
 
+    if (matching_options_.use_fixed_rig_geometry &&
+        !matching_options_.skip_image_pairs_in_same_frame) {
+      matcher_.Match(IntraFrameImagePairs(cache_));
+    }
+
     std::unique_ptr<PairGenerator> pair_generator =
         THROW_CHECK_NOTNULL(pair_generator_factory_());
 
@@ -227,8 +253,11 @@ class FeatureMatcherThread : public Thread {
         matching_options_.rig_verification) {
       run_timer.Restart();
       LOG_HEADING1("Rig verification");
-      RigVerification(
-          database_, cache_, geometry_options_, matching_options_.num_threads);
+      RigVerification(database_,
+                      cache_,
+                      geometry_options_,
+                      matching_options_.num_threads,
+                      matching_options_.use_fixed_rig_geometry);
       run_timer.PrintMinutes();
     }
   }

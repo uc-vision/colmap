@@ -32,6 +32,7 @@
 #include "colmap/estimators/two_view_geometry.h"
 #include "colmap/feature/sift.h"
 #include "colmap/feature/utils.h"
+#include "colmap/geometry/essential_matrix.h"
 #include "colmap/util/cuda.h"
 #include "colmap/util/misc.h"
 
@@ -42,6 +43,14 @@
 #include <unordered_set>
 
 namespace colmap {
+
+namespace {
+
+Rigid3d CameraFromRig(const Rig& rig, const sensor_t sensor_id) {
+  return rig.IsRefSensor(sensor_id) ? Rigid3d() : rig.SensorFromRig(sensor_id);
+}
+
+}  // namespace
 
 FeatureMatcherWorker::FeatureMatcherWorker(
     const FeatureMatchingOptions& matching_options,
@@ -320,9 +329,18 @@ FeatureMatcherController::FeatureMatcherController(
       verifiers_.emplace_back(std::make_unique<VerifierWorker>(
           geometry_options_, cache_, &verifier_queue_, &guided_matcher_queue_));
     }
+  } else if (!matching_options_.skip_geometric_verification) {
+    for (int i = 0; i < num_threads; ++i) {
+      verifiers_.emplace_back(std::make_unique<VerifierWorker>(
+          geometry_options_, cache_, &verifier_queue_, &output_queue_));
+    }
+  }
 
+  if (matching_options_.guided_matching ||
+      matching_options_.use_fixed_rig_geometry) {
     if (matching_options_.use_gpu) {
       auto worker_matching_options = matching_options_;
+      worker_matching_options.guided_matching = true;
       guided_matchers_.reserve(gpu_indices.size());
       for (const auto& gpu_index : gpu_indices) {
         worker_matching_options.gpu_index = std::to_string(gpu_index);
@@ -337,6 +355,7 @@ FeatureMatcherController::FeatureMatcherController(
       auto worker_matching_options = matching_options_;
       // Prevent nested threading.
       worker_matching_options.num_threads = 1;
+      worker_matching_options.guided_matching = true;
       guided_matchers_.reserve(num_threads);
       for (int i = 0; i < num_threads; ++i) {
         guided_matchers_.emplace_back(
@@ -346,11 +365,6 @@ FeatureMatcherController::FeatureMatcherController(
                                                    &guided_matcher_queue_,
                                                    &output_queue_));
       }
-    }
-  } else if (!matching_options.skip_geometric_verification) {
-    for (int i = 0; i < num_threads; ++i) {
-      verifiers_.emplace_back(std::make_unique<VerifierWorker>(
-          geometry_options_, cache_, &verifier_queue_, &output_queue_));
     }
   }
 }
@@ -450,16 +464,18 @@ void FeatureMatcherController::Match(
       continue;
     }
 
+    const Image& image1 = cache_->GetImage(image_id1);
+    const Image& image2 = cache_->GetImage(image_id2);
+    const bool same_frame = image1.HasFrameId() && image2.HasFrameId() &&
+                            image1.FrameId() == image2.FrameId();
+
     // Avoid self-matches within a frame.
-    if (matching_options_.skip_image_pairs_in_same_frame) {
-      const Image& image1 = cache_->GetImage(image_id1);
-      const Image& image2 = cache_->GetImage(image_id2);
-      if (image1.HasFrameId() && image2.HasFrameId() &&
-          image1.FrameId() == image2.FrameId()) {
-        continue;
-      }
+    if (matching_options_.skip_image_pairs_in_same_frame && same_frame) {
+      continue;
     }
 
+    const bool use_fixed_rig_geometry =
+        matching_options_.use_fixed_rig_geometry && same_frame;
     const bool exists_matches = cache_->ExistsMatches(image_id1, image_id2);
     const bool exists_two_view_geometry =
         cache_->ExistsTwoViewGeometry(image_id1, image_id2);
@@ -482,7 +498,25 @@ void FeatureMatcherController::Match(
     data.image_id1 = image_id1;
     data.image_id2 = image_id2;
 
-    if (exists_matches) {
+    if (use_fixed_rig_geometry) {
+      if (exists_matches) {
+        cache_->DeleteMatches(image_id1, image_id2);
+      }
+
+      const Frame& frame = cache_->GetFrame(image1.FrameId());
+      const Rig& rig = cache_->GetRig(frame.RigId());
+      const Rigid3d cam1_from_rig =
+          CameraFromRig(rig, image1.DataId().sensor_id);
+      const Rigid3d cam2_from_rig =
+          CameraFromRig(rig, image2.DataId().sensor_id);
+      const Rigid3d cam2_from_cam1 = cam2_from_rig * Inverse(cam1_from_rig);
+
+      data.two_view_geometry.config = TwoViewGeometry::CALIBRATED_RIG;
+      data.two_view_geometry.cam2_from_cam1 = cam2_from_cam1;
+      data.two_view_geometry.E = EssentialMatrixFromPose(cam2_from_cam1);
+      data.fixed_rig_guided_matching = true;
+      THROW_CHECK(guided_matcher_queue_.Push(std::move(data)));
+    } else if (exists_matches) {
       data.matches = cache_->GetMatches(image_id1, image_id2);
       cache_->DeleteMatches(image_id1, image_id2);
       THROW_CHECK(verifier_queue_.Push(std::move(data)));
@@ -499,6 +533,10 @@ void FeatureMatcherController::Match(
     auto output_job = output_queue_.Pop();
     THROW_CHECK(output_job.IsValid());
     auto& output = output_job.Data();
+
+    if (output.fixed_rig_guided_matching) {
+      output.matches = output.two_view_geometry.inlier_matches;
+    }
 
     if (output.matches.size() <
         static_cast<size_t>(geometry_options_.min_num_inliers)) {
