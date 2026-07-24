@@ -83,6 +83,10 @@ struct FeatureMatchingOptions : public FeatureMatchingTypeOptions {
   // Whether to perform guided matching.
   bool guided_matching = false;
 
+  // Whether to use fixed rig geometry for guided matching between images in
+  // the same frame, bypassing initial matching and geometric verification.
+  bool use_fixed_rig_geometry = false;
+
   // Skips the geometric verification stage and forwards matches unchanged.
   // This option is ignored when guided matching is enabled, because guided
   // matching depends on the two-view geometry produced by geometric

@@ -167,6 +167,12 @@ void BindFeatureMatching(py::module& m) {
                          "Whether to perform guided matching, if geometric "
                          "verification succeeds.")
           .def_readwrite(
+              "use_fixed_rig_geometry",
+              &FeatureMatchingOptions::use_fixed_rig_geometry,
+              "Whether to use fixed rig geometry for guided matching between "
+              "images in the same frame, bypassing initial matching and "
+              "geometric verification.")
+          .def_readwrite(
               "skip_geometric_verification",
               &FeatureMatchingOptions::skip_geometric_verification,
               "Skips the geometric verification stage and forwards matches "

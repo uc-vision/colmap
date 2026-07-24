@@ -140,6 +140,9 @@ void FeatureMatchingTab::CreateGeneralOptions() {
   options_widget_->AddOptionBool(&options_->feature_matching->guided_matching,
                                  "guided_matching");
   options_widget_->AddOptionBool(
+      &options_->feature_matching->use_fixed_rig_geometry,
+      "use_fixed_rig_geometry");
+  options_widget_->AddOptionBool(
       &options_->feature_matching->skip_geometric_verification,
       "skip_geometric_verification");
   options_widget_->AddOptionBool(&options_->feature_matching->rig_verification,
