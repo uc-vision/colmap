@@ -42,12 +42,14 @@ namespace colmap {
 
 struct SiftMatchingOptions;
 struct AlikedMatchingOptions;
+struct FixedDimensionMatchingOptions;
 
 struct FeatureMatchingTypeOptions {
   explicit FeatureMatchingTypeOptions();
 
   std::shared_ptr<SiftMatchingOptions> sift;
   std::shared_ptr<AlikedMatchingOptions> aliked;
+  std::shared_ptr<FixedDimensionMatchingOptions> fixed_dimension;
 
   FeatureMatchingTypeOptions(const FeatureMatchingTypeOptions& other);
   FeatureMatchingTypeOptions& operator=(

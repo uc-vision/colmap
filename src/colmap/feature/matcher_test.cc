@@ -31,6 +31,7 @@
 
 #include "colmap/feature/aliked.h"
 #include "colmap/feature/extractor.h"
+#include "colmap/feature/fixed_dimension.h"
 #include "colmap/feature/onnx_matchers.h"
 #include "colmap/feature/sift.h"
 #include "colmap/util/testing.h"
@@ -45,6 +46,7 @@ TEST(FeatureMatchingOptions, Copy) {
   options.max_num_matches += 100;
   options.sift->max_ratio *= 0.1;
   options.aliked->brute_force.min_cossim *= 0.1;
+  options.fixed_dimension->max_ratio *= 0.1;
 
   FeatureMatchingOptions copy = options;
 
@@ -53,10 +55,13 @@ TEST(FeatureMatchingOptions, Copy) {
   EXPECT_EQ(copy.sift->max_ratio, options.sift->max_ratio);
   EXPECT_EQ(copy.aliked->brute_force.min_cossim,
             options.aliked->brute_force.min_cossim);
+  EXPECT_EQ(copy.fixed_dimension->max_ratio,
+            options.fixed_dimension->max_ratio);
 
   // Verify deep copy of shared_ptr (different pointer instances)
   EXPECT_NE(options.sift.get(), copy.sift.get());
   EXPECT_NE(options.aliked.get(), copy.aliked.get());
+  EXPECT_NE(options.fixed_dimension.get(), copy.fixed_dimension.get());
 }
 
 TEST(FeatureMatchingOptions, CopyAssignment) {
@@ -64,6 +69,7 @@ TEST(FeatureMatchingOptions, CopyAssignment) {
   options.max_num_matches += 100;
   options.sift->max_ratio *= 0.1;
   options.aliked->brute_force.min_cossim *= 0.1;
+  options.fixed_dimension->max_ratio *= 0.1;
 
   FeatureMatchingOptions assigned;
   assigned = options;
@@ -73,19 +79,24 @@ TEST(FeatureMatchingOptions, CopyAssignment) {
   EXPECT_EQ(assigned.sift->max_ratio, options.sift->max_ratio);
   EXPECT_EQ(assigned.aliked->brute_force.min_cossim,
             options.aliked->brute_force.min_cossim);
+  EXPECT_EQ(assigned.fixed_dimension->max_ratio,
+            options.fixed_dimension->max_ratio);
 
   // Verify deep copy (different pointer instances).
   EXPECT_NE(options.sift.get(), assigned.sift.get());
   EXPECT_NE(options.aliked.get(), assigned.aliked.get());
+  EXPECT_NE(options.fixed_dimension.get(), assigned.fixed_dimension.get());
 
   // Test self-assignment (assign via const ref to avoid -Wself-assign).
   const auto* sift_ptr = options.sift.get();
   const auto* aliked_ptr = options.aliked.get();
+  const auto* fixed_dimension_ptr = options.fixed_dimension.get();
   const auto prev_max_num_matches = options.max_num_matches;
   const auto& self_ref = options;
   options = self_ref;
   EXPECT_EQ(options.sift.get(), sift_ptr);
   EXPECT_EQ(options.aliked.get(), aliked_ptr);
+  EXPECT_EQ(options.fixed_dimension.get(), fixed_dimension_ptr);
   EXPECT_EQ(options.max_num_matches, prev_max_num_matches);
 }
 
@@ -93,10 +104,12 @@ TEST(FeatureMatchingOptions, RequiresOpenGL) {
   FeatureMatchingOptions options;
   options.use_gpu = false;
 
-  const FeatureMatcherType types[] = {FeatureMatcherType::SIFT_BRUTEFORCE,
-                                      FeatureMatcherType::SIFT_LIGHTGLUE,
-                                      FeatureMatcherType::ALIKED_BRUTEFORCE,
-                                      FeatureMatcherType::ALIKED_LIGHTGLUE};
+  const FeatureMatcherType types[] = {
+      FeatureMatcherType::SIFT_BRUTEFORCE,
+      FeatureMatcherType::SIFT_LIGHTGLUE,
+      FeatureMatcherType::ALIKED_BRUTEFORCE,
+      FeatureMatcherType::ALIKED_LIGHTGLUE,
+      FeatureMatcherType::FIXED_DIMENSION_BRUTEFORCE};
 
   for (const auto type : types) {
     options.type = type;
@@ -108,10 +121,12 @@ TEST(FeatureMatchingOptions, Check) {
   FeatureMatchingOptions options;
   options.use_gpu = false;
 
-  const FeatureMatcherType types[] = {FeatureMatcherType::SIFT_BRUTEFORCE,
-                                      FeatureMatcherType::SIFT_LIGHTGLUE,
-                                      FeatureMatcherType::ALIKED_BRUTEFORCE,
-                                      FeatureMatcherType::ALIKED_LIGHTGLUE};
+  const FeatureMatcherType types[] = {
+      FeatureMatcherType::SIFT_BRUTEFORCE,
+      FeatureMatcherType::SIFT_LIGHTGLUE,
+      FeatureMatcherType::ALIKED_BRUTEFORCE,
+      FeatureMatcherType::ALIKED_LIGHTGLUE,
+      FeatureMatcherType::FIXED_DIMENSION_BRUTEFORCE};
 
   for (const auto type : types) {
     options.type = type;

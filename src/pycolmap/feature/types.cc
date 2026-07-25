@@ -17,7 +17,8 @@ void BindFeatureTypes(py::module& m) {
       .value("UNDEFINED", FeatureExtractorType::UNDEFINED)
       .value("SIFT", FeatureExtractorType::SIFT)
       .value("ALIKED_N16ROT", FeatureExtractorType::ALIKED_N16ROT)
-      .value("ALIKED_N32", FeatureExtractorType::ALIKED_N32);
+      .value("ALIKED_N32", FeatureExtractorType::ALIKED_N32)
+      .value("FIXED_DIMENSION", FeatureExtractorType::FIXED_DIMENSION);
 
   // Define both classes first without cross-referencing methods.
   auto PyFeatureDescriptors =
@@ -42,22 +43,20 @@ void BindFeatureTypes(py::module& m) {
       .def_static("from_float",
                   &FeatureDescriptors::FromFloat,
                   "float_desc"_a,
-                  "Create from float descriptors by reinterpreting float32 "
-                  "data as uint8 bytes.")
+                  "Create the database byte representation from float "
+                  "descriptors.")
       .def("to_float",
            &FeatureDescriptors::ToFloat,
-           "Convert to float descriptors by reinterpreting uint8 data as "
-           "float32.");
+           "Convert the database byte representation to float descriptors.");
   PyFeatureDescriptorsFloat
       .def_static("from_bytes",
                   &FeatureDescriptorsFloat::FromBytes,
                   "byte_desc"_a,
-                  "Create from byte descriptors by reinterpreting uint8 "
-                  "data as float32.")
+                  "Create float descriptors from the database byte "
+                  "representation.")
       .def("to_bytes",
            &FeatureDescriptorsFloat::ToBytes,
-           "Convert to byte descriptors by reinterpreting float32 data as "
-           "uint8.");
+           "Convert to the database byte representation.");
 
   MakeDataclass(PyFeatureDescriptors);
   MakeDataclass(PyFeatureDescriptorsFloat);

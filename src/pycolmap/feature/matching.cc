@@ -1,3 +1,4 @@
+#include "colmap/feature/fixed_dimension.h"
 #include "colmap/feature/matcher.h"
 #include "colmap/feature/sift.h"
 #include "colmap/feature/utils.h"
@@ -72,7 +73,9 @@ void BindFeatureMatching(py::module& m) {
       .value("SIFT_BRUTEFORCE", FeatureMatcherType::SIFT_BRUTEFORCE)
       .value("SIFT_LIGHTGLUE", FeatureMatcherType::SIFT_LIGHTGLUE)
       .value("ALIKED_BRUTEFORCE", FeatureMatcherType::ALIKED_BRUTEFORCE)
-      .value("ALIKED_LIGHTGLUE", FeatureMatcherType::ALIKED_LIGHTGLUE);
+      .value("ALIKED_LIGHTGLUE", FeatureMatcherType::ALIKED_LIGHTGLUE)
+      .value("FIXED_DIMENSION_BRUTEFORCE",
+             FeatureMatcherType::FIXED_DIMENSION_BRUTEFORCE);
 
 #ifdef COLMAP_ONNX_ENABLED
   auto PyBruteForceONNXMatchingOptions =
@@ -146,11 +149,30 @@ void BindFeatureMatching(py::module& m) {
           .def("check", &SiftMatchingOptions::Check);
   MakeDataclass(PySiftMatchingOptions);
 
+  auto PyFixedDimensionMatchingOptions =
+      py::classh<FixedDimensionMatchingOptions>(m,
+                                                "FixedDimensionMatchingOptions")
+          .def(py::init<>())
+          .def_readwrite(
+              "max_ratio",
+              &FixedDimensionMatchingOptions::max_ratio,
+              "Maximum distance ratio between first and second best match.")
+          .def_readwrite("max_distance",
+                         &FixedDimensionMatchingOptions::max_distance,
+                         "Maximum angular distance to the best match.")
+          .def_readwrite("cross_check",
+                         &FixedDimensionMatchingOptions::cross_check,
+                         "Whether to enable cross checking in matching.")
+          .def("check", &FixedDimensionMatchingOptions::Check);
+  MakeDataclass(PyFixedDimensionMatchingOptions);
+
   auto PyFeatureMatchingOptions =
       py::classh<FeatureMatchingOptions>(m, "FeatureMatchingOptions")
           .def(py::init<FeatureMatcherType>(),
                "type"_a = FeatureMatcherType::SIFT_BRUTEFORCE)
           .def_readwrite("type", &FeatureMatchingOptions::type)
+          .def_readwrite("fixed_dimension",
+                         &FeatureMatchingOptions::fixed_dimension)
           .def_readwrite("num_threads", &FeatureMatchingOptions::num_threads)
           .def_readwrite("use_gpu", &FeatureMatchingOptions::use_gpu)
           .def_readwrite("gpu_index",

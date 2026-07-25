@@ -34,6 +34,13 @@
 #include <cstring>
 
 namespace colmap {
+namespace {
+
+using FixedDimensionDescriptorData =
+    Eigen::Matrix<Eigen::half, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+static_assert(sizeof(Eigen::half) == 2);
+
+}  // namespace
 
 FeatureKeypoint::FeatureKeypoint() : FeatureKeypoint(0, 0) {}
 
@@ -166,6 +173,15 @@ FeatureDescriptors FeatureDescriptors::FromFloat(
       // cast each float value to uint8
       result.data = float_desc.data.cast<uint8_t>();
       break;
+    case FeatureExtractorType::FIXED_DIMENSION: {
+      // reinterpret float16 data as uint8 bytes
+      const FixedDimensionDescriptorData half_data =
+          float_desc.data.cast<Eigen::half>();
+      const Eigen::Index uint8_cols = float_cols * sizeof(Eigen::half);
+      result.data.resize(rows, uint8_cols);
+      std::memcpy(result.data.data(), half_data.data(), rows * uint8_cols);
+      break;
+    }
     case FeatureExtractorType::ALIKED_N16ROT:
     case FeatureExtractorType::ALIKED_N32: {
       // reinterpret float32 data as uint8 bytes
@@ -199,6 +215,15 @@ FeatureDescriptorsFloat FeatureDescriptorsFloat::FromBytes(
       // cast each uint8 value to float
       result.data = byte_desc.data.cast<float>();
       break;
+    case FeatureExtractorType::FIXED_DIMENSION: {
+      // reinterpret float16 bytes and cast each value to float32
+      THROW_CHECK_EQ(uint8_cols % sizeof(Eigen::half), 0);
+      const Eigen::Index float_cols = uint8_cols / sizeof(Eigen::half);
+      FixedDimensionDescriptorData half_data(rows, float_cols);
+      std::memcpy(half_data.data(), byte_desc.data.data(), rows * uint8_cols);
+      result.data = half_data.cast<float>();
+      break;
+    }
     case FeatureExtractorType::ALIKED_N16ROT:
     case FeatureExtractorType::ALIKED_N32: {
       // reinterpret uint8 bytes as float32 data
