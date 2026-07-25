@@ -85,6 +85,7 @@ if(CUDA_ENABLED)
             fixed_dimension_cuda.h fixed_dimension_cuda.cu
         PUBLIC_LINK_LIBS
             colmap_feature_types
+            colmap_scene_types
             colmap_util_cuda
             CUDA::cublas
             CUDA::cudart
