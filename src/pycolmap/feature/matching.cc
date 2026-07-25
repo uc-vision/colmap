@@ -37,7 +37,8 @@ class PyFeatureMatcher : public FeatureMatcher,
     } else {
       options = FeatureMatchingOptions();
     }
-    if (options->sift->cpu_descriptor_index_cache == nullptr) {
+    if (options->type == FeatureMatcherType::SIFT_BRUTEFORCE &&
+        options->sift->cpu_descriptor_index_cache == nullptr) {
       options->sift->cpu_brute_force_matcher = true;
     }
     options->use_gpu = IsGPU(device);
