@@ -133,7 +133,7 @@ COLMAP_ADD_TEST(
         colmap_feature
         colmap_util
 )
-if(CUDA_ENABLED)
+if(TESTS_ENABLED AND CUDA_ENABLED)
     target_link_libraries(colmap_feature_fixed_dimension_test colmap_util_cuda)
 endif()
 COLMAP_ADD_TEST(
