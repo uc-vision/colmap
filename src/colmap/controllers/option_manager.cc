@@ -41,7 +41,6 @@
 #include "colmap/estimators/gravity_refinement.h"
 #include "colmap/estimators/two_view_geometry.h"
 #include "colmap/feature/aliked.h"
-#include "colmap/feature/fixed_dimension.h"
 #include "colmap/feature/sift.h"
 #if defined(COLMAP_MVS_ENABLED)
 #include "colmap/mvs/advancing_front_meshing.h"
@@ -326,13 +325,6 @@ void OptionManager::AddFeatureMatchingOptions() {
                    &feature_matching->sift->lightglue.min_score);
   AddDefaultOption("SiftMatching.lightglue_model_path",
                    &feature_matching->sift->lightglue.model_path);
-
-  AddDefaultOption("FixedDimensionMatching.max_ratio",
-                   &feature_matching->fixed_dimension->max_ratio);
-  AddDefaultOption("FixedDimensionMatching.max_distance",
-                   &feature_matching->fixed_dimension->max_distance);
-  AddDefaultOption("FixedDimensionMatching.cross_check",
-                   &feature_matching->fixed_dimension->cross_check);
 
   AddDefaultOption("AlikedMatching.brute_force_min_cossim",
                    &feature_matching->aliked->brute_force.min_cossim);

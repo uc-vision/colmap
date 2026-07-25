@@ -39,21 +39,15 @@
 
 namespace colmap {
 
-MAKE_ENUM_CLASS_OVERLOAD_STREAM(FeatureExtractorType,
-                                -1,
-                                UNDEFINED,
-                                SIFT,
-                                ALIKED_N16ROT,
-                                ALIKED_N32,
-                                FIXED_DIMENSION);
+MAKE_ENUM_CLASS_OVERLOAD_STREAM(
+    FeatureExtractorType, -1, UNDEFINED, SIFT, ALIKED_N16ROT, ALIKED_N32);
 MAKE_ENUM_CLASS_OVERLOAD_STREAM(FeatureMatcherType,
                                 -1,
                                 UNDEFINED,
                                 SIFT_BRUTEFORCE,
                                 SIFT_LIGHTGLUE,
                                 ALIKED_BRUTEFORCE,
-                                ALIKED_LIGHTGLUE,
-                                FIXED_DIMENSION_BRUTEFORCE);
+                                ALIKED_LIGHTGLUE);
 
 struct FeatureKeypoint {
   FeatureKeypoint();
@@ -124,16 +118,14 @@ struct FeatureDescriptors {
   FeatureDescriptors(FeatureExtractorType type, FeatureDescriptorsData data)
       : type(type), data(std::move(data)) {}
 
-  // Create the database byte representation from float descriptors.
+  // Create from float descriptors by reinterpreting as uint8 bytes.
   static FeatureDescriptors FromFloat(
       const FeatureDescriptorsFloat& float_desc);
 
-  // Convert the database byte representation to float descriptors.
+  // Convert to float descriptors by reinterpreting uint8 data as float32.
   FeatureDescriptorsFloat ToFloat() const;
 
   FeatureExtractorType type = FeatureExtractorType::UNDEFINED;
-
-  // FIXED_DIMENSION descriptors store row-major IEEE float16 values as bytes.
   FeatureDescriptorsData data;
 };
 
@@ -143,10 +135,10 @@ struct FeatureDescriptorsFloat {
                           FeatureDescriptorsFloatData data)
       : type(type), data(std::move(data)) {}
 
-  // Create float descriptors from the database byte representation.
+  // Create from byte descriptors by reinterpreting uint8 data as float32.
   static FeatureDescriptorsFloat FromBytes(const FeatureDescriptors& byte_desc);
 
-  // Convert to the database byte representation.
+  // Convert to byte descriptors by reinterpreting float32 data as uint8.
   FeatureDescriptors ToBytes() const;
 
   FeatureExtractorType type = FeatureExtractorType::UNDEFINED;

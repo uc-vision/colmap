@@ -442,7 +442,6 @@ if(GUI_ENABLED)
 endif()
 if(CUDA_ENABLED)
     list(APPEND COLMAP_EXPORT_LIBS
-         colmap_feature_cuda
          colmap_util_cuda
     )
     if(MVS_ENABLED)

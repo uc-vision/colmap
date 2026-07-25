@@ -286,19 +286,6 @@ TEST(FeatureDescriptors, SiftConversion) {
   EXPECT_EQ(recovered.data, original.data);
 }
 
-TEST(FeatureDescriptors, FixedDimensionConversion) {
-  const FeatureDescriptorsFloat original(
-      FeatureExtractorType::FIXED_DIMENSION,
-      FeatureDescriptorsFloatData::Random(10, 73));
-  const FeatureDescriptors as_bytes = original.ToBytes();
-  EXPECT_EQ(as_bytes.type, FeatureExtractorType::FIXED_DIMENSION);
-  EXPECT_EQ(as_bytes.data.cols(), 73 * sizeof(Eigen::half));
-
-  const FeatureDescriptorsFloat recovered = as_bytes.ToFloat();
-  EXPECT_EQ(recovered.type, FeatureExtractorType::FIXED_DIMENSION);
-  EXPECT_TRUE(recovered.data.isApprox(original.data, 5e-4f));
-}
-
 TEST(FeatureDescriptors, AlikedConversion) {
   // ALIKED uses reinterpret cast (float32 bytes <-> float)
   const FeatureDescriptors original(FeatureExtractorType::ALIKED_N16ROT,

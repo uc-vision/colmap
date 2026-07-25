@@ -30,7 +30,6 @@
 #include "colmap/ui/feature_matching_widget.h"
 
 #include "colmap/controllers/feature_matching.h"
-#include "colmap/feature/fixed_dimension.h"
 #include "colmap/feature/sift.h"
 #ifdef COLMAP_ONNX_ENABLED
 #include "colmap/feature/aliked.h"
@@ -123,7 +122,6 @@ void FeatureMatchingTab::CreateGeneralOptions() {
     matcher_types_.push_back(type);
   };
   add_matcher_type(FeatureMatcherType::SIFT_BRUTEFORCE);
-  add_matcher_type(FeatureMatcherType::FIXED_DIMENSION_BRUTEFORCE);
 #ifdef COLMAP_ONNX_ENABLED
   add_matcher_type(FeatureMatcherType::SIFT_LIGHTGLUE);
   add_matcher_type(FeatureMatcherType::ALIKED_BRUTEFORCE);
@@ -159,15 +157,6 @@ void FeatureMatchingTab::CreateGeneralOptions() {
       &options_->feature_matching->sift->max_distance, "sift.max_distance");
   options_widget_->AddOptionBool(&options_->feature_matching->sift->cross_check,
                                  "sift.cross_check");
-  options_widget_->AddOptionDouble(
-      &options_->feature_matching->fixed_dimension->max_ratio,
-      "fixed_dimension.max_ratio");
-  options_widget_->AddOptionDouble(
-      &options_->feature_matching->fixed_dimension->max_distance,
-      "fixed_dimension.max_distance");
-  options_widget_->AddOptionBool(
-      &options_->feature_matching->fixed_dimension->cross_check,
-      "fixed_dimension.cross_check");
 
   options_widget_->AddSpacer();
   options_widget_->AddSection("Geometric verification");

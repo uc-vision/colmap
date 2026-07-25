@@ -51,7 +51,6 @@ COLMAP_ADD_LIBRARY(
         aliked.h aliked.cc
         extractor.h extractor.cc
         index.h index.cc
-        fixed_dimension.h fixed_dimension.cc
         matcher.h matcher.cc
         onnx_matchers.h onnx_matchers.cc
         onnx_utils.h onnx_utils.cc
@@ -76,21 +75,6 @@ if(GPU_ENABLED)
     if(NOT GUI_ENABLED)
         target_link_libraries(colmap_feature PRIVATE GLEW::GLEW)
     endif()
-endif()
-
-if(CUDA_ENABLED)
-    COLMAP_ADD_LIBRARY(
-        NAME colmap_feature_cuda
-        SRCS
-            fixed_dimension_cuda.h fixed_dimension_cuda.cu
-        PUBLIC_LINK_LIBS
-            colmap_feature_types
-            colmap_scene_types
-            colmap_util_cuda
-            CUDA::cublas
-            CUDA::cudart
-    )
-    target_link_libraries(colmap_feature PRIVATE colmap_feature_cuda)
 endif()
 
 if(OPENMP_FOUND)
@@ -127,16 +111,6 @@ COLMAP_ADD_TEST(
     SRCS index_test.cc
     LINK_LIBS colmap_feature
 )
-COLMAP_ADD_TEST(
-    NAME fixed_dimension_test
-    SRCS fixed_dimension_test.cc
-    LINK_LIBS
-        colmap_feature
-        colmap_util
-)
-if(TESTS_ENABLED AND CUDA_ENABLED)
-    target_link_libraries(colmap_feature_fixed_dimension_test colmap_util_cuda)
-endif()
 COLMAP_ADD_TEST(
     NAME matcher_test
     SRCS matcher_test.cc
