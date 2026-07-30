@@ -53,6 +53,10 @@ void BindGlobalMapper(py::module& m) {
         .def_readwrite("min_tri_angle_deg", &Opts::min_tri_angle_deg)
         .def_readwrite("ba_gpu_index", &Opts::ba_gpu_index)
         .def_readwrite("ba_num_iterations", &Opts::ba_num_iterations)
+        .def_readwrite("retriangulation_max_num_refinements",
+                       &Opts::retriangulation_max_num_refinements)
+        .def_readwrite("retriangulation_ba_max_num_iterations",
+                       &Opts::retriangulation_ba_max_num_iterations)
         .def_readwrite("ba_skip_fixed_rotation_stage",
                        &Opts::ba_skip_fixed_rotation_stage)
         .def_readwrite("ba_skip_joint_optimization_stage",

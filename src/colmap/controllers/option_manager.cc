@@ -808,6 +808,11 @@ void OptionManager::AddGlobalMapperOptions() {
                    &global_mapper->min_model_size);
   AddDefaultOption("GlobalMapper.ba_num_iterations",
                    &global_mapper->mapper.ba_num_iterations);
+  AddDefaultOption("GlobalMapper.retriangulation_max_num_refinements",
+                   &global_mapper->mapper.retriangulation_max_num_refinements);
+  AddDefaultOption(
+      "GlobalMapper.retriangulation_ba_max_num_iterations",
+      &global_mapper->mapper.retriangulation_ba_max_num_iterations);
   AddDefaultOption("GlobalMapper.skip_rotation_averaging",
                    &global_mapper->mapper.skip_rotation_averaging);
   AddDefaultOption("GlobalMapper.skip_track_establishment",
