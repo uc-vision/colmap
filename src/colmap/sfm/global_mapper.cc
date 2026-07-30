@@ -1,5 +1,6 @@
 #include "colmap/sfm/global_mapper.h"
 
+#include "colmap/estimators/bundle_adjustment_caspar.h"
 #include "colmap/estimators/rotation_averaging.h"
 #include "colmap/math/union_find.h"
 #include "colmap/scene/projection.h"
@@ -38,7 +39,25 @@ bool RunBundleAdjustment(const BundleAdjustmentOptions& options,
   return ba->Solve()->IsSolutionUsable();
 }
 
+void CapBundleAdjustmentIterations(BundleAdjustmentOptions& options,
+                                   int max_num_iterations) {
+  if (options.ceres) {
+    options.ceres->solver_options.max_num_iterations = std::min(
+        options.ceres->solver_options.max_num_iterations, max_num_iterations);
+  }
+  if (options.caspar) {
+    options.caspar->solver_iter_max =
+        std::min(options.caspar->solver_iter_max, max_num_iterations);
+  }
+}
+
 }  // namespace
+
+bool GlobalMapperOptions::Check() const {
+  CHECK_OPTION_GE(retriangulation_max_num_refinements, 0);
+  CHECK_OPTION_GT(retriangulation_ba_max_num_iterations, 0);
+  return true;
+}
 
 RotationEstimatorOptions GlobalMapperOptions::RotationAveraging() const {
   RotationEstimatorOptions opts = rotation_averaging;
@@ -414,7 +433,9 @@ bool GlobalMapper::IterativeRetriangulateAndRefine(
     const IncrementalTriangulator::Options& options,
     const BundleAdjustmentOptions& ba_options,
     double max_normalized_reproj_error,
-    double min_tri_angle_deg) {
+    double min_tri_angle_deg,
+    int max_num_refinements,
+    int ba_max_num_iterations) {
   // Delete all existing 3D points and re-establish 2D-3D correspondences.
   reconstruction_->DeleteAllPoints2DAndPoints3D();
 
@@ -433,14 +454,14 @@ bool GlobalMapper::IterativeRetriangulateAndRefine(
   if (custom_ba_options.ceres && ba_options.ceres) {
     custom_ba_options.ceres->solver_options.num_threads =
         ba_options.ceres->solver_options.num_threads;
-    custom_ba_options.ceres->solver_options.max_num_iterations = 50;
     custom_ba_options.ceres->solver_options.max_linear_solver_iterations = 100;
   }
+  CapBundleAdjustmentIterations(custom_ba_options, ba_max_num_iterations);
 
   // Iterative global refinement.
   IncrementalMapper::Options mapper_options;
   mapper_options.random_seed = options.random_seed;
-  mapper.IterativeGlobalRefinement(/*max_num_refinements=*/5,
+  mapper.IterativeGlobalRefinement(max_num_refinements,
                                    /*max_refinement_change=*/0.0005,
                                    mapper_options,
                                    custom_ba_options,
@@ -456,7 +477,9 @@ bool GlobalMapper::IterativeRetriangulateAndRefine(
       reconstruction_->Point3DIds(),
       ReprojectionErrorType::NORMALIZED);
 
-  if (!RunBundleAdjustment(ba_options, *reconstruction_)) {
+  BundleAdjustmentOptions final_ba_options = ba_options;
+  CapBundleAdjustmentIterations(final_ba_options, ba_max_num_iterations);
+  if (!RunBundleAdjustment(final_ba_options, *reconstruction_)) {
     return false;
   }
 
@@ -476,6 +499,7 @@ bool GlobalMapper::IterativeRetriangulateAndRefine(
 }
 
 bool GlobalMapper::Solve(const GlobalMapperOptions& options) {
+  THROW_CHECK(options.Check());
   THROW_CHECK_NOTNULL(reconstruction_);
   THROW_CHECK_NOTNULL(pose_graph_);
 
@@ -543,10 +567,13 @@ bool GlobalMapper::Solve(const GlobalMapperOptions& options) {
     LOG_HEADING1("Running iterative retriangulation and refinement");
     Timer run_timer;
     run_timer.Start();
-    if (!IterativeRetriangulateAndRefine(options.Retriangulation(),
-                                         options.BundleAdjustment(),
-                                         options.max_normalized_reproj_error,
-                                         options.min_tri_angle_deg)) {
+    if (!IterativeRetriangulateAndRefine(
+            options.Retriangulation(),
+            options.BundleAdjustment(),
+            options.max_normalized_reproj_error,
+            options.min_tri_angle_deg,
+            options.retriangulation_max_num_refinements,
+            options.retriangulation_ba_max_num_iterations)) {
       return false;
     }
     LOG(INFO) << "Iterative retriangulation and refinement done in "

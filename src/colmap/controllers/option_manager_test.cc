@@ -135,6 +135,9 @@ TEST(OptionManager, WriteAndRead) {
   options_write.feature_extraction->max_image_size = 2048;
   options_write.feature_extraction->sift->max_num_features = 4096;
   options_write.mapper->min_num_matches = 20;
+  options_write.global_mapper->mapper.retriangulation_max_num_refinements = 2;
+  options_write.global_mapper->mapper.retriangulation_ba_max_num_iterations =
+      25;
 
   // Write to file
   options_write.Write(config_path);
@@ -159,6 +162,13 @@ TEST(OptionManager, WriteAndRead) {
             options_write.feature_extraction->sift->max_num_features);
   EXPECT_EQ(options_read.mapper->min_num_matches,
             options_write.mapper->min_num_matches);
+  EXPECT_EQ(
+      options_read.global_mapper->mapper.retriangulation_max_num_refinements,
+      options_write.global_mapper->mapper.retriangulation_max_num_refinements);
+  EXPECT_EQ(
+      options_read.global_mapper->mapper.retriangulation_ba_max_num_iterations,
+      options_write.global_mapper->mapper
+          .retriangulation_ba_max_num_iterations);
 }
 
 TEST(OptionManager, ReRead) {

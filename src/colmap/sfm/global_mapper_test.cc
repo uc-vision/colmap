@@ -165,5 +165,17 @@ TEST(GlobalMapperOptions, RefineSensorFromRigPropagatesToSubOptions) {
   EXPECT_FALSE(options.BundleAdjustment().refine_sensor_from_rig);
 }
 
+TEST(GlobalMapperOptions, CheckRetriangulationIterations) {
+  GlobalMapperOptions options;
+  EXPECT_TRUE(options.Check());
+
+  options.retriangulation_max_num_refinements = -1;
+  EXPECT_FALSE(options.Check());
+
+  options.retriangulation_max_num_refinements = 2;
+  options.retriangulation_ba_max_num_iterations = 0;
+  EXPECT_FALSE(options.Check());
+}
+
 }  // namespace
 }  // namespace colmap

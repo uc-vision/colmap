@@ -79,6 +79,12 @@ struct GlobalMapperOptions {
   // Control the number of iterations for bundle adjustment.
   int ba_num_iterations = 3;
 
+  // Control the number of refinement rounds after retriangulation.
+  int retriangulation_max_num_refinements = 5;
+
+  // Bound each bundle adjustment in the retriangulation phase.
+  int retriangulation_ba_max_num_iterations = 50;
+
   // Whether to skip the fixed-rotation stage in bundle adjustment.
   // By default, BA runs in two stages: first with fixed rotations (position
   // only), then with full optimization. Setting this to true skips the first
@@ -98,6 +104,7 @@ struct GlobalMapperOptions {
   bool skip_bundle_adjustment = false;
   bool skip_retriangulation = false;
 
+  bool Check() const;
   RotationEstimatorOptions RotationAveraging() const;
   GlobalPositionerOptions GlobalPositioning() const;
   BundleAdjustmentOptions BundleAdjustment() const;
@@ -141,7 +148,9 @@ class GlobalMapper {
       const IncrementalTriangulator::Options& options,
       const BundleAdjustmentOptions& ba_options,
       double max_normalized_reproj_error,
-      double min_tri_angle_deg);
+      double min_tri_angle_deg,
+      int max_num_refinements,
+      int ba_max_num_iterations);
 
   // Getter functions.
   std::shared_ptr<class Reconstruction> Reconstruction() const;
