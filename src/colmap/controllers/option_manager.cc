@@ -783,6 +783,9 @@ void OptionManager::AddGlobalMapperOptions() {
   AddDefaultOption(
       "GlobalMapper.gp_optimize_positions",
       &global_mapper->mapper.global_positioning.optimize_positions);
+  AddDefaultOption(
+      "GlobalMapper.gp_initialize_from_pose_priors",
+      &global_mapper->mapper.global_positioning.initialize_from_pose_priors);
   AddDefaultOption("GlobalMapper.gp_optimize_points",
                    &global_mapper->mapper.global_positioning.optimize_points);
   AddDefaultOption("GlobalMapper.gp_optimize_scales",

@@ -295,7 +295,10 @@ bool GlobalMapper::GlobalPositioning(const GlobalPositionerOptions& options,
                                      double max_angular_reproj_error_deg,
                                      double max_normalized_reproj_error,
                                      double min_tri_angle_deg) {
-  if (!RunGlobalPositioning(options, *pose_graph_, *reconstruction_)) {
+  if (!RunGlobalPositioning(options,
+                            *pose_graph_,
+                            *reconstruction_,
+                            database_cache_->PosePriors())) {
     return false;
   }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "colmap/geometry/pose_prior.h"
 #include "colmap/scene/pose_graph.h"
 #include "colmap/scene/reconstruction.h"
 
@@ -13,6 +14,7 @@ struct GlobalPositionerOptions {
   // Whether to initialize the camera and track positions randomly.
   bool generate_random_positions = true;
   bool generate_random_points = true;
+  bool initialize_from_pose_priors = false;
   // Whether to initialize the camera scales to a constant 1 or derive them from
   // the initialized camera and point positions.
   bool generate_scales = true;
@@ -66,6 +68,9 @@ class GlobalPositioner {
   // failure.
   // Assume tracks here are already filtered
   bool Solve(const PoseGraph& pose_graph, Reconstruction& reconstruction);
+  bool Solve(const PoseGraph& pose_graph,
+             Reconstruction& reconstruction,
+             const std::vector<PosePrior>& pose_priors);
 
   GlobalPositionerOptions& GetOptions() { return options_; }
 
@@ -75,7 +80,14 @@ class GlobalPositioner {
 
   // Initialize all cameras to be random.
   void InitializeRandomPositions(const PoseGraph& pose_graph,
-                                 Reconstruction& reconstruction);
+                                 Reconstruction& reconstruction,
+                                 const std::vector<PosePrior>& pose_priors);
+
+  bool InitializePositionsFromPosePriors(
+      const PoseGraph& pose_graph,
+      const Reconstruction& reconstruction,
+      const std::vector<PosePrior>& pose_priors,
+      const std::unordered_set<frame_t>& constrained_positions);
 
   // Add tracks to the problem
   void AddPointToCameraConstraints(Reconstruction& reconstruction);
@@ -111,6 +123,7 @@ class GlobalPositioner {
   // Eliminate independent observation scales when calibrated rig baselines
   // provide metric scale and the rig extrinsics are fixed.
   bool fixed_rig_positioning_ = false;
+  bool pose_prior_initialization_ = false;
 
   // Temporary storage for frame centers (world coordinates) during
   // optimization. This allows keeping RigFromWorld().translation() in
@@ -125,6 +138,7 @@ class GlobalPositioner {
 // Solve global positioning using point-to-camera constraints.
 bool RunGlobalPositioning(const GlobalPositionerOptions& options,
                           const PoseGraph& pose_graph,
-                          Reconstruction& reconstruction);
+                          Reconstruction& reconstruction,
+                          const std::vector<PosePrior>& pose_priors = {});
 
 }  // namespace colmap
