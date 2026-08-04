@@ -81,6 +81,49 @@ struct RigBATAPairwiseDirectionConstantRigCostFunctor {
   const Eigen::Vector3d cam_from_rig_translation_;
 };
 
+// Fixed-rig BATA error with the per-observation scale eliminated analytically.
+// This leaves only the shared frame centers and 3D points for Ceres to solve.
+struct FixedRigPairwiseDirectionCostFunctor {
+  FixedRigPairwiseDirectionCostFunctor(
+      const Eigen::Vector3d& cam_from_point3D_dir,
+      const Eigen::Vector3d& cam_from_rig_translation)
+      : cam_from_point3D_dir_(cam_from_point3D_dir),
+        cam_from_rig_translation_(cam_from_rig_translation) {}
+
+  template <typename T>
+  bool operator()(const T* point3D,
+                  const T* rig_in_world,
+                  T* residuals) const {
+    const Eigen::Matrix<T, 3, 1> displacement =
+        Eigen::Map<const Eigen::Matrix<T, 3, 1>>(point3D) -
+        Eigen::Map<const Eigen::Matrix<T, 3, 1>>(rig_in_world) +
+        cam_from_rig_translation_.cast<T>();
+    const Eigen::Matrix<T, 3, 1> bearing =
+        cam_from_point3D_dir_.cast<T>();
+    const T unconstrained_scale =
+        bearing.dot(displacement) / displacement.squaredNorm();
+    const T scale = unconstrained_scale < T(1e-5) ? T(1e-5)
+                                                   : unconstrained_scale;
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> residuals_vec(residuals);
+    residuals_vec = bearing - scale * displacement;
+    return true;
+  }
+
+  static ceres::CostFunction* Create(
+      const Eigen::Vector3d& cam_from_point3D_dir,
+      const Eigen::Vector3d& cam_from_rig_translation) {
+    return new ceres::AutoDiffCostFunction<
+        FixedRigPairwiseDirectionCostFunctor,
+        3,
+        3,
+        3>(new FixedRigPairwiseDirectionCostFunctor(
+        cam_from_point3D_dir, cam_from_rig_translation));
+  }
+
+  const Eigen::Vector3d cam_from_point3D_dir_;
+  const Eigen::Vector3d cam_from_rig_translation_;
+};
+
 // Computes the error between a translation direction and the direction formed
 // from a camera (c) and 3D point (p) with variable rig extrinsics, such that:
 // t_ij - scale * (p - c + t_rig) is minimized.

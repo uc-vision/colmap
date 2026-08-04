@@ -84,6 +84,8 @@ class GlobalPositioner {
   void AddPoint3DToProblem(point3D_t point3D_id,
                            Reconstruction& reconstruction);
 
+  void RefineFixedRigPoints(Reconstruction& reconstruction);
+
   // Set the parameter groups
   void AddCamerasAndPointsToParameterGroups(Reconstruction& reconstruction);
 
@@ -105,6 +107,10 @@ class GlobalPositioner {
 
   // Auxiliary scale variables.
   std::vector<double> scales_;
+
+  // Eliminate independent observation scales when calibrated rig baselines
+  // provide metric scale and the rig extrinsics are fixed.
+  bool fixed_rig_positioning_ = false;
 
   // Temporary storage for frame centers (world coordinates) during
   // optimization. This allows keeping RigFromWorld().translation() in
