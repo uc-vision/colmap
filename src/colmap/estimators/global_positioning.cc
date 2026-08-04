@@ -181,7 +181,6 @@ bool GlobalPositioner::InitializePositionsFromPosePriors(
     const std::unordered_set<frame_t>& constrained_positions) {
   std::unordered_map<image_t, Eigen::Vector3d> image_positions;
   std::unordered_map<frame_t, Eigen::Vector3d> frame_positions;
-  std::unordered_map<frame_t, size_t> frame_counts;
   for (const PosePrior& prior : pose_priors) {
     if (!prior.HasPosition() ||
         prior.corr_data_id.sensor_id.type != SensorType::CAMERA ||
@@ -191,21 +190,11 @@ bool GlobalPositioner::InitializePositionsFromPosePriors(
     const image_t image_id = prior.corr_data_id.id;
     const Image& image = reconstruction.Image(image_id);
     const frame_t frame_id = image.FrameId();
-    Eigen::Vector3d rig_center = prior.position;
-    if (!image.IsRefInFrame()) {
-      const Rigid3d& cam_from_rig =
-          reconstruction.Rig(image.FramePtr()->RigId())
-              .SensorFromRig(image.CameraPtr()->SensorId());
-      rig_center += image.CamFromWorld().rotation().inverse() *
-                    cam_from_rig.translation();
-    }
     image_positions.emplace(image_id, prior.position);
-    frame_positions.try_emplace(frame_id, Eigen::Vector3d::Zero())
-        .first->second += rig_center;
-    frame_counts[frame_id]++;
-  }
-  for (auto& [frame_id, position] : frame_positions) {
-    position /= frame_counts.at(frame_id);
+    if (image.IsRefInFrame() &&
+        constrained_positions.find(frame_id) != constrained_positions.end()) {
+      frame_positions.emplace(frame_id, prior.position);
+    }
   }
   if (frame_positions.size() < constrained_positions.size()) {
     return false;
