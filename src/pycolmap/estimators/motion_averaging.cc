@@ -22,6 +22,10 @@ void BindGlobalPositioner(py::module& m) {
           .def_readwrite("generate_random_points",
                          &GlobalPositionerOptions::generate_random_points,
                          "Whether to initialize 3D point positions randomly.")
+          .def_readwrite(
+              "initialize_from_pose_priors",
+              &GlobalPositionerOptions::initialize_from_pose_priors,
+              "Initialize fixed-rig positions from pose priors.")
           .def_readwrite("generate_scales",
                          &GlobalPositionerOptions::generate_scales,
                          "Whether to initialize scales to constant 1 or derive "

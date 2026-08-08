@@ -6,6 +6,11 @@
 #include "colmap/util/misc.h"
 #include "colmap/util/threading.h"
 
+#include <algorithm>
+
+#include <Eigen/Cholesky>
+#include <Eigen/SVD>
+
 namespace colmap {
 namespace {
 
@@ -26,6 +31,12 @@ GlobalPositioner::GlobalPositioner(const GlobalPositionerOptions& options)
 
 bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
                              Reconstruction& reconstruction) {
+  return Solve(pose_graph, reconstruction, {});
+}
+
+bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
+                             Reconstruction& reconstruction,
+                             const std::vector<PosePrior>& pose_priors) {
   if (reconstruction.NumImages() == 0) {
     LOG(ERROR) << "Number of images = " << reconstruction.NumImages();
     return false;
@@ -42,7 +53,12 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
 
   // Initialize camera translations to be random.
   // Also, convert the camera pose translation to be the camera center.
-  InitializeRandomPositions(pose_graph, reconstruction);
+  InitializeRandomPositions(pose_graph, reconstruction, pose_priors);
+
+  if (pose_prior_initialization_) {
+    ConvertBackResults(reconstruction);
+    RefineFixedRigPoints(reconstruction);
+  }
 
   // Add the point to camera constraints to the problem.
   AddPointToCameraConstraints(reconstruction);
@@ -70,6 +86,9 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
   }
 
   ConvertBackResults(reconstruction);
+  if (fixed_rig_positioning_) {
+    RefineFixedRigPoints(reconstruction);
+  }
   return summary.IsSolutionUsable();
 }
 
@@ -84,19 +103,31 @@ void GlobalPositioner::SetupProblem(const PoseGraph& pose_graph,
   frame_centers_.clear();
   cams_in_rig_.clear();
 
+  fixed_rig_positioning_ =
+      !options_.refine_sensor_from_rig &&
+      std::any_of(reconstruction.Images().begin(),
+                  reconstruction.Images().end(),
+                  [](const auto& image_entry) {
+                    return !image_entry.second.IsRefInFrame();
+                  });
+
   // Allocate enough memory for the scales. One for each residual.
   // Due to possibly invalid tracks, the actual number of residuals may be
   // smaller.
   scales_.clear();
-  size_t total_observations = 0;
-  for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
-    total_observations += point3D.track.Length();
+  if (!fixed_rig_positioning_) {
+    size_t total_observations = 0;
+    for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
+      total_observations += point3D.track.Length();
+    }
+    scales_.reserve(total_observations);
   }
-  scales_.reserve(total_observations);
 }
 
 void GlobalPositioner::InitializeRandomPositions(
-    const PoseGraph& pose_graph, Reconstruction& reconstruction) {
+    const PoseGraph& pose_graph,
+    Reconstruction& reconstruction,
+    const std::vector<PosePrior>& pose_priors) {
   std::unordered_set<frame_t> constrained_positions;
   constrained_positions.reserve(reconstruction.NumFrames());
   for (const auto& [pair_id, edge] : pose_graph.ValidEdges()) {
@@ -118,20 +149,100 @@ void GlobalPositioner::InitializeRandomPositions(
     }
   }
 
+  pose_prior_initialization_ =
+      options_.initialize_from_pose_priors && fixed_rig_positioning_ &&
+      InitializePositionsFromPosePriors(
+          pose_graph, reconstruction, pose_priors, constrained_positions);
+
   // Initialize frame centers in temporary storage.
   // The reconstruction poses remain in cam_from_world convention.
   for (const auto& [frame_id, frame] : reconstruction.Frames()) {
     if (constrained_positions.find(frame_id) == constrained_positions.end()) {
       continue;
     }
-    if (options_.generate_random_positions && options_.optimize_positions) {
-      frame_centers_[frame_id] = 100.0 * RandVector3d(-1, 1);
+    if (pose_prior_initialization_) {
+      continue;
+    } else if (options_.generate_random_positions &&
+               options_.optimize_positions) {
+      frame_centers_[frame_id] =
+          (fixed_rig_positioning_ ? 1.0 : 100.0) * RandVector3d(-1, 1);
     } else {
       frame_centers_[frame_id] = frame.RigFromWorld().TgtOriginInSrc();
     }
   }
 
   VLOG(2) << "Constrained positions: " << constrained_positions.size();
+}
+
+bool GlobalPositioner::InitializePositionsFromPosePriors(
+    const PoseGraph& pose_graph,
+    const Reconstruction& reconstruction,
+    const std::vector<PosePrior>& pose_priors,
+    const std::unordered_set<frame_t>& constrained_positions) {
+  std::unordered_map<image_t, Eigen::Vector3d> image_positions;
+  std::unordered_map<frame_t, Eigen::Vector3d> frame_positions;
+  for (const PosePrior& prior : pose_priors) {
+    if (!prior.HasPosition() ||
+        prior.corr_data_id.sensor_id.type != SensorType::CAMERA ||
+        !reconstruction.ExistsImage(prior.corr_data_id.id)) {
+      continue;
+    }
+    const image_t image_id = prior.corr_data_id.id;
+    const Image& image = reconstruction.Image(image_id);
+    const frame_t frame_id = image.FrameId();
+    image_positions.emplace(image_id, prior.position);
+    if (image.IsRefInFrame() &&
+        constrained_positions.find(frame_id) != constrained_positions.end()) {
+      frame_positions.emplace(frame_id, prior.position);
+    }
+  }
+  if (frame_positions.size() < constrained_positions.size()) {
+    return false;
+  }
+
+  Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+  for (const auto& [pair_id, edge] : pose_graph.ValidEdges()) {
+    const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
+    const auto prior1 = image_positions.find(image_id1);
+    const auto prior2 = image_positions.find(image_id2);
+    if (prior1 == image_positions.end() || prior2 == image_positions.end()) {
+      continue;
+    }
+    const Eigen::Vector3d prior_direction = prior2->second - prior1->second;
+    if (prior_direction.squaredNorm() == 0.0) {
+      continue;
+    }
+    const Eigen::Vector3d world_direction =
+        reconstruction.Image(image_id1).CamFromWorld().rotation().inverse() *
+        edge.cam2_from_cam1.TgtOriginInSrc();
+    covariance += edge.num_matches * world_direction.normalized() *
+                  prior_direction.normalized().transpose();
+  }
+  const Eigen::JacobiSVD<Eigen::Matrix3d> svd(
+      covariance, Eigen::ComputeFullU | Eigen::ComputeFullV);
+  Eigen::Matrix3d sign = Eigen::Matrix3d::Identity();
+  sign(2, 2) = (svd.matrixU() * svd.matrixV().transpose()).determinant();
+  const Eigen::Matrix3d world_from_prior =
+      svd.matrixU() * sign * svd.matrixV().transpose();
+
+  Eigen::Vector3d mean = Eigen::Vector3d::Zero();
+  for (const frame_t frame_id : constrained_positions) {
+    mean += frame_positions.at(frame_id);
+  }
+  mean /= constrained_positions.size();
+  double squared_scale = 0.0;
+  for (const frame_t frame_id : constrained_positions) {
+    squared_scale += (frame_positions.at(frame_id) - mean).squaredNorm();
+  }
+  const double scale =
+      std::sqrt(squared_scale / constrained_positions.size());
+  for (const frame_t frame_id : constrained_positions) {
+    frame_centers_[frame_id] =
+        world_from_prior * (frame_positions.at(frame_id) - mean) / scale;
+  }
+  LOG(INFO) << "Initialized " << constrained_positions.size()
+            << " fixed-rig frame positions from pose priors";
+  return true;
 }
 
 void GlobalPositioner::AddPointToCameraConstraints(
@@ -163,8 +274,9 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
   Point3D& point3D = reconstruction.Point3D(point3D_id);
 
   // Only set the points to be random if they are needed to be optimized
-  if (random_initialization) {
-    point3D.xyz = 100.0 * RandVector3d(-1, 1);
+  if (random_initialization && !pose_prior_initialization_) {
+    point3D.xyz =
+        (fixed_rig_positioning_ ? 1.0 : 100.0) * RandVector3d(-1, 1);
   }
 
   // For each view in the track add the point to camera correspondences.
@@ -188,6 +300,39 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
     const Eigen::Vector3d cam_from_point3D_dir =
         image.CamFromWorld().rotation().inverse() * (*cam_ray);
 
+    // Down-weight uncalibrated cameras.
+    Camera& camera = reconstruction.Camera(image.CameraId());
+    ceres::LossFunction* loss_function =
+        camera.has_prior_focal_length
+            ? loss_function_ptcam_calibrated_.get()
+            : loss_function_ptcam_uncalibrated_.get();
+
+    Eigen::Vector3d cam_from_rig_dir = Eigen::Vector3d::Zero();
+    if (!image.IsRefInFrame()) {
+      const Rig& rig = reconstruction.Rig(image.FramePtr()->RigId());
+      const Rigid3d& cam_from_rig =
+          rig.SensorFromRig(image.CameraPtr()->SensorId());
+      if (fixed_rig_positioning_) {
+        THROW_CHECK(!cam_from_rig.translation().hasNaN())
+            << "Fixed-rig positioning requires known sensor_from_rig";
+        cam_from_rig_dir = image.CamFromWorld().rotation().inverse() *
+                           cam_from_rig.translation();
+      } else if (!cam_from_rig.translation().hasNaN()) {
+        cam_from_rig_dir = image.CamFromWorld().rotation().inverse() *
+                           cam_from_rig.translation();
+      }
+    }
+
+    if (fixed_rig_positioning_) {
+      problem_->AddResidualBlock(
+          FixedRigPairwiseDirectionCostFunctor::Create(
+              cam_from_point3D_dir, cam_from_rig_dir),
+          loss_function,
+          point3D.xyz.data(),
+          frame_centers_[image.FrameId()].data());
+      continue;
+    }
+
     CHECK_GE(scales_.capacity(), scales_.size())
         << "Not enough capacity was reserved for the scales.";
     double& scale = scales_.emplace_back(1);
@@ -199,15 +344,6 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
                        cam_from_point3D_dir.dot(cam_from_point3D_translation) /
                            cam_from_point3D_translation.squaredNorm());
     }
-
-    // For calibrated and uncalibrated cameras, use different loss
-    // functions
-    // Down weight the uncalibrated cameras
-    Camera& camera = reconstruction.Camera(image.CameraId());
-    ceres::LossFunction* loss_function =
-        (camera.has_prior_focal_length)
-            ? loss_function_ptcam_calibrated_.get()
-            : loss_function_ptcam_uncalibrated_.get();
 
     // If the image is not part of a camera rig, use the standard BATA error
     if (image.IsRefInFrame()) {
@@ -227,10 +363,6 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
       Rigid3d& cam_from_rig = rig.SensorFromRig(image.CameraPtr()->SensorId());
 
       if (!cam_from_rig.translation().hasNaN()) {
-        const Eigen::Vector3d cam_from_rig_dir =
-            image.CamFromWorld().rotation().inverse() *
-            cam_from_rig.translation();
-
         ceres::CostFunction* cost_function =
             RigBATAPairwiseDirectionConstantRigCostFunctor::Create(
                 cam_from_point3D_dir, cam_from_rig_dir);
@@ -306,6 +438,33 @@ void GlobalPositioner::AddCamerasAndPointsToParameterGroups(
     if (problem_->HasParameterBlock(center.data())) {
       parameter_ordering->AddElementToGroup(center.data(), group_id);
     }
+  }
+}
+
+void GlobalPositioner::RefineFixedRigPoints(Reconstruction& reconstruction) {
+  for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
+    if (point3D.track.Length() <
+        static_cast<size_t>(options_.min_num_view_per_track)) {
+      continue;
+    }
+
+    Eigen::Matrix3d normal_matrix = Eigen::Matrix3d::Zero();
+    Eigen::Vector3d right_hand_side = Eigen::Vector3d::Zero();
+    for (const TrackElement& observation : point3D.track.Elements()) {
+      const Image& image = reconstruction.Image(observation.image_id);
+      const Eigen::Vector3d cam_ray =
+          image.CameraPtr()
+              ->CamRayFromImg(image.Point2D(observation.point2D_idx).xy)
+              .value();
+      const Eigen::Vector3d world_ray =
+          image.CamFromWorld().rotation().inverse() * cam_ray;
+      const Eigen::Matrix3d ray_projection =
+          Eigen::Matrix3d::Identity() - world_ray * world_ray.transpose();
+      normal_matrix += ray_projection;
+      right_hand_side += ray_projection * image.ProjectionCenter();
+    }
+    reconstruction.Point3D(point3D_id).xyz =
+        normal_matrix.ldlt().solve(right_hand_side);
   }
 }
 
@@ -441,9 +600,10 @@ void GlobalPositioner::ConvertBackResults(Reconstruction& reconstruction) {
 
 bool RunGlobalPositioning(const GlobalPositionerOptions& options,
                           const PoseGraph& pose_graph,
-                          Reconstruction& reconstruction) {
+                          Reconstruction& reconstruction,
+                          const std::vector<PosePrior>& pose_priors) {
   GlobalPositioner positioner(options);
-  return positioner.Solve(pose_graph, reconstruction);
+  return positioner.Solve(pose_graph, reconstruction, pose_priors);
 }
 
 }  // namespace colmap
