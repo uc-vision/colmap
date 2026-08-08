@@ -10,7 +10,11 @@ def test_view_graph_calibration_options_init():
 
 def test_global_mapper_options_init():
     options = pycolmap.GlobalMapperOptions()
-    assert options is not None
+    options.retriangulation_max_num_refinements = 2
+    options.retriangulation_ba_max_num_iterations = 25
+
+    assert options.retriangulation_max_num_refinements == 2
+    assert options.retriangulation_ba_max_num_iterations == 25
 
 
 def test_global_pipeline_options_init():
