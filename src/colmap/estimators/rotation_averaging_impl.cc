@@ -258,9 +258,10 @@ void RotationAveragingProblem::BuildPairConstraints(
       }
     }
 
-    // Skip self-loops within the same frame when both cam_from_rig are known.
-    if (cam1_from_rig1.has_value() && cam2_from_rig2.has_value() &&
-        frame_param_idx1 == frame_param_idx2) {
+    // Fixed camera rotations make same-frame constraints constant.
+    if (frame_param_idx1 == frame_param_idx2 &&
+        camera_id_to_param_idx_.count(image1.CameraId()) == 0 &&
+        camera_id_to_param_idx_.count(image2.CameraId()) == 0) {
       continue;
     }
 

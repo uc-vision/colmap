@@ -62,7 +62,8 @@ struct GlobalPositionerOptions {
 
 class GlobalPositioner {
  public:
-  explicit GlobalPositioner(const GlobalPositionerOptions& options);
+  explicit GlobalPositioner(const GlobalPositionerOptions& options,
+                            double min_tri_angle_deg = 1.0);
 
   // Returns true if the optimization was a success, false if there was a
   // failure.
@@ -98,6 +99,21 @@ class GlobalPositioner {
 
   void RefineFixedRigPoints(Reconstruction& reconstruction);
 
+  struct FixedRigFrameConstraint {
+    frame_t frame_id1;
+    frame_t frame_id2;
+    Eigen::Vector3d center2_from_center1;
+    double weight;
+  };
+
+  bool BuildFixedRigFrameConstraints(
+      const Reconstruction& reconstruction,
+      std::vector<FixedRigFrameConstraint>& constraints) const;
+
+  bool SolveFixedRigFramePositions(
+      Reconstruction& reconstruction,
+      const std::vector<FixedRigFrameConstraint>& constraints);
+
   // Set the parameter groups
   void AddCamerasAndPointsToParameterGroups(Reconstruction& reconstruction);
 
@@ -109,6 +125,7 @@ class GlobalPositioner {
   void ConvertBackResults(Reconstruction& reconstruction);
 
   GlobalPositionerOptions options_;
+  double min_tri_angle_deg_;
 
   std::unique_ptr<ceres::Problem> problem_;
 
@@ -139,6 +156,7 @@ class GlobalPositioner {
 bool RunGlobalPositioning(const GlobalPositionerOptions& options,
                           const PoseGraph& pose_graph,
                           Reconstruction& reconstruction,
-                          const std::vector<PosePrior>& pose_priors = {});
+                          const std::vector<PosePrior>& pose_priors = {},
+                          double min_tri_angle_deg = 1.0);
 
 }  // namespace colmap

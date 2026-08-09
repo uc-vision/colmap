@@ -178,6 +178,56 @@ TEST(RotationAveraging, WithoutNoiseWithNonTrivialKnownRig) {
                                 /*max_rotation_error_deg=*/1e-2);
 }
 
+TEST(RotationAveraging, FixedRigRotationConsensusRejectsOutlier) {
+  SetPRNGSeed(1);
+
+  SyntheticDatasetOptions synthetic_dataset_options;
+  synthetic_dataset_options.num_rigs = 1;
+  synthetic_dataset_options.num_cameras_per_rig = 3;
+  synthetic_dataset_options.num_frames_per_rig = 2;
+  synthetic_dataset_options.num_points3D = 50;
+  synthetic_dataset_options.sensor_from_rig_rotation_stddev = 20.;
+  synthetic_dataset_options.two_view_geometry_has_relative_pose = true;
+  auto data = CreateTestData(synthetic_dataset_options);
+
+  std::vector<image_pair_t> frame_pair_edges;
+  for (const auto& [pair_id, edge] : data.pose_graph.ValidEdges()) {
+    const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
+    if (data.reconstruction.Image(image_id1).FrameId() !=
+        data.reconstruction.Image(image_id2).FrameId()) {
+      frame_pair_edges.push_back(pair_id);
+    }
+  }
+  ASSERT_GT(frame_pair_edges.size(), 2);
+
+  const image_pair_t outlier_pair_id = frame_pair_edges.front();
+  auto& outlier = data.pose_graph.Edges().at(outlier_pair_id);
+  const Eigen::Vector3d translation_before =
+      outlier.cam2_from_cam1.translation();
+  outlier.cam2_from_cam1.rotation() =
+      Eigen::AngleAxisd(DegToRad(30.), Eigen::Vector3d::UnitX()) *
+      outlier.cam2_from_cam1.rotation();
+  outlier.num_matches = 1;
+  std::unordered_map<image_pair_t, Eigen::Quaterniond> rotations_before;
+  for (const image_pair_t pair_id : frame_pair_edges) {
+    rotations_before.emplace(
+        pair_id, data.pose_graph.Edges().at(pair_id).cam2_from_cam1.rotation());
+  }
+
+  FilterFixedRigRotationOutliers(
+      data.pose_graph, data.reconstruction, /*max_rotation_error_deg=*/10.);
+
+  EXPECT_FALSE(data.pose_graph.IsValid(outlier_pair_id));
+  EXPECT_EQ(
+      data.pose_graph.Edges().at(outlier_pair_id).cam2_from_cam1.translation(),
+      translation_before);
+
+  for (const image_pair_t pair_id : frame_pair_edges) {
+    EXPECT_EQ(data.pose_graph.Edges().at(pair_id).cam2_from_cam1.rotation(),
+              rotations_before.at(pair_id));
+  }
+}
+
 TEST(RotationAveraging, WithoutNoiseWithNonTrivialUnknownRig) {
   SetPRNGSeed(1);
 

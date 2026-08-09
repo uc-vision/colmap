@@ -134,6 +134,12 @@ bool InitializeRigRotationsFromImages(
     Reconstruction& reconstruction,
     bool refine_sensor_from_rig = true);
 
+// Reject per-image relative rotations that disagree with the robust consensus
+// for their fixed-rig frame pair.
+void FilterFixedRigRotationOutliers(PoseGraph& pose_graph,
+                                    const Reconstruction& reconstruction,
+                                    double max_rotation_error_deg);
+
 // High-level rotation averaging solver that handles rig expansion.
 // For cameras with unknown cam_from_rig, first estimates their orientations
 // independently using an expanded reconstruction, then initializes the
