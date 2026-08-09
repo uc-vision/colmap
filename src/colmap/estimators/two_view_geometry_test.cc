@@ -1045,7 +1045,7 @@ TEST(MaybeDecomposeRelativePoses, Nominal) {
   EXPECT_FALSE(geometry_before.cam2_from_cam1.has_value());
 
   // Decompose poses - should update cache without throwing.
-  MaybeDecomposeRelativePoses(cache.get());
+  MaybeDecomposeRelativePoses(cache.get(), 2);
 
   // Verify the geometry was updated with a decomposed pose.
   TwoViewGeometry geometry_after = corr_graph->ExtractTwoViewGeometry(

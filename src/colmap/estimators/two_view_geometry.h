@@ -225,6 +225,7 @@ TwoViewGeometry TwoViewGeometryFromKnownRelativePose(
 // update the results in-memory. Skips pairs that already have a relative
 // pose or have invalid two-view geometries (UNDEFINED, DEGENERATE, WATERMARK,
 // MULTIPLE).
-void MaybeDecomposeRelativePoses(DatabaseCache* database_cache);
+void MaybeDecomposeRelativePoses(DatabaseCache* database_cache,
+                                 int num_threads = 1);
 
 }  // namespace colmap

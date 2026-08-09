@@ -42,6 +42,7 @@
 #include "colmap/optim/ransac.h"
 #include "colmap/scene/camera.h"
 #include "colmap/util/logging.h"
+#include "colmap/util/threading.h"
 #include "colmap/util/timer.h"
 
 #include <unordered_set>
@@ -1160,7 +1161,8 @@ bool MaybeFitMissingTwoViewGeometryMatrix(
 
 }  // namespace
 
-void MaybeDecomposeRelativePoses(DatabaseCache* database_cache) {
+void MaybeDecomposeRelativePoses(DatabaseCache* database_cache,
+                                 const int num_threads) {
   Timer timer;
   timer.Start();
   LOG(INFO) << "Decomposing relative poses...";
@@ -1169,8 +1171,15 @@ void MaybeDecomposeRelativePoses(DatabaseCache* database_cache) {
   const auto& images = database_cache->Images();
   auto correspondence_graph = database_cache->CorrespondenceGraph();
 
-  size_t decompose_count = 0;
-  size_t decompose_failed_count = 0;
+  struct Decomposition {
+    image_t image_id1;
+    image_t image_id2;
+    TwoViewGeometry geometry;
+    bool success = false;
+  };
+
+  std::vector<Decomposition> decompositions;
+  decompositions.reserve(correspondence_graph->NumImagePairs());
 
   for (const image_pair_t pair_id : correspondence_graph->ImagePairs()) {
     const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
@@ -1193,71 +1202,81 @@ void MaybeDecomposeRelativePoses(DatabaseCache* database_cache) {
       continue;
     }
 
-    if (two_view_geometry.inlier_matches.empty()) {
-      decompose_count++;
-      decompose_failed_count++;
-      continue;
-    }
+    decompositions.push_back(
+        {image_id1, image_id2, std::move(two_view_geometry)});
+  }
 
-    const Image& image1 = images.at(image_id1);
-    const Image& image2 = images.at(image_id2);
-    const Camera& camera1 = cameras.at(image1.CameraId());
-    const Camera& camera2 = cameras.at(image2.CameraId());
-
-    std::vector<Eigen::Vector2d> points1;
-    points1.reserve(image1.NumPoints2D());
-    for (const auto& point : image1.Points2D()) {
-      points1.push_back(point.xy);
-    }
-    std::vector<Eigen::Vector2d> points2;
-    points2.reserve(image2.NumPoints2D());
-    for (const auto& point : image2.Points2D()) {
-      points2.push_back(point.xy);
-    }
-
-    decompose_count++;
-
-    std::vector<Eigen::Vector3d> inlier_cam_rays1;
-    std::vector<Eigen::Vector3d> inlier_cam_rays2;
-    ExtractInlierCamRays(camera1,
-                         points1,
-                         camera2,
-                         points2,
-                         two_view_geometry.inlier_matches,
-                         &inlier_cam_rays1,
-                         &inlier_cam_rays2);
-
-    if (!MaybeFitMissingTwoViewGeometryMatrix(points1,
-                                              points2,
-                                              inlier_cam_rays1,
-                                              inlier_cam_rays2,
-                                              &two_view_geometry)) {
-      decompose_failed_count++;
-      continue;
-    }
-
-    const bool success =
-        EstimateTwoViewGeometryPoseFromCamRays(camera1,
-                                               camera2,
-                                               inlier_cam_rays1,
-                                               inlier_cam_rays2,
-                                               &two_view_geometry);
-
-    if (success && two_view_geometry.cam2_from_cam1.has_value()) {
-      const double norm =
-          two_view_geometry.cam2_from_cam1->translation().norm();
-      if (norm > 1e-12) {
-        two_view_geometry.cam2_from_cam1->translation() /= norm;
+  ThreadPool thread_pool(GetEffectiveNumThreads(num_threads));
+  for (size_t i = 0; i < decompositions.size(); ++i) {
+    thread_pool.AddTask([&cameras, &images, &decompositions, i]() {
+      Decomposition& decomposition = decompositions[i];
+      TwoViewGeometry& geometry = decomposition.geometry;
+      if (geometry.inlier_matches.empty()) {
+        return;
       }
-      correspondence_graph->UpdateTwoViewGeometry(
-          image_id1, image_id2, two_view_geometry);
+
+      const Image& image1 = images.at(decomposition.image_id1);
+      const Image& image2 = images.at(decomposition.image_id2);
+      const Camera& camera1 = cameras.at(image1.CameraId());
+      const Camera& camera2 = cameras.at(image2.CameraId());
+
+      std::vector<Eigen::Vector2d> points1;
+      points1.reserve(image1.NumPoints2D());
+      for (const auto& point : image1.Points2D()) {
+        points1.push_back(point.xy);
+      }
+      std::vector<Eigen::Vector2d> points2;
+      points2.reserve(image2.NumPoints2D());
+      for (const auto& point : image2.Points2D()) {
+        points2.push_back(point.xy);
+      }
+
+      std::vector<Eigen::Vector3d> inlier_cam_rays1;
+      std::vector<Eigen::Vector3d> inlier_cam_rays2;
+      ExtractInlierCamRays(camera1,
+                           points1,
+                           camera2,
+                           points2,
+                           geometry.inlier_matches,
+                           &inlier_cam_rays1,
+                           &inlier_cam_rays2);
+
+      if (!MaybeFitMissingTwoViewGeometryMatrix(points1,
+                                                points2,
+                                                inlier_cam_rays1,
+                                                inlier_cam_rays2,
+                                                &geometry)) {
+        return;
+      }
+
+      decomposition.success = EstimateTwoViewGeometryPoseFromCamRays(
+          camera1, camera2, inlier_cam_rays1, inlier_cam_rays2, &geometry);
+      if (!decomposition.success || !geometry.cam2_from_cam1.has_value()) {
+        decomposition.success = false;
+        return;
+      }
+
+      const double norm = geometry.cam2_from_cam1->translation().norm();
+      if (norm > 1e-12) {
+        geometry.cam2_from_cam1->translation() /= norm;
+      }
+    });
+  }
+  thread_pool.Wait();
+
+  size_t decompose_failed_count = 0;
+  for (const Decomposition& decomposition : decompositions) {
+    if (decomposition.success) {
+      correspondence_graph->UpdateTwoViewGeometry(decomposition.image_id1,
+                                                  decomposition.image_id2,
+                                                  decomposition.geometry);
     } else {
       decompose_failed_count++;
     }
   }
 
   LOG(INFO) << StringPrintf("Decomposed %d relative poses (%d failed) in %.3fs",
-                            decompose_count,
+                            decompositions.size(),
                             decompose_failed_count,
                             timer.ElapsedSeconds());
 }
