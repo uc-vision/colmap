@@ -121,7 +121,7 @@ void GlobalPipeline::Run() {
   Reconstruction& output_reconstruction =
       *reconstruction_manager_->Get(reconstruction_manager_->Add());
   output_reconstruction = *reconstruction;
-  if (!options_.image_path.empty()) {
+  if (options_.extract_colors && !options_.image_path.empty()) {
     LOG(INFO) << "Extracting colors ...";
     output_reconstruction.ExtractColorsForAllImages(options_.image_path,
                                                     options_.num_threads);
