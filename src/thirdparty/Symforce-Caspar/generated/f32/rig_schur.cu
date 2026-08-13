@@ -473,6 +473,12 @@ class RigSchurSolver::Impl {
       throw std::invalid_argument(
           "Rig Schur requires poses, points, and factors");
     }
+    const size_t max_generated_count =
+        std::numeric_limits<unsigned int>::max();
+    if (pose_num > max_generated_count || point_num > max_generated_count ||
+        factor_num_ > max_generated_count) {
+      throw std::invalid_argument("Rig Schur generated topology is too large");
+    }
 
     std::vector<size_t> point_factor_offsets(point_num + 1, 0);
     std::vector<char> active_pose_flags(pose_num, false);
