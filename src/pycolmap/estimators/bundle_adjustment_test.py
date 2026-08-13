@@ -31,6 +31,7 @@ def test_bundle_adjustment_backend_enum():
     } == {
         "CERES": 0,
         "CASPAR": 1,
+        "CASPAR_RIG_SCHUR": 2,
     }
     assert (
         pycolmap.BundleAdjustmentBackend("CASPAR")

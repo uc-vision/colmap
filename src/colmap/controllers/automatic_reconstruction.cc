@@ -60,6 +60,7 @@ AutomaticReconstructionController::AutomaticReconstructionController(
   THROW_CHECK_DIR_EXISTS(options_.workspace_path);
   THROW_CHECK_DIR_EXISTS(options_.image_path);
   THROW_CHECK_NOTNULL(reconstruction_manager_);
+  THROW_CHECK(options_.ba_backend != BundleAdjustmentBackend::CASPAR_RIG_SCHUR);
 
   option_manager_.AddAllOptions();
 
