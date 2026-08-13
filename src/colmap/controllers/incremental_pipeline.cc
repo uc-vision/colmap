@@ -284,6 +284,10 @@ bool IncrementalPipelineOptions::Check() const {
   CHECK_OPTION(ba_local_backend != BundleAdjustmentBackend::CASPAR);
   CHECK_OPTION(ba_global_backend != BundleAdjustmentBackend::CASPAR);
 #endif
+#if !defined(CASPAR_ENABLED) || defined(CASPAR_USE_DOUBLE)
+  CHECK_OPTION(ba_local_backend != BundleAdjustmentBackend::CASPAR_RIG_SCHUR);
+  CHECK_OPTION(ba_global_backend != BundleAdjustmentBackend::CASPAR_RIG_SCHUR);
+#endif
   CHECK_OPTION(Mapper().Check());
   CHECK_OPTION(Triangulation().Check());
   return true;

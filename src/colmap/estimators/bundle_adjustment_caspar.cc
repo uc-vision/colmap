@@ -14,13 +14,23 @@
 namespace colmap {
 namespace {
 
+enum class CasparSolverMode { STANDARD, RIG_SCHUR };
+
 class CasparBundleAdjuster : public BundleAdjuster {
  public:
   CasparBundleAdjuster(BundleAdjustmentOptions options,
                        BundleAdjustmentConfig config,
-                       Reconstruction& reconstruction)
-      : BundleAdjuster(options, config), reconstruction_(reconstruction) {
-    VLOG(1) << "Using Caspar bundle adjuster";
+                       Reconstruction& reconstruction,
+                       CasparSolverMode solver_mode)
+      : BundleAdjuster(options, config),
+        solver_mode_(solver_mode),
+        reconstruction_(reconstruction) {
+    if (solver_mode_ == CasparSolverMode::RIG_SCHUR) {
+      ValidateRigSchurContract();
+      VLOG(1) << "Using Caspar rig-Schur bundle adjuster";
+    } else {
+      VLOG(1) << "Using Caspar bundle adjuster";
+    }
 
     BuildObservationCounts();
     FixGauge();
@@ -28,7 +38,38 @@ class CasparBundleAdjuster : public BundleAdjuster {
   }
 
  private:
+  void ValidateRigSchurContract() const {
+#ifdef CASPAR_USE_DOUBLE
+    LOG(FATAL_THROW)
+        << "Caspar rig-Schur only supports the default float precision";
+#endif
+    if (options_.refine_focal_length || options_.refine_principal_point ||
+        options_.refine_extra_params) {
+      LOG(FATAL_THROW) << "Caspar rig-Schur requires fixed camera intrinsics";
+    }
+    if (options_.refine_sensor_from_rig) {
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur requires fixed sensor-from-rig poses";
+    }
+    if (!options_.refine_rig_from_world) {
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur requires variable rig-from-world poses";
+    }
+    if (!options_.refine_points3D) {
+      LOG(FATAL_THROW) << "Caspar rig-Schur requires variable 3D points";
+    }
+    if (options_.constant_rig_from_world_rotation) {
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur does not support fixed rig-frame rotations";
+    }
+  }
+
   ICasparModelAdapter* GetAdapter(const CameraModelId model_id) {
+    if (solver_mode_ == CasparSolverMode::RIG_SCHUR &&
+        model_id != CameraModelId::kPinhole) {
+      LOG(FATAL_THROW) << "Caspar rig-Schur only supports PINHOLE cameras";
+    }
+
     auto it = adapters_.find(model_id);
     if (it != adapters_.end()) {
       return it->second.get();
@@ -897,6 +938,43 @@ class CasparBundleAdjuster : public BundleAdjuster {
     return true;
   }
 
+#ifndef CASPAR_USE_DOUBLE
+  void SetupRigSchurTopology(caspar::GraphSolver& solver) const {
+    const ModelData& model_data =
+        model_data_per_model_.at(CameraModelId::kPinhole);
+    constexpr FactorVariant main_variant =
+        FactorVariant::FIXED_FOCAL_AND_EXTRA_FIXED_PRINCIPAL_POINT;
+    constexpr FactorVariant fixed_pose_variant =
+        FactorVariant::FIXED_POSE_FIXED_FOCAL_AND_EXTRA_FIXED_PRINCIPAL_POINT;
+    constexpr FactorVariant fixed_point_variant =
+        FactorVariant::FIXED_FOCAL_AND_EXTRA_FIXED_PRINCIPAL_POINT_FIXED_POINT;
+
+    for (int variant_index = 0; variant_index < CASPAR_NUM_VARIANTS;
+         ++variant_index) {
+      const FactorVariant variant = static_cast<FactorVariant>(variant_index);
+      if (model_data.variants[variant_index].num_factors > 0 &&
+          variant != main_variant && variant != fixed_pose_variant &&
+          variant != fixed_point_variant) {
+        LOG(FATAL_THROW)
+            << "Caspar rig-Schur received unsupported factor variant "
+            << FactorVariantName(variant);
+      }
+    }
+
+    const VariantData& main =
+        model_data.variants[static_cast<int>(main_variant)];
+    const VariantData& fixed_pose =
+        model_data.variants[static_cast<int>(fixed_pose_variant)];
+    const VariantData& fixed_point =
+        model_data.variants[static_cast<int>(fixed_point_variant)];
+    THROW_CHECK_EQ(main.pose_indices.size(), main.point_indices.size());
+    solver.SetRigSchurTopology(main.pose_indices,
+                               main.point_indices,
+                               fixed_pose.point_indices,
+                               fixed_point.pose_indices);
+  }
+#endif
+
   std::shared_ptr<BundleAdjustmentSummary> Solve() override {
     if (!ValidateData()) {
       auto summary = std::make_shared<BundleAdjustmentSummary>();
@@ -930,11 +1008,27 @@ class CasparBundleAdjuster : public BundleAdjuster {
     LogFactorDistribution();
 
     auto solver = CreateSolver(params, BuildSizing(), device_id);
+#ifndef CASPAR_USE_DOUBLE
+    if (solver_mode_ == CasparSolverMode::RIG_SCHUR) {
+      SetupRigSchurTopology(solver);
+    }
+#endif
     SetupSolverData(solver);
     const bool collect_iters =
         options_.caspar && options_.caspar->collect_iteration_data;
-    caspar::SolveResult result = solver.solve(
-        /*print_progress=*/false, /*verbose_logging=*/collect_iters);
+    caspar::SolveResult result;
+    if (solver_mode_ == CasparSolverMode::RIG_SCHUR) {
+#ifdef CASPAR_USE_DOUBLE
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur only supports the default float precision";
+#else
+      result = solver.solve_rig_schur(
+          /*print_progress=*/false, /*verbose_logging=*/collect_iters);
+#endif
+    } else {
+      result = solver.solve(
+          /*print_progress=*/false, /*verbose_logging=*/collect_iters);
+    }
     ReadSolverResults(solver);
     WriteResultsToReconstruction();
 
@@ -953,6 +1047,7 @@ class CasparBundleAdjuster : public BundleAdjuster {
   // (model_id, calib_idx) -> camera_id  (for write-back)
   std::map<std::pair<CameraModelId, size_t>, camera_t> calib_index_to_camera_;
 
+  CasparSolverMode solver_mode_;
   Reconstruction& reconstruction_;
   size_t num_points_ = 0;
   std::vector<StorageType> point3D_data_;
@@ -1014,7 +1109,15 @@ std::unique_ptr<BundleAdjuster> CreateDefaultCasparBundleAdjuster(
     const BundleAdjustmentConfig& config,
     Reconstruction& reconstruction) {
   return std::make_unique<CasparBundleAdjuster>(
-      options, config, reconstruction);
+      options, config, reconstruction, CasparSolverMode::STANDARD);
+}
+
+std::unique_ptr<BundleAdjuster> CreateDefaultCasparRigSchurBundleAdjuster(
+    const BundleAdjustmentOptions& options,
+    const BundleAdjustmentConfig& config,
+    Reconstruction& reconstruction) {
+  return std::make_unique<CasparBundleAdjuster>(
+      options, config, reconstruction, CasparSolverMode::RIG_SCHUR);
 }
 
 }  // namespace colmap

@@ -312,6 +312,27 @@ bool BundleAdjustmentOptions::Check() const {
   return THROW_CHECK_NOTNULL(ceres)->Check();
 }
 
+bool IsBundleAdjustmentBackendAvailable(
+    const BundleAdjustmentBackend backend) {
+  switch (backend) {
+    case BundleAdjustmentBackend::CERES:
+      return true;
+    case BundleAdjustmentBackend::CASPAR:
+#ifdef CASPAR_ENABLED
+      return true;
+#else
+      return false;
+#endif
+    case BundleAdjustmentBackend::CASPAR_RIG_SCHUR:
+#if defined(CASPAR_ENABLED) && !defined(CASPAR_USE_DOUBLE)
+      return true;
+#else
+      return false;
+#endif
+  }
+  return false;
+}
+
 std::unique_ptr<BundleAdjuster> CreateDefaultBundleAdjuster(
     const BundleAdjustmentOptions& options,
     const BundleAdjustmentConfig& config,
@@ -326,6 +347,17 @@ std::unique_ptr<BundleAdjuster> CreateDefaultBundleAdjuster(
       LOG(FATAL_THROW)
           << "Caspar BA backend selected but COLMAP was built without "
              "CASPAR_ENABLED; rebuild with -DCASPAR_ENABLED=ON to use it";
+      return nullptr;
+#endif
+    case BundleAdjustmentBackend::CASPAR_RIG_SCHUR:
+#ifdef CASPAR_ENABLED
+      return CreateDefaultCasparRigSchurBundleAdjuster(
+          options, config, reconstruction);
+#else
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur BA backend selected but COLMAP was built "
+             "without CASPAR_ENABLED; rebuild with -DCASPAR_ENABLED=ON to "
+             "use it";
       return nullptr;
 #endif
   }
@@ -391,6 +423,17 @@ std::unique_ptr<BundleAdjuster> CreatePosePriorBundleAdjuster(
       LOG(FATAL_THROW)
           << "Caspar BA backend selected but COLMAP was built without "
              "CASPAR_ENABLED; rebuild with -DCASPAR_ENABLED=ON to use it";
+#endif
+      return nullptr;
+    case BundleAdjustmentBackend::CASPAR_RIG_SCHUR:
+#ifdef CASPAR_ENABLED
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur BA backend does not support pose priors";
+#else
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur BA backend selected but COLMAP was built "
+             "without CASPAR_ENABLED; rebuild with -DCASPAR_ENABLED=ON to "
+             "use it";
 #endif
       return nullptr;
   }

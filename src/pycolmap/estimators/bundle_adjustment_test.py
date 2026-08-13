@@ -31,11 +31,19 @@ def test_bundle_adjustment_backend_enum():
     } == {
         "CERES": 0,
         "CASPAR": 1,
+        "CASPAR_RIG_SCHUR": 2,
     }
     assert (
         pycolmap.BundleAdjustmentBackend("CASPAR")
         == pycolmap.BundleAdjustmentBackend.CASPAR
     )
+
+
+def test_bundle_adjustment_backend_availability():
+    for backend in pycolmap.BundleAdjustmentBackend:
+        assert isinstance(
+            pycolmap.is_bundle_adjustment_backend_available(backend), bool
+        )
 
 
 def test_loss_function_type_enum():

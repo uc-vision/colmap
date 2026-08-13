@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
+#include "rig_schur.h"
 #include "shared_indices.h"
 #include "solver_params.h"
 #include <cuda_runtime.h>
@@ -192,6 +194,15 @@ class GraphSolver {
    * Run the solver.
    */
   SolveResult solve(bool print_progress = false, bool verbose_logging = false);
+
+  void SetRigSchurTopology(
+      const std::vector<unsigned int>& pose_indices,
+      const std::vector<unsigned int>& point_indices,
+      const std::vector<unsigned int>& fixed_pose_point_indices,
+      const std::vector<unsigned int>& fixed_point_pose_indices);
+
+  SolveResult solve_rig_schur(bool print_progress = false,
+                              bool verbose_logging = false);
 
   /**
    * Finish the indices.
@@ -4793,6 +4804,7 @@ class GraphSolver {
   float* solver__r_kp1_norm2_tot_;
   float* solver__pred_decrease_tot_;
   float* solver__res_tot_;
+  std::unique_ptr<RigSchurSolver> rig_schur_solver_;
 };
 
 }  // namespace caspar
