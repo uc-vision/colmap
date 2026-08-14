@@ -168,11 +168,31 @@ struct GeometricVerifierOptions {
   bool use_existing_relative_pose = false;
 };
 
+struct FixedRigGeometricVerificationOptions {
+  // Number of frame pairs to verify in parallel.
+  int num_threads = -1;
+
+  // Maximum number of camera-pair-balanced correspondences used to generate
+  // and score RANSAC hypotheses. The selected pose is subsequently scored on
+  // all frame-pair correspondences.
+  int max_num_ransac_matches = 4096;
+
+  bool Check() const;
+};
+
 // Perform geometric verification of existing matched image pairs.
 std::unique_ptr<Thread> CreateGeometricVerifier(
     const GeometricVerifierOptions& verifier_options,
     const ExistingMatchedPairingOptions& pairing_options,
     const TwoViewGeometryOptions& geometry_options,
     const std::filesystem::path& database_path);
+
+// Verify raw matches between fixed-rig frames without running image-pair
+// geometric verification first. Same-frame and singleton image-pair groups
+// are skipped.
+void RunFixedRigGeometricVerification(
+    const std::filesystem::path& database_path,
+    const FixedRigGeometricVerificationOptions& options,
+    const TwoViewGeometryOptions& geometry_options);
 
 }  // namespace colmap

@@ -38,10 +38,23 @@
 #include "colmap/util/misc.h"
 #include "colmap/util/timer.h"
 
+#include <atomic>
 #include <fstream>
 
 namespace colmap {
 namespace {
+
+enum class RigVerificationMethod {
+  STANDARD,
+  FIXED_RIG,
+};
+
+struct RigVerificationRunOptions {
+  RigVerificationMethod method = RigVerificationMethod::STANDARD;
+  int num_threads = -1;
+  int max_num_ransac_matches = 4096;
+  bool preserve_same_frame_geometry = false;
+};
 
 std::vector<std::pair<image_t, image_t>> IntraFrameImagePairs(
     const std::shared_ptr<FeatureMatcherCache>& cache) {
@@ -63,8 +76,12 @@ std::vector<std::pair<image_t, image_t>> IntraFrameImagePairs(
 void RigVerification(const std::shared_ptr<Database>& database,
                      const std::shared_ptr<FeatureMatcherCache>& cache,
                      const TwoViewGeometryOptions& geometry_options,
-                     const int num_threads,
-                     const bool preserve_same_frame_geometry) {
+                     const RigVerificationRunOptions& run_options) {
+  const bool fixed_rig = run_options.method == RigVerificationMethod::FIXED_RIG;
+  Timer timer;
+  if (fixed_rig) {
+    timer.Start();
+  }
   std::unordered_map<rig_t, Rig> rigs;
   for (auto& rig : database->ReadAllRigs()) {
     rigs[rig.RigId()] = std::move(rig);
@@ -80,40 +97,89 @@ void RigVerification(const std::shared_ptr<Database>& database,
   struct FramePairStats {
     int num_image_pairs = 0;
     int num_matches = 0;
+    int max_pair_matches = 0;
   };
 
-  std::map<std::pair<frame_t, frame_t>, FramePairStats> frame_pair_stats;
-  for (const auto& [image_pair_id, pair_num_matches] :
-       database->ReadNumMatches()) {
-    if (pair_num_matches == 0) {
-      continue;
+  const auto match_counts = database->ReadNumMatches();
+  std::unique_ptr<DatabaseTransaction> transaction;
+  if (fixed_rig) {
+    std::unordered_set<image_pair_t> cross_frame_geometry_ids;
+    auto add_cross_frame_geometry = [&](const image_pair_t image_pair_id) {
+      const auto [image_id1, image_id2] = PairIdToImagePair(image_pair_id);
+      if (image_to_frame_ids.at(image_id1) !=
+          image_to_frame_ids.at(image_id2)) {
+        cross_frame_geometry_ids.insert(image_pair_id);
+      }
+    };
+    for (const auto& [image_pair_id, _] : match_counts) {
+      add_cross_frame_geometry(image_pair_id);
     }
+    for (const auto& [image_pair_id, _] :
+         database->ReadTwoViewGeometryNumInliers()) {
+      add_cross_frame_geometry(image_pair_id);
+    }
+
+    transaction = std::make_unique<DatabaseTransaction>(database.get());
+    for (const image_pair_t image_pair_id : cross_frame_geometry_ids) {
+      const auto [image_id1, image_id2] = PairIdToImagePair(image_pair_id);
+      database->DeleteTwoViewGeometry(image_id1, image_id2);
+    }
+  }
+
+  std::map<std::pair<frame_t, frame_t>, FramePairStats> frame_pair_stats;
+  for (const auto& [image_pair_id, pair_num_matches] : match_counts) {
     const auto [image_id1, image_id2] = PairIdToImagePair(image_pair_id);
     frame_t frame_id1 = image_to_frame_ids.at(image_id1);
     frame_t frame_id2 = image_to_frame_ids.at(image_id2);
     if (frame_id1 > frame_id2) {
       std::swap(frame_id1, frame_id2);
     }
-    if (preserve_same_frame_geometry && frame_id1 == frame_id2) {
+    if (pair_num_matches == 0 ||
+        (run_options.preserve_same_frame_geometry && frame_id1 == frame_id2)) {
       continue;
     }
     auto& stats = frame_pair_stats[{frame_id1, frame_id2}];
     stats.num_image_pairs += 1;
     stats.num_matches += pair_num_matches;
+    if (fixed_rig) {
+      stats.max_pair_matches =
+          std::max(stats.max_pair_matches, pair_num_matches);
+    }
   }
 
-  ThreadPool thread_pool(num_threads);
+  size_t num_attempted = 0;
+  size_t num_singletons = 0;
+  size_t num_raw_matches = 0;
+  size_t num_ransac_matches = 0;
+  std::atomic<size_t> num_succeeded = 0;
+  std::atomic<size_t> num_inliers = 0;
+  ThreadPool thread_pool(run_options.num_threads);
   for (const auto& [frame_pair, stats] : frame_pair_stats) {
     // If the frame pair has only matches between one pair of images, then
     // there is no need to run rig verification, as there are no rig
     // constraints.
     if (stats.num_image_pairs <= 1 ||
         stats.num_matches < geometry_options.min_num_inliers) {
+      if (fixed_rig && stats.num_image_pairs <= 1) {
+        ++num_singletons;
+      }
       continue;
+    }
+    if (fixed_rig) {
+      ++num_attempted;
+      num_raw_matches += stats.num_matches;
+      if (stats.max_pair_matches >= 5) {
+        num_ransac_matches +=
+            std::min(stats.num_matches, run_options.max_num_ransac_matches);
+      }
     }
     thread_pool.AddTask([&cache,
                          &rigs,
                          geometry_options,
+                         run_options,
+                         fixed_rig,
+                         &num_succeeded,
+                         &num_inliers,
                          frame_id1 = frame_pair.first,
                          frame_id2 = frame_pair.second]() {
       const Frame& frame1 = cache->GetFrame(frame_id1);
@@ -155,22 +221,62 @@ void RigVerification(const std::shared_ptr<Database>& database,
               !cache->ExistsMatches(image_id1, image_id2)) {
             continue;
           }
-          matches.emplace_back(std::make_pair(image_id1, image_id2),
-                               cache->GetMatches(image_id1, image_id2));
+          FeatureMatches pair_matches = cache->GetMatches(image_id1, image_id2);
+          if (!pair_matches.empty() || !fixed_rig) {
+            matches.emplace_back(std::make_pair(image_id1, image_id2),
+                                 std::move(pair_matches));
+          }
         }
       }
 
-      for (const auto& [image_pair, two_view_geometry] :
-           EstimateRigTwoViewGeometries(
-               rig1, rig2, images, cameras, matches, geometry_options)) {
-        const auto& [image_id1, image_id2] = image_pair;
-        cache->DeleteTwoViewGeometry(image_id1, image_id2);
-        cache->WriteTwoViewGeometry(image_id1, image_id2, two_view_geometry);
+      const auto two_view_geometries =
+          fixed_rig
+              ? EstimateFixedRigTwoViewGeometries(
+                    rig1,
+                    rig2,
+                    images,
+                    cameras,
+                    matches,
+                    geometry_options,
+                    run_options.max_num_ransac_matches)
+              : EstimateRigTwoViewGeometries(
+                    rig1, rig2, images, cameras, matches, geometry_options);
+      if (fixed_rig) {
+        if (!two_view_geometries.empty()) {
+          ++num_succeeded;
+        }
+        for (const auto& [image_pair, two_view_geometry] :
+             two_view_geometries) {
+          const auto& [image_id1, image_id2] = image_pair;
+          num_inliers += two_view_geometry.inlier_matches.size();
+          cache->WriteTwoViewGeometry(image_id1, image_id2, two_view_geometry);
+        }
+      } else {
+        for (const auto& [image_pair, two_view_geometry] :
+             two_view_geometries) {
+          const auto& [image_id1, image_id2] = image_pair;
+          cache->DeleteTwoViewGeometry(image_id1, image_id2);
+          cache->WriteTwoViewGeometry(image_id1, image_id2, two_view_geometry);
+        }
       }
     });
   }
 
   thread_pool.Wait();
+  transaction.reset();
+  if (fixed_rig) {
+    LOG(INFO) << StringPrintf(
+        "Fixed-rig geometric verification: %zu/%zu multi-pair groups "
+        "succeeded, %zu singleton groups skipped, %zu raw correspondences, "
+        "%zu hypothesis correspondences, %zu inliers, %.3fs",
+        num_succeeded.load(),
+        num_attempted,
+        num_singletons,
+        num_raw_matches,
+        num_ransac_matches,
+        num_inliers.load(),
+        timer.ElapsedSeconds());
+  }
 }
 
 class FeatureMatcherThread : public Thread {
@@ -256,8 +362,10 @@ class FeatureMatcherThread : public Thread {
       RigVerification(database_,
                       cache_,
                       geometry_options_,
-                      matching_options_.num_threads,
-                      matching_options_.use_fixed_rig_geometry);
+                      {RigVerificationMethod::STANDARD,
+                       matching_options_.num_threads,
+                       4096,
+                       matching_options_.use_fixed_rig_geometry});
       run_timer.PrintMinutes();
     }
   }
@@ -339,8 +447,10 @@ class GeometricVerifierThread : public Thread {
       RigVerification(database_,
                       cache_,
                       geometry_options_,
-                      verifier_.Options().num_threads,
-                      false);
+                      {RigVerificationMethod::STANDARD,
+                       verifier_.Options().num_threads,
+                       4096,
+                       false});
       run_timer.PrintMinutes();
     }
 
@@ -577,6 +687,34 @@ std::unique_ptr<Thread> CreateGeometricVerifier(
     const std::filesystem::path& database_path) {
   return GeometricVerifierThread::Create<ExistingMatchedPairGenerator>(
       verifier_options, pairing_options, geometry_options, database_path);
+}
+
+bool FixedRigGeometricVerificationOptions::Check() const {
+  CHECK_OPTION_GE(num_threads, -1);
+  CHECK_OPTION_NE(num_threads, 0);
+  CHECK_OPTION_GE(max_num_ransac_matches, 6);
+  return true;
+}
+
+void RunFixedRigGeometricVerification(
+    const std::filesystem::path& database_path,
+    const FixedRigGeometricVerificationOptions& options,
+    const TwoViewGeometryOptions& geometry_options) {
+  THROW_CHECK_FILE_EXISTS(database_path);
+  THROW_CHECK(options.Check());
+  THROW_CHECK(geometry_options.Check());
+
+  auto database = Database::Open(database_path);
+  ExistingMatchedPairingOptions pairing_options;
+  auto cache = std::make_shared<FeatureMatcherCache>(
+      pairing_options.CacheSize(), database);
+  RigVerification(database,
+                  cache,
+                  geometry_options,
+                  {RigVerificationMethod::FIXED_RIG,
+                   options.num_threads,
+                   options.max_num_ransac_matches,
+                   true});
 }
 
 }  // namespace colmap

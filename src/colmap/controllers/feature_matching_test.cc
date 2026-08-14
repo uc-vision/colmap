@@ -511,6 +511,126 @@ TEST(CreateGeometricVerifier, RigVerificationWithTrivialFrames) {
                                /*num_expected_calibrated_rig=*/0);
 }
 
+TEST(RunFixedRigGeometricVerification, SoleCrossFrameVerifier) {
+  const auto test_dir = CreateTestDir();
+  const auto database_path = test_dir / "database.db";
+  auto database = Database::Open(database_path);
+
+  Reconstruction reconstruction;
+  SyntheticDatasetOptions synthetic_dataset_options;
+  synthetic_dataset_options.num_rigs = 1;
+  synthetic_dataset_options.num_cameras_per_rig = 3;
+  synthetic_dataset_options.num_frames_per_rig = 3;
+  synthetic_dataset_options.num_points3D = 50;
+  synthetic_dataset_options.match_config =
+      SyntheticDatasetOptions::MatchConfig::EXHAUSTIVE;
+  synthetic_dataset_options.camera_has_prior_focal_length = true;
+  SynthesizeDataset(synthetic_dataset_options, &reconstruction, database.get());
+
+  std::vector<frame_t> frame_ids;
+  for (const auto& [frame_id, _] : reconstruction.Frames()) {
+    frame_ids.push_back(frame_id);
+  }
+  std::sort(frame_ids.begin(), frame_ids.end());
+  ASSERT_EQ(frame_ids.size(), 3);
+
+  std::optional<std::pair<image_t, image_t>> same_frame_pair;
+  TwoViewGeometry same_frame_geometry;
+  std::optional<std::pair<image_t, image_t>> singleton_pair;
+  std::optional<std::pair<image_t, image_t>> orphan_geometry_pair;
+  std::vector<std::pair<image_t, image_t>> failed_group_pairs;
+  for (const auto& [pair_id, _] : database->ReadAllMatches()) {
+    const auto image_pair = PairIdToImagePair(pair_id);
+    frame_t frame_id1 = reconstruction.Image(image_pair.first).FrameId();
+    frame_t frame_id2 = reconstruction.Image(image_pair.second).FrameId();
+    if (frame_id1 > frame_id2) {
+      std::swap(frame_id1, frame_id2);
+    }
+    if (frame_id1 == frame_id2) {
+      if (!same_frame_pair.has_value()) {
+        same_frame_pair = image_pair;
+        same_frame_geometry =
+            database->ReadTwoViewGeometry(image_pair.first, image_pair.second);
+      }
+      continue;
+    }
+    if (frame_id1 == frame_ids[0] && frame_id2 == frame_ids[1]) {
+      continue;
+    }
+    if (frame_id1 == frame_ids[0] && frame_id2 == frame_ids[2] &&
+        !singleton_pair.has_value()) {
+      singleton_pair = image_pair;
+      continue;
+    }
+    if (frame_id1 == frame_ids[0] && frame_id2 == frame_ids[2] &&
+        !orphan_geometry_pair.has_value()) {
+      database->DeleteMatches(image_pair.first, image_pair.second);
+      orphan_geometry_pair = image_pair;
+      continue;
+    }
+    if (frame_id1 == frame_ids[1] && frame_id2 == frame_ids[2] &&
+        failed_group_pairs.size() < 2) {
+      database->DeleteMatches(image_pair.first, image_pair.second);
+      database->WriteMatches(image_pair.first,
+                             image_pair.second,
+                             FeatureMatches(3, FeatureMatch(0, 0)));
+      failed_group_pairs.push_back(image_pair);
+      continue;
+    }
+    database->DeleteMatches(image_pair.first, image_pair.second);
+    database->DeleteTwoViewGeometry(image_pair.first, image_pair.second);
+  }
+  ASSERT_TRUE(same_frame_pair.has_value());
+  ASSERT_TRUE(singleton_pair.has_value());
+  ASSERT_TRUE(orphan_geometry_pair.has_value());
+  ASSERT_EQ(failed_group_pairs.size(), 2);
+  ASSERT_TRUE(database->ExistsTwoViewGeometry(singleton_pair->first,
+                                              singleton_pair->second));
+  ASSERT_TRUE(database->ExistsTwoViewGeometry(orphan_geometry_pair->first,
+                                              orphan_geometry_pair->second));
+
+  FixedRigGeometricVerificationOptions verifier_options;
+  verifier_options.num_threads = 1;
+  verifier_options.max_num_ransac_matches = 64;
+  TwoViewGeometryOptions geometry_options;
+  geometry_options.min_num_inliers = 5;
+  geometry_options.ransac_options.random_seed = 42;
+  RunFixedRigGeometricVerification(
+      database_path, verifier_options, geometry_options);
+
+  EXPECT_FALSE(database->ExistsTwoViewGeometry(singleton_pair->first,
+                                               singleton_pair->second));
+  EXPECT_FALSE(database->ExistsTwoViewGeometry(orphan_geometry_pair->first,
+                                               orphan_geometry_pair->second));
+  for (const auto& image_pair : failed_group_pairs) {
+    EXPECT_FALSE(
+        database->ExistsTwoViewGeometry(image_pair.first, image_pair.second));
+  }
+  const TwoViewGeometry same_frame_geometry_after =
+      database->ReadTwoViewGeometry(same_frame_pair->first,
+                                    same_frame_pair->second);
+  EXPECT_EQ(same_frame_geometry_after.config, same_frame_geometry.config);
+  EXPECT_EQ(same_frame_geometry_after.inlier_matches,
+            same_frame_geometry.inlier_matches);
+  EXPECT_EQ(same_frame_geometry_after.cam2_from_cam1,
+            same_frame_geometry.cam2_from_cam1);
+  size_t num_same_frame = 0;
+  size_t num_verified_cross_frame = 0;
+  for (const auto& [pair_id, geometry] : database->ReadTwoViewGeometries()) {
+    const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
+    const frame_t frame_id1 = reconstruction.Image(image_id1).FrameId();
+    const frame_t frame_id2 = reconstruction.Image(image_id2).FrameId();
+    if (frame_id1 == frame_id2) {
+      ++num_same_frame;
+    } else {
+      EXPECT_EQ(geometry.config, TwoViewGeometry::CALIBRATED_RIG);
+      ++num_verified_cross_frame;
+    }
+  }
+  EXPECT_EQ(num_same_frame, 9);
+  EXPECT_EQ(num_verified_cross_frame, 9);
+}
+
 TEST(CreateGeometricVerifier, Guided) {
   const auto test_dir = CreateTestDir();
   const auto database_path = test_dir / "database.db";

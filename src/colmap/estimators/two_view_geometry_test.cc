@@ -889,6 +889,46 @@ TEST(EstimateRigTwoViewGeometries, Nominal) {
   }
 }
 
+TEST(EstimateFixedRigTwoViewGeometries, BoundedRansacScoresAllMatches) {
+  SyntheticDatasetOptions synthetic_dataset_options;
+  synthetic_dataset_options.num_rigs = 2;
+  synthetic_dataset_options.num_cameras_per_rig = 3;
+  synthetic_dataset_options.num_frames_per_rig = 1;
+  synthetic_dataset_options.num_points3D = 200;
+  synthetic_dataset_options.inlier_match_ratio = 1.0;
+  synthetic_dataset_options.camera_has_prior_focal_length = true;
+  const RigTwoViewGeometryTestData test_data =
+      CreateRigTwoViewGeometryTestData(synthetic_dataset_options);
+
+  TwoViewGeometryOptions options;
+  options.ransac_options.random_seed = 42;
+  constexpr size_t kMaxNumRansacMatches = 64;
+  const auto geometries =
+      EstimateFixedRigTwoViewGeometries(test_data.rig1,
+                                        test_data.rig2,
+                                        test_data.reconstruction.Images(),
+                                        test_data.reconstruction.Cameras(),
+                                        test_data.matches,
+                                        options,
+                                        kMaxNumRansacMatches);
+
+  ASSERT_EQ(geometries.size(), test_data.matches.size());
+  size_t num_inliers = 0;
+  for (const auto& [image_pair, geometry] : geometries) {
+    ASSERT_TRUE(geometry.cam2_from_cam1.has_value());
+    EXPECT_THAT(
+        *geometry.cam2_from_cam1,
+        Rigid3dNear(
+            test_data.reconstruction.Image(image_pair.second).CamFromWorld() *
+                Inverse(test_data.reconstruction.Image(image_pair.first)
+                            .CamFromWorld()),
+            /*rtol=*/1e-2,
+            /*ttol=*/1e-2));
+    num_inliers += geometry.inlier_matches.size();
+  }
+  EXPECT_GT(num_inliers, kMaxNumRansacMatches);
+}
+
 TEST(EstimateMultipleTwoViewGeometries, SingleGeometry) {
   SetPRNGSeed(1);
 
