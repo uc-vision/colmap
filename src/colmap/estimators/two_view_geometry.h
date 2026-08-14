@@ -126,6 +126,18 @@ struct TwoViewGeometryOptions {
   bool Check() const;
 };
 
+// Compact match data for one image pair between two fixed rigs. Point vectors
+// are match-aligned: element i corresponds to matches[i].
+struct FixedRigMatchedPair {
+  image_t image_id1 = kInvalidImageId;
+  image_t image_id2 = kInvalidImageId;
+  Camera camera1;
+  Camera camera2;
+  FeatureMatches matches;
+  std::vector<Eigen::Vector2d> points1;
+  std::vector<Eigen::Vector2d> points2;
+};
+
 // Estimate two-view geometry from calibrated or uncalibrated image pair,
 // depending on whether a prior focal length is given or not.
 //
@@ -168,6 +180,15 @@ EstimateRigTwoViewGeometries(
 // PoseLib's grouped 5+1 camera-pair sampler. RANSAC is run on a balanced,
 // bounded subset of the matches and the resulting pose is scored once over
 // all correspondences.
+std::vector<std::pair<std::pair<image_t, image_t>, TwoViewGeometry>>
+EstimateFixedRigTwoViewGeometries(const Rig& rig1,
+                                  const Rig& rig2,
+                                  const std::vector<FixedRigMatchedPair>& pairs,
+                                  const TwoViewGeometryOptions& options,
+                                  size_t max_num_ransac_matches);
+
+// Adapt image-indexed feature matches into compact fixed-rig match data and
+// estimate a common metric relative pose.
 std::vector<std::pair<std::pair<image_t, image_t>, TwoViewGeometry>>
 EstimateFixedRigTwoViewGeometries(
     const Rig& rig1,

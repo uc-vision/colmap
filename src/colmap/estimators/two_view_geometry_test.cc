@@ -41,6 +41,8 @@
 #include "colmap/scene/synthetic.h"
 #include "colmap/util/eigen_alignment.h"
 
+#include <future>
+
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 
@@ -903,18 +905,41 @@ TEST(EstimateFixedRigTwoViewGeometries, BoundedRansacScoresAllMatches) {
   TwoViewGeometryOptions options;
   options.ransac_options.random_seed = 42;
   constexpr size_t kMaxNumRansacMatches = 64;
-  const auto geometries =
-      EstimateFixedRigTwoViewGeometries(test_data.rig1,
-                                        test_data.rig2,
-                                        test_data.reconstruction.Images(),
-                                        test_data.reconstruction.Cameras(),
-                                        test_data.matches,
-                                        options,
-                                        kMaxNumRansacMatches);
+  std::vector<FixedRigMatchedPair> pairs;
+  pairs.reserve(test_data.matches.size());
+  for (const auto& [image_pair, matches] : test_data.matches) {
+    const Image& image1 = test_data.reconstruction.Image(image_pair.first);
+    const Image& image2 = test_data.reconstruction.Image(image_pair.second);
+    FixedRigMatchedPair pair;
+    pair.image_id1 = image_pair.first;
+    pair.image_id2 = image_pair.second;
+    pair.camera1 = test_data.reconstruction.Camera(image1.CameraId());
+    pair.camera2 = test_data.reconstruction.Camera(image2.CameraId());
+    pair.matches = matches;
+    pair.points1.reserve(matches.size());
+    pair.points2.reserve(matches.size());
+    for (const FeatureMatch& match : matches) {
+      pair.points1.push_back(image1.Point2D(match.point2D_idx1).xy);
+      pair.points2.push_back(image2.Point2D(match.point2D_idx2).xy);
+    }
+    pairs.push_back(std::move(pair));
+  }
+  auto concurrent_estimation = std::async(std::launch::async, [&]() {
+    return EstimateFixedRigTwoViewGeometries(
+        test_data.rig1, test_data.rig2, pairs, options, kMaxNumRansacMatches);
+  });
+  const auto geometries = EstimateFixedRigTwoViewGeometries(
+      test_data.rig1, test_data.rig2, pairs, options, kMaxNumRansacMatches);
+  const auto concurrent_geometries = concurrent_estimation.get();
 
   ASSERT_EQ(geometries.size(), test_data.matches.size());
+  ASSERT_EQ(concurrent_geometries.size(), geometries.size());
   size_t num_inliers = 0;
-  for (const auto& [image_pair, geometry] : geometries) {
+  for (size_t i = 0; i < geometries.size(); ++i) {
+    const auto& [image_pair, geometry] = geometries[i];
+    EXPECT_EQ(concurrent_geometries[i].first, image_pair);
+    EXPECT_EQ(concurrent_geometries[i].second.inlier_matches,
+              geometry.inlier_matches);
     ASSERT_TRUE(geometry.cam2_from_cam1.has_value());
     EXPECT_THAT(
         *geometry.cam2_from_cam1,
