@@ -43,6 +43,7 @@ set(ESTIMATORS_SRCS
     global_positioning.h global_positioning.cc
     gravity_refinement.h gravity_refinement.cc
     pose.h pose.cc
+    rig_calibration.h rig_calibration.cc
     rotation_averaging.h rotation_averaging.cc
     rotation_averaging_impl.h rotation_averaging_impl.cc
     triangulation.h triangulation.cc
@@ -129,6 +130,11 @@ COLMAP_ADD_TEST(
 COLMAP_ADD_TEST(
     NAME pose_test
     SRCS pose_test.cc
+    LINK_LIBS colmap_estimators
+)
+COLMAP_ADD_TEST(
+    NAME rig_calibration_test
+    SRCS rig_calibration_test.cc
     LINK_LIBS colmap_estimators
 )
 COLMAP_ADD_TEST(

@@ -121,6 +121,11 @@ CeresBundleAdjustmentOptions::CreateLossFunction() const {
 
 ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
     const BundleAdjustmentConfig& config, const ceres::Problem& problem) const {
+  return CreateSolverOptions(config.NumImages(), problem);
+}
+
+ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
+    const size_t num_images, const ceres::Problem& problem) const {
   ceres::Solver::Options custom_solver_options = solver_options;
   if (VLOG_IS_ON(2)) {
     custom_solver_options.minimizer_progress_to_stdout = true;
@@ -128,7 +133,6 @@ ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
         ceres::LoggingType::PER_MINIMIZER_ITERATION;
   }
 
-  const int num_images = config.NumImages();
   const bool has_sparse =
       custom_solver_options.sparse_linear_algebra_library_type !=
       ceres::NO_SPARSE;
@@ -141,7 +145,7 @@ ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
 #ifdef COLMAP_CUDA_ENABLED
   bool cuda_solver_enabled = false;
   const bool cuda_solver_requested =
-      use_gpu && num_images >= min_num_images_gpu_solver;
+      use_gpu && num_images >= static_cast<size_t>(min_num_images_gpu_solver);
   const bool use_cuda_solver = cuda_solver_requested && GetNumCudaDevices() > 0;
   if (cuda_solver_requested && !use_cuda_solver) {
     LOG_FIRST_N(WARNING, 1)
@@ -201,10 +205,11 @@ ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
 
   // Auto-select solver type based on problem size, unless disabled.
   if (auto_select_solver_type) {
-    if (num_images <= max_num_images_direct_dense_solver) {
+    if (num_images <= static_cast<size_t>(max_num_images_direct_dense_solver)) {
       custom_solver_options.linear_solver_type = ceres::DENSE_SCHUR;
     } else if (has_sparse &&
-               num_images <= max_num_images_direct_sparse_solver) {
+               num_images <=
+                   static_cast<size_t>(max_num_images_direct_sparse_solver)) {
       custom_solver_options.linear_solver_type = ceres::SPARSE_SCHUR;
     } else {  // Indirect sparse (preconditioned CG) solver.
       custom_solver_options.linear_solver_type = ceres::ITERATIVE_SCHUR;

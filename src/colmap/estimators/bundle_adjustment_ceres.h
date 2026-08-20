@@ -85,6 +85,10 @@ struct CeresBundleAdjustmentOptions {
       const BundleAdjustmentConfig& config,
       const ceres::Problem& problem) const;
 
+  // Create options tailored for a problem with the given number of images.
+  ceres::Solver::Options CreateSolverOptions(
+      size_t num_images, const ceres::Problem& problem) const;
+
   bool Check() const;
 };
 
