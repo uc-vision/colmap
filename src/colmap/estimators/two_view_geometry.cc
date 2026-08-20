@@ -715,49 +715,39 @@ poselib::RelativePoseOptions PoseLibRelativePoseOptions(
 }  // namespace
 
 std::vector<std::pair<std::pair<image_t, image_t>, TwoViewGeometry>>
-EstimateFixedRigTwoViewGeometries(
-    const Rig& rig1,
-    const Rig& rig2,
-    const std::unordered_map<image_t, Image>& images,
-    const std::unordered_map<camera_t, Camera>& cameras,
-    const std::vector<std::pair<std::pair<image_t, image_t>, FeatureMatches>>&
-        matches,
-    const TwoViewGeometryOptions& options,
-    const size_t max_num_ransac_matches) {
+EstimateFixedRigTwoViewGeometries(const Rig& rig1,
+                                  const Rig& rig2,
+                                  const std::vector<FixedRigMatchedPair>& pairs,
+                                  const TwoViewGeometryOptions& options,
+                                  const size_t max_num_ransac_matches) {
   THROW_CHECK(options.Check());
   THROW_CHECK_GE(max_num_ransac_matches, 6);
 
   PoseLibRig poselib_rig1;
   PoseLibRig poselib_rig2;
   std::vector<poselib::PairwiseMatches> pairwise_matches;
-  pairwise_matches.reserve(matches.size());
+  pairwise_matches.reserve(pairs.size());
 
   std::unordered_set<image_pair_t> image_pairs;
-  image_pairs.reserve(matches.size());
-  for (const auto& [image_pair, feature_matches] : matches) {
-    const auto& [image_id1, image_id2] = image_pair;
+  image_pairs.reserve(pairs.size());
+  for (const FixedRigMatchedPair& pair : pairs) {
     THROW_CHECK(
-        image_pairs.insert(ImagePairToPairId(image_id1, image_id2)).second)
+        image_pairs.insert(ImagePairToPairId(pair.image_id1, pair.image_id2))
+            .second)
         << "Duplicate image pair";
+    THROW_CHECK_EQ(pair.matches.size(), pair.points1.size());
+    THROW_CHECK_EQ(pair.matches.size(), pair.points2.size());
 
-    const Image& image1 = images.at(image_id1);
-    const Image& image2 = images.at(image_id2);
-    const Camera& camera1 = cameras.at(image1.CameraId());
-    const Camera& camera2 = cameras.at(image2.CameraId());
-    const size_t camera_idx1 = AddPoseLibCamera(rig1, camera1, &poselib_rig1);
-    const size_t camera_idx2 = AddPoseLibCamera(rig2, camera2, &poselib_rig2);
+    const size_t camera_idx1 =
+        AddPoseLibCamera(rig1, pair.camera1, &poselib_rig1);
+    const size_t camera_idx2 =
+        AddPoseLibCamera(rig2, pair.camera2, &poselib_rig2);
 
     poselib::PairwiseMatches pair_matches;
     pair_matches.cam_id1 = camera_idx1;
     pair_matches.cam_id2 = camera_idx2;
-    pair_matches.x1.reserve(feature_matches.size());
-    pair_matches.x2.reserve(feature_matches.size());
-    for (const FeatureMatch& match : feature_matches) {
-      const Eigen::Vector2d point1 = image1.Point2D(match.point2D_idx1).xy;
-      const Eigen::Vector2d point2 = image2.Point2D(match.point2D_idx2).xy;
-      pair_matches.x1.push_back(point1);
-      pair_matches.x2.push_back(point2);
-    }
+    pair_matches.x1 = pair.points1;
+    pair_matches.x2 = pair.points2;
     pairwise_matches.push_back(std::move(pair_matches));
   }
 
@@ -788,33 +778,31 @@ EstimateFixedRigTwoViewGeometries(
   size_t num_inliers = 0;
   std::vector<std::pair<std::pair<image_t, image_t>, TwoViewGeometry>>
       two_view_geometries;
-  two_view_geometries.reserve(matches.size());
-  for (const auto& [image_pair, pair_matches] : matches) {
-    const Image& image1 = images.at(image_pair.first);
-    const Image& image2 = images.at(image_pair.second);
-    const Camera& camera1 = cameras.at(image1.CameraId());
-    const Camera& camera2 = cameras.at(image2.CameraId());
-    const Rigid3d cam2_from_cam1 = CameraFromRig(rig2, camera2) *
+  two_view_geometries.reserve(pairs.size());
+  for (const FixedRigMatchedPair& pair : pairs) {
+    const Rigid3d cam2_from_cam1 = CameraFromRig(rig2, pair.camera2) *
                                    rig2_from_rig1 *
-                                   Inverse(CameraFromRig(rig1, camera1));
+                                   Inverse(CameraFromRig(rig1, pair.camera1));
     const Eigen::Matrix3d E = EssentialMatrixFromPose(cam2_from_cam1);
     const double max_error =
-        (camera1.CamFromImgThreshold(options.ransac_options.max_error) +
-         camera2.CamFromImgThreshold(options.ransac_options.max_error)) /
+        (pair.camera1.CamFromImgThreshold(options.ransac_options.max_error) +
+         pair.camera2.CamFromImgThreshold(options.ransac_options.max_error)) /
         2;
 
     TwoViewGeometry geometry;
     geometry.config = TwoViewGeometry::ConfigurationType::CALIBRATED_RIG;
-    for (const FeatureMatch& match : pair_matches) {
+    for (size_t i = 0; i < pair.matches.size(); ++i) {
       const Eigen::Vector3d ray1 =
-          camera1.CamRayFromImg(image1.Point2D(match.point2D_idx1).xy).value();
+          pair.camera1.CamRayFromImg(pair.points1[i]).value();
       const Eigen::Vector3d ray2 =
-          camera2.CamRayFromImg(image2.Point2D(match.point2D_idx2).xy).value();
+          pair.camera2.CamRayFromImg(pair.points2[i]).value();
       if (ComputeSquaredSampsonError(ray1, ray2, E) <= max_error * max_error) {
-        geometry.inlier_matches.push_back(match);
+        geometry.inlier_matches.push_back(pair.matches[i]);
       }
     }
     num_inliers += geometry.inlier_matches.size();
+    const std::pair<image_t, image_t> image_pair(pair.image_id1,
+                                                 pair.image_id2);
     if (geometry.inlier_matches.empty()) {
       two_view_geometries.emplace_back(image_pair, TwoViewGeometry());
     } else {
@@ -827,6 +815,39 @@ EstimateFixedRigTwoViewGeometries(
     return {};
   }
   return two_view_geometries;
+}
+
+std::vector<std::pair<std::pair<image_t, image_t>, TwoViewGeometry>>
+EstimateFixedRigTwoViewGeometries(
+    const Rig& rig1,
+    const Rig& rig2,
+    const std::unordered_map<image_t, Image>& images,
+    const std::unordered_map<camera_t, Camera>& cameras,
+    const std::vector<std::pair<std::pair<image_t, image_t>, FeatureMatches>>&
+        matches,
+    const TwoViewGeometryOptions& options,
+    const size_t max_num_ransac_matches) {
+  std::vector<FixedRigMatchedPair> pairs;
+  pairs.reserve(matches.size());
+  for (const auto& [image_pair, feature_matches] : matches) {
+    const Image& image1 = images.at(image_pair.first);
+    const Image& image2 = images.at(image_pair.second);
+    FixedRigMatchedPair pair;
+    pair.image_id1 = image_pair.first;
+    pair.image_id2 = image_pair.second;
+    pair.camera1 = cameras.at(image1.CameraId());
+    pair.camera2 = cameras.at(image2.CameraId());
+    pair.matches = feature_matches;
+    pair.points1.reserve(feature_matches.size());
+    pair.points2.reserve(feature_matches.size());
+    for (const FeatureMatch& match : feature_matches) {
+      pair.points1.push_back(image1.Point2D(match.point2D_idx1).xy);
+      pair.points2.push_back(image2.Point2D(match.point2D_idx2).xy);
+    }
+    pairs.push_back(std::move(pair));
+  }
+  return EstimateFixedRigTwoViewGeometries(
+      rig1, rig2, pairs, options, max_num_ransac_matches);
 }
 
 namespace {
