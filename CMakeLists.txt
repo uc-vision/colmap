@@ -490,6 +490,12 @@ endif()
 # Add unified interface library target to export.
 add_library(colmap INTERFACE)
 target_link_libraries(colmap INTERFACE ${COLMAP_EXPORT_LIBS})
+if(CASPAR_ENABLED)
+    target_compile_definitions(colmap INTERFACE CASPAR_ENABLED)
+    if(CASPAR_USE_DOUBLE)
+        target_compile_definitions(colmap INTERFACE CASPAR_USE_DOUBLE)
+    endif()
+endif()
 target_include_directories(
     colmap
     INTERFACE

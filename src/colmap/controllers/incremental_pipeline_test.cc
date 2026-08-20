@@ -37,6 +37,8 @@
 #include "colmap/scene/synthetic.h"
 #include "colmap/util/testing.h"
 
+#include <unordered_set>
+
 #include <gtest/gtest.h>
 
 namespace colmap {
@@ -535,7 +537,7 @@ TEST(IncrementalPipeline, PriorBasedSfMWithoutNoiseAndWithNonTrivialFrames) {
   // Match the common rig setup where only the reference sensor has absolute
   // positions. Registering two frames then yields many images but only two
   // usable pose priors.
-  FlatHashSet<sensor_t> ref_sensor_ids;
+  std::unordered_set<sensor_t> ref_sensor_ids;
   for (const auto& [_, rig] : gt_reconstruction.Rigs()) {
     ref_sensor_ids.insert(rig.RefSensorId());
   }
