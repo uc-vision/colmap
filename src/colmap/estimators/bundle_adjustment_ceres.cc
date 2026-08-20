@@ -120,6 +120,11 @@ CeresBundleAdjustmentOptions::CreateLossFunction() const {
 
 ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
     const BundleAdjustmentConfig& config, const ceres::Problem& problem) const {
+  return CreateSolverOptions(config.NumImages(), problem);
+}
+
+ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
+    const size_t num_images, const ceres::Problem& problem) const {
   ceres::Solver::Options custom_solver_options = solver_options;
   if (VLOG_IS_ON(2)) {
     custom_solver_options.minimizer_progress_to_stdout = true;
@@ -127,7 +132,6 @@ ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
         ceres::LoggingType::PER_MINIMIZER_ITERATION;
   }
 
-  const int num_images = config.NumImages();
   const bool has_sparse =
       custom_solver_options.sparse_linear_algebra_library_type !=
       ceres::NO_SPARSE;
@@ -143,7 +147,7 @@ ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
 #if (CERES_VERSION_MAJOR >= 3 ||                                \
      (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2)) && \
     !defined(CERES_NO_CUDA)
-  if (use_gpu && num_images >= min_num_images_gpu_solver) {
+  if (use_gpu && num_images >= static_cast<size_t>(min_num_images_gpu_solver)) {
     cuda_solver_enabled = true;
     custom_solver_options.dense_linear_algebra_library_type = ceres::CUDA;
     max_num_images_direct_dense_solver = max_num_images_direct_dense_gpu_solver;
@@ -160,7 +164,7 @@ ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
 #if (CERES_VERSION_MAJOR >= 3 ||                                \
      (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 3)) && \
     !defined(CERES_NO_CUDSS)
-  if (use_gpu && num_images >= min_num_images_gpu_solver) {
+  if (use_gpu && num_images >= static_cast<size_t>(min_num_images_gpu_solver)) {
     cuda_solver_enabled = true;
     custom_solver_options.sparse_linear_algebra_library_type =
         ceres::CUDA_SPARSE;
@@ -192,10 +196,11 @@ ceres::Solver::Options CeresBundleAdjustmentOptions::CreateSolverOptions(
 
   // Auto-select solver type based on problem size, unless disabled.
   if (auto_select_solver_type) {
-    if (num_images <= max_num_images_direct_dense_solver) {
+    if (num_images <= static_cast<size_t>(max_num_images_direct_dense_solver)) {
       custom_solver_options.linear_solver_type = ceres::DENSE_SCHUR;
     } else if (has_sparse &&
-               num_images <= max_num_images_direct_sparse_solver) {
+               num_images <=
+                   static_cast<size_t>(max_num_images_direct_sparse_solver)) {
       custom_solver_options.linear_solver_type = ceres::SPARSE_SCHUR;
     } else {  // Indirect sparse (preconditioned CG) solver.
       custom_solver_options.linear_solver_type = ceres::ITERATIVE_SCHUR;

@@ -193,7 +193,9 @@ void BindBundleAdjuster(py::module& m) {
           .def(py::init<>())
           .def("create_loss_function", &CeresBAOpts::CreateLossFunction)
           .def("create_solver_options",
-               &CeresBAOpts::CreateSolverOptions,
+               py::overload_cast<const BundleAdjustmentConfig&,
+                                 const ceres::Problem&>(
+                   &CeresBAOpts::CreateSolverOptions, py::const_),
                "config"_a,
                "problem"_a)
           .def_readwrite("loss_function_type",
