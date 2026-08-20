@@ -91,6 +91,9 @@ BundleAdjustmentWidget::BundleAdjustmentWidget(MainWindow* main_window,
   backend_combo->addItem("CERES");  // index 0 == BundleAdjustmentBackend::CERES
   backend_combo->addItem(
       "CASPAR");  // index 1 == BundleAdjustmentBackend::CASPAR
+#ifndef CASPAR_USE_DOUBLE
+  backend_combo->addItem("CASPAR_RIG_SCHUR");  // index 2 == CASPAR_RIG_SCHUR
+#endif
   backend_combo->setCurrentIndex(
       static_cast<int>(options->bundle_adjustment->backend));
   connect(backend_combo,
@@ -106,7 +109,7 @@ BundleAdjustmentWidget::BundleAdjustmentWidget(MainWindow* main_window,
                 "gpu_index (-1 = auto)");
 
   const bool caspar_active =
-      options->bundle_adjustment->backend == BundleAdjustmentBackend::CASPAR;
+      options->bundle_adjustment->backend != BundleAdjustmentBackend::CERES;
   if (!caspar_active) {
     HideOption(&options->bundle_adjustment->caspar->gpu_index);
   }
@@ -114,8 +117,8 @@ BundleAdjustmentWidget::BundleAdjustmentWidget(MainWindow* main_window,
   connect(backend_combo,
           QOverload<int>::of(&QComboBox::currentIndexChanged),
           [this, options](int idx) {
-            const bool is_caspar = static_cast<BundleAdjustmentBackend>(idx) ==
-                                   BundleAdjustmentBackend::CASPAR;
+            const bool is_caspar = static_cast<BundleAdjustmentBackend>(idx) !=
+                                   BundleAdjustmentBackend::CERES;
             if (is_caspar) {
               ShowOption(&options->bundle_adjustment->caspar->gpu_index);
             } else {

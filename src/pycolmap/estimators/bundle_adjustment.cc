@@ -113,8 +113,12 @@ void BindBundleAdjuster(py::module& m) {
   auto PyBundleAdjustmentBackend =
       py::enum_<BundleAdjustmentBackend>(m, "BundleAdjustmentBackend")
           .value("CERES", BundleAdjustmentBackend::CERES)
-          .value("CASPAR", BundleAdjustmentBackend::CASPAR);
+          .value("CASPAR", BundleAdjustmentBackend::CASPAR)
+          .value("CASPAR_RIG_SCHUR", BundleAdjustmentBackend::CASPAR_RIG_SCHUR);
   AddStringToEnumConstructor(PyBundleAdjustmentBackend);
+  m.def("is_bundle_adjustment_backend_available",
+        &IsBundleAdjustmentBackendAvailable,
+        "backend"_a);
 
   using BACfg = BundleAdjustmentConfig;
   py::classh<BACfg> PyBundleAdjustmentConfig(m, "BundleAdjustmentConfig");

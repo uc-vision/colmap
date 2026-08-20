@@ -232,6 +232,7 @@ void BindSfM(py::module& m) {
             .def_readwrite("min_num_matches", &Opts::min_num_matches)
             .def_readwrite("ignore_watermarks", &Opts::ignore_watermarks)
             .def_readwrite("image_names", &Opts::image_names)
+            .def_readwrite("extract_colors", &Opts::extract_colors)
             .def_readwrite("num_threads", &Opts::num_threads)
             .def_readwrite("random_seed", &Opts::random_seed)
             .def_readwrite("decompose_relative_pose",

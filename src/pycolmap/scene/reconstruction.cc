@@ -17,8 +17,10 @@
 #include <filesystem>
 #include <memory>
 #include <sstream>
+#include <vector>
 
 #include <pybind11/eigen.h>
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
@@ -26,6 +28,47 @@
 using namespace colmap;
 using namespace pybind11::literals;
 namespace py = pybind11;
+
+py::dict TrackArrays(const Reconstruction& reconstruction) {
+  const ssize_t num_points = static_cast<ssize_t>(reconstruction.NumPoints3D());
+  const ssize_t num_observations =
+      static_cast<ssize_t>(reconstruction.ComputeNumObservations());
+  py::array_t<int64_t> point3D_ids(num_points);
+  py::array_t<int64_t> observation_offsets(num_points + 1);
+  py::array_t<image_t> observation_image_ids(num_observations);
+  py::array_t<float> observation_xy(std::vector<ssize_t>{num_observations, 2});
+
+  int64_t* point3D_ids_ptr = point3D_ids.mutable_data();
+  int64_t* observation_offsets_ptr = observation_offsets.mutable_data();
+  image_t* observation_image_ids_ptr = observation_image_ids.mutable_data();
+  float* observation_xy_ptr = observation_xy.mutable_data();
+
+  {
+    py::gil_scoped_release release;
+    ssize_t point_index = 0;
+    ssize_t observation_index = 0;
+    observation_offsets_ptr[0] = 0;
+    for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
+      point3D_ids_ptr[point_index] = static_cast<int64_t>(point3D_id);
+      for (const TrackElement& element : point3D.track.Elements()) {
+        const Eigen::Vector2d& xy = reconstruction.Image(element.image_id)
+                                        .Point2D(element.point2D_idx)
+                                        .xy;
+        observation_image_ids_ptr[observation_index] = element.image_id;
+        observation_xy_ptr[2 * observation_index] = static_cast<float>(xy.x());
+        observation_xy_ptr[2 * observation_index + 1] =
+            static_cast<float>(xy.y());
+        ++observation_index;
+      }
+      observation_offsets_ptr[++point_index] = observation_index;
+    }
+  }
+
+  return py::dict("point3D_ids"_a = std::move(point3D_ids),
+                  "observation_offsets"_a = std::move(observation_offsets),
+                  "observation_image_ids"_a = std::move(observation_image_ids),
+                  "observation_xy"_a = std::move(observation_xy));
+}
 
 void BindReconstruction(py::module& m) {
   py::classh<Reconstruction>(m, "Reconstruction")
@@ -99,6 +142,10 @@ void BindReconstruction(py::module& m) {
       .def("reg_image_ids", &Reconstruction::RegImageIds)
       .def("reg_frame_ids", &Reconstruction::RegFrameIds)
       .def("point3D_ids", &Reconstruction::Point3DIds)
+      .def("track_arrays",
+           &TrackArrays,
+           "Export point tracks as contiguous NumPy arrays without creating "
+           "Python objects per observation.")
       .def("exists_rig", &Reconstruction::ExistsRig, "rig_id"_a)
       .def("exists_camera", &Reconstruction::ExistsCamera, "camera_id"_a)
       .def("exists_frame", &Reconstruction::ExistsFrame, "frame_id"_a)

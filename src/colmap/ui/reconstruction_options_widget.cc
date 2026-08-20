@@ -159,6 +159,9 @@ class MapperBundleAdjustmentOptionsWidget : public OptionsWidget {
       auto* backend_combo = new QComboBox(this);
       backend_combo->addItem("CERES");
       backend_combo->addItem("CASPAR");
+#ifndef CASPAR_USE_DOUBLE
+      backend_combo->addItem("CASPAR_RIG_SCHUR");
+#endif
       backend_combo->setCurrentIndex(
           static_cast<int>(options->mapper->ba_local_backend));
       connect(backend_combo,
@@ -179,6 +182,9 @@ class MapperBundleAdjustmentOptionsWidget : public OptionsWidget {
       auto* backend_combo = new QComboBox(this);
       backend_combo->addItem("CERES");
       backend_combo->addItem("CASPAR");
+#ifndef CASPAR_USE_DOUBLE
+      backend_combo->addItem("CASPAR_RIG_SCHUR");
+#endif
       backend_combo->setCurrentIndex(
           static_cast<int>(options->mapper->ba_global_backend));
       connect(backend_combo,

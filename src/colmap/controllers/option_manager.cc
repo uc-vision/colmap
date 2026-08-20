@@ -742,6 +742,8 @@ void OptionManager::AddGlobalMapperOptions() {
                    &global_mapper->min_num_matches);
   AddDefaultOption("GlobalMapper.ignore_watermarks",
                    &global_mapper->ignore_watermarks);
+  AddDefaultOption("GlobalMapper.extract_colors",
+                   &global_mapper->extract_colors);
   AddDefaultOption("GlobalMapper.num_threads", &global_mapper->num_threads);
   AddDefaultOption("GlobalMapper.random_seed", &global_mapper->random_seed);
   AddDefaultOption("GlobalMapper.decompose_relative_pose",

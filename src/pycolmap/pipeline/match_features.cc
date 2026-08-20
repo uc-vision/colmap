@@ -83,6 +83,15 @@ void GeometricVerification(const std::filesystem::path& database_path,
   PyWait(verifier.get());
 }
 
+void FixedRigGeometricVerification(
+    const std::filesystem::path& database_path,
+    const FixedRigGeometricVerificationOptions& options,
+    const TwoViewGeometryOptions& geometry_options) {
+  THROW_CHECK_FILE_EXISTS(database_path);
+  py::gil_scoped_release release;
+  RunFixedRigGeometricVerification(database_path, options, geometry_options);
+}
+
 void GuidedGeometricVerification(
     const Reconstruction& reconstruction,
     const std::filesystem::path& database_path,
@@ -256,6 +265,18 @@ void BindMatchFeatures(py::module& m) {
                          &GeometricVerifierOptions::use_existing_relative_pose);
   MakeDataclass(PyGeometricVerifierOptions);
 
+  auto PyFixedRigGeometricVerificationOptions =
+      py::classh<FixedRigGeometricVerificationOptions>(
+          m, "FixedRigGeometricVerificationOptions")
+          .def(py::init<>())
+          .def_readwrite("num_threads",
+                         &FixedRigGeometricVerificationOptions::num_threads)
+          .def_readwrite(
+              "max_num_ransac_matches",
+              &FixedRigGeometricVerificationOptions::max_num_ransac_matches)
+          .def("check", &FixedRigGeometricVerificationOptions::Check);
+  MakeDataclass(PyFixedRigGeometricVerificationOptions);
+
   m.def(
       "match_exhaustive",
       &MatchFeatures<ExhaustivePairingOptions, CreateExhaustiveFeatureMatcher>,
@@ -354,6 +375,17 @@ void BindMatchFeatures(py::module& m) {
                   TwoViewGeometryOptions(),
                   "TwoViewGeometryOptions()"),
         "Run geometric verification on all image pairs in the database");
+
+  m.def("fixed_rig_geometric_verification",
+        &FixedRigGeometricVerification,
+        "database_path"_a,
+        py::arg_v("options",
+                  FixedRigGeometricVerificationOptions(),
+                  "FixedRigGeometricVerificationOptions()"),
+        py::arg_v("two_view_geometry_options",
+                  TwoViewGeometryOptions(),
+                  "TwoViewGeometryOptions()"),
+        "Run sole generalized geometric verification on fixed-rig frame pairs");
 
   m.def("guided_geometric_verification",
         &GuidedGeometricVerification,

@@ -1,12 +1,15 @@
 #include "colmap/estimators/global_positioning.h"
 
 #include "colmap/estimators/cost_functions/motion_averaging.h"
+#include "colmap/math/math.h"
 #include "colmap/math/random.h"
 #include "colmap/util/cuda.h"
 #include "colmap/util/misc.h"
 #include "colmap/util/threading.h"
 
 #include <algorithm>
+#include <queue>
+#include <tuple>
 
 #include <Eigen/Cholesky>
 #include <Eigen/SVD>
@@ -20,10 +23,37 @@ Eigen::Vector3d RandVector3d(double low, double high) {
                          RandomUniformReal(low, high));
 }
 
+struct FixedRigFramePositionCostFunctor {
+  explicit FixedRigFramePositionCostFunctor(
+      const Eigen::Vector3d& center2_from_center1, double weight)
+      : center2_from_center1_(center2_from_center1), weight_(weight) {}
+
+  template <typename T>
+  bool operator()(const T* center1, const T* center2, T* residuals) const {
+    Eigen::Map<Eigen::Matrix<T, 3, 1>> residuals_vector(residuals);
+    residuals_vector =
+        T(weight_) * (Eigen::Map<const Eigen::Matrix<T, 3, 1>>(center2) -
+                      Eigen::Map<const Eigen::Matrix<T, 3, 1>>(center1) -
+                      center2_from_center1_.cast<T>());
+    return true;
+  }
+
+  static ceres::CostFunction* Create(
+      const Eigen::Vector3d& center2_from_center1, double weight) {
+    return new ceres::
+        AutoDiffCostFunction<FixedRigFramePositionCostFunctor, 3, 3, 3>(
+            new FixedRigFramePositionCostFunctor(center2_from_center1, weight));
+  }
+
+  const Eigen::Vector3d center2_from_center1_;
+  const double weight_;
+};
+
 }  // namespace
 
-GlobalPositioner::GlobalPositioner(const GlobalPositionerOptions& options)
-    : options_(options) {
+GlobalPositioner::GlobalPositioner(const GlobalPositionerOptions& options,
+                                   double min_tri_angle_deg)
+    : options_(options), min_tri_angle_deg_(min_tri_angle_deg) {
   if (options_.random_seed >= 0) {
     SetPRNGSeed(static_cast<unsigned>(options_.random_seed));
   }
@@ -47,6 +77,11 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
   }
 
   LOG(INFO) << "Setting up the global positioner problem";
+  options_.solver_options.num_threads =
+      GetEffectiveNumThreads(options_.solver_options.num_threads);
+
+  Timer stage_timer;
+  stage_timer.Start();
 
   // Setup the problem.
   SetupProblem(pose_graph, reconstruction);
@@ -54,15 +89,43 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
   // Initialize camera translations to be random.
   // Also, convert the camera pose translation to be the camera center.
   InitializeRandomPositions(pose_graph, reconstruction, pose_priors);
+  LOG(INFO) << "Global positioner initialization done in "
+            << stage_timer.ElapsedSeconds() << " seconds";
+
+  if (fixed_rig_positioning_ && options_.optimize_positions &&
+      options_.optimize_points) {
+    std::vector<FixedRigFrameConstraint> constraints;
+    stage_timer.Restart();
+    if (BuildFixedRigFrameConstraints(reconstruction, constraints)) {
+      LOG(INFO) << "Fixed-rig frame constraints built in "
+                << stage_timer.ElapsedSeconds() << " seconds ("
+                << constraints.size() << " constraints)";
+      return SolveFixedRigFramePositions(reconstruction, constraints);
+    }
+    LOG(INFO)
+        << "Fixed-rig frame constraints did not cover the reconstruction; "
+           "using observation-level positioning";
+  }
 
   if (pose_prior_initialization_) {
+    stage_timer.Restart();
     ConvertBackResults(reconstruction);
     RefineFixedRigPoints(reconstruction);
+    LOG(INFO) << "Initial fixed-rig point refinement done in "
+              << stage_timer.ElapsedSeconds() << " seconds";
   }
 
   // Add the point to camera constraints to the problem.
+  stage_timer.Restart();
   AddPointToCameraConstraints(reconstruction);
+  LOG(INFO) << "Global positioner residual construction done in "
+            << stage_timer.ElapsedSeconds() << " seconds ("
+            << problem_->NumResidualBlocks() << " residuals, "
+            << problem_->NumParameterBlocks() << " parameter blocks, "
+            << frame_centers_.size() << " frames, "
+            << options_.solver_options.num_threads << " threads)";
 
+  stage_timer.Restart();
   if (options_.use_parameter_block_ordering) {
     AddCamerasAndPointsToParameterGroups(reconstruction);
   }
@@ -70,14 +133,17 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
   // Parameterize the variables, set image poses / tracks / scales to be
   // constant if desired
   ParameterizeVariables(reconstruction);
+  LOG(INFO) << "Global positioner parameterization done in "
+            << stage_timer.ElapsedSeconds() << " seconds";
 
   LOG(INFO) << "Solving the global positioner problem";
 
   ceres::Solver::Summary summary;
-  options_.solver_options.num_threads =
-      GetEffectiveNumThreads(options_.solver_options.num_threads);
   options_.solver_options.minimizer_progress_to_stdout = VLOG_IS_ON(2);
+  stage_timer.Restart();
   ceres::Solve(options_.solver_options, problem_.get(), &summary);
+  LOG(INFO) << "Global positioner Ceres solve done in "
+            << stage_timer.ElapsedSeconds() << " seconds";
 
   if (VLOG_IS_ON(2)) {
     LOG(INFO) << summary.FullReport();
@@ -85,9 +151,15 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
     LOG(INFO) << summary.BriefReport();
   }
 
+  stage_timer.Restart();
   ConvertBackResults(reconstruction);
+  LOG(INFO) << "Global positioner result conversion done in "
+            << stage_timer.ElapsedSeconds() << " seconds";
   if (fixed_rig_positioning_) {
+    stage_timer.Restart();
     RefineFixedRigPoints(reconstruction);
+    LOG(INFO) << "Final fixed-rig point refinement done in "
+              << stage_timer.ElapsedSeconds() << " seconds";
   }
   return summary.IsSolutionUsable();
 }
@@ -442,30 +514,313 @@ void GlobalPositioner::AddCamerasAndPointsToParameterGroups(
 }
 
 void GlobalPositioner::RefineFixedRigPoints(Reconstruction& reconstruction) {
+  std::vector<point3D_t> point3D_ids;
+  point3D_ids.reserve(reconstruction.NumPoints3D());
+  for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
+    if (point3D.track.Length() <
+        static_cast<size_t>(options_.min_num_view_per_track)) {
+      continue;
+    }
+    point3D_ids.push_back(point3D_id);
+  }
+  std::sort(point3D_ids.begin(), point3D_ids.end());
+
+  std::vector<Eigen::Vector3d> refined_points(point3D_ids.size());
+  const int num_threads = options_.solver_options.num_threads;
+  const size_t chunk_size =
+      (point3D_ids.size() + num_threads - 1) / num_threads;
+  const Reconstruction& source = reconstruction;
+  ThreadPool thread_pool(num_threads);
+  for (size_t chunk_begin = 0; chunk_begin < point3D_ids.size();
+       chunk_begin += chunk_size) {
+    const size_t chunk_end =
+        std::min(chunk_begin + chunk_size, point3D_ids.size());
+    thread_pool.AddTask([&, chunk_begin, chunk_end]() {
+      for (size_t point_index = chunk_begin; point_index < chunk_end;
+           ++point_index) {
+        const Point3D& point3D = source.Point3D(point3D_ids[point_index]);
+
+        Eigen::Matrix3d normal_matrix = Eigen::Matrix3d::Zero();
+        Eigen::Vector3d right_hand_side = Eigen::Vector3d::Zero();
+        for (const TrackElement& observation : point3D.track.Elements()) {
+          const Image& image = source.Image(observation.image_id);
+          const Eigen::Vector3d cam_ray =
+              image.CameraPtr()
+                  ->CamRayFromImg(image.Point2D(observation.point2D_idx).xy)
+                  .value();
+          const Eigen::Vector3d world_ray =
+              image.CamFromWorld().rotation().inverse() * cam_ray;
+          const Eigen::Matrix3d ray_projection =
+              Eigen::Matrix3d::Identity() - world_ray * world_ray.transpose();
+          normal_matrix += ray_projection;
+          right_hand_side += ray_projection * image.ProjectionCenter();
+        }
+        refined_points[point_index] =
+            normal_matrix.ldlt().solve(right_hand_side);
+      }
+    });
+  }
+  thread_pool.Wait();
+
+  for (size_t point_index = 0; point_index < point3D_ids.size();
+       ++point_index) {
+    reconstruction.Point3D(point3D_ids[point_index]).xyz =
+        refined_points[point_index];
+  }
+}
+
+bool GlobalPositioner::BuildFixedRigFrameConstraints(
+    const Reconstruction& reconstruction,
+    std::vector<FixedRigFrameConstraint>& constraints) const {
+  struct RigObservation {
+    frame_t frame_id;
+    image_t image_id;
+    point2D_t point2D_idx;
+    Eigen::Vector3d center;
+    Eigen::Vector3d bearing;
+  };
+  struct RigPoint {
+    frame_t frame_id;
+    Eigen::Vector3d xyz;
+  };
+
+  std::unordered_map<frame_t, std::vector<frame_t>> adjacency;
+  adjacency.reserve(frame_centers_.size());
+  const double minimum_cosine = std::cos(DegToRad(min_tri_angle_deg_));
+  constraints.clear();
+  constraints.reserve(reconstruction.NumPoints3D());
+
   for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
     if (point3D.track.Length() <
         static_cast<size_t>(options_.min_num_view_per_track)) {
       continue;
     }
 
-    Eigen::Matrix3d normal_matrix = Eigen::Matrix3d::Zero();
-    Eigen::Vector3d right_hand_side = Eigen::Vector3d::Zero();
-    for (const TrackElement& observation : point3D.track.Elements()) {
-      const Image& image = reconstruction.Image(observation.image_id);
+    std::vector<RigObservation> observations;
+    observations.reserve(point3D.track.Length());
+    for (const TrackElement& track_element : point3D.track.Elements()) {
+      const Image& image = reconstruction.Image(track_element.image_id);
       const Eigen::Vector3d cam_ray =
           image.CameraPtr()
-              ->CamRayFromImg(image.Point2D(observation.point2D_idx).xy)
+              ->CamRayFromImg(image.Point2D(track_element.point2D_idx).xy)
               .value();
-      const Eigen::Vector3d world_ray =
-          image.CamFromWorld().rotation().inverse() * cam_ray;
-      const Eigen::Matrix3d ray_projection =
-          Eigen::Matrix3d::Identity() - world_ray * world_ray.transpose();
-      normal_matrix += ray_projection;
-      right_hand_side += ray_projection * image.ProjectionCenter();
+      Eigen::Vector3d center = Eigen::Vector3d::Zero();
+      Eigen::Vector3d bearing = cam_ray;
+      if (!image.IsRefInFrame()) {
+        const Rig& rig = reconstruction.Rig(image.FramePtr()->RigId());
+        const Rigid3d& cam_from_rig =
+            rig.SensorFromRig(image.CameraPtr()->SensorId());
+        center = cam_from_rig.TgtOriginInSrc();
+        bearing = cam_from_rig.rotation().inverse() * cam_ray;
+      }
+      observations.push_back(RigObservation{image.FrameId(),
+                                            image.ImageId(),
+                                            track_element.point2D_idx,
+                                            center,
+                                            bearing});
     }
-    reconstruction.Point3D(point3D_id).xyz =
-        normal_matrix.ldlt().solve(right_hand_side);
+    std::sort(observations.begin(),
+              observations.end(),
+              [](const RigObservation& observation1,
+                 const RigObservation& observation2) {
+                return std::tie(observation1.frame_id,
+                                observation1.image_id,
+                                observation1.point2D_idx) <
+                       std::tie(observation2.frame_id,
+                                observation2.image_id,
+                                observation2.point2D_idx);
+              });
+
+    std::vector<RigPoint> rig_points;
+    for (size_t group_begin = 0; group_begin < observations.size();) {
+      size_t group_end = group_begin + 1;
+      while (group_end < observations.size() &&
+             observations[group_end].frame_id ==
+                 observations[group_begin].frame_id) {
+        ++group_end;
+      }
+      if (group_end - group_begin < 2) {
+        group_begin = group_end;
+        continue;
+      }
+
+      bool has_distinct_images = false;
+      double smallest_cosine = 1.0;
+      for (size_t index1 = group_begin; index1 < group_end; ++index1) {
+        for (size_t index2 = index1 + 1; index2 < group_end; ++index2) {
+          has_distinct_images |=
+              observations[index1].image_id != observations[index2].image_id;
+          smallest_cosine = std::min(
+              smallest_cosine,
+              observations[index1].bearing.dot(observations[index2].bearing));
+        }
+      }
+      if (!has_distinct_images || smallest_cosine > minimum_cosine) {
+        group_begin = group_end;
+        continue;
+      }
+
+      Eigen::Matrix3d normal_matrix = Eigen::Matrix3d::Zero();
+      Eigen::Vector3d right_hand_side = Eigen::Vector3d::Zero();
+      for (size_t index = group_begin; index < group_end; ++index) {
+        const Eigen::Vector3d& bearing = observations[index].bearing;
+        const Eigen::Matrix3d ray_projection =
+            Eigen::Matrix3d::Identity() - bearing * bearing.transpose();
+        normal_matrix += ray_projection;
+        right_hand_side += ray_projection * observations[index].center;
+      }
+      const Eigen::Vector3d xyz = normal_matrix.ldlt().solve(right_hand_side);
+      bool has_positive_depth = true;
+      for (size_t index = group_begin; index < group_end; ++index) {
+        if (observations[index].bearing.dot(xyz - observations[index].center) <=
+            0.0) {
+          has_positive_depth = false;
+          break;
+        }
+      }
+      if (has_positive_depth) {
+        rig_points.push_back(RigPoint{observations[group_begin].frame_id, xyz});
+      }
+      group_begin = group_end;
+    }
+
+    for (size_t index = 1; index < rig_points.size(); ++index) {
+      const RigPoint& point1 = rig_points[index - 1];
+      const RigPoint& point2 = rig_points[index];
+      const Eigen::Vector3d center2_from_center1 =
+          reconstruction.Frame(point1.frame_id)
+                  .RigFromWorld()
+                  .rotation()
+                  .inverse() *
+              point1.xyz -
+          reconstruction.Frame(point2.frame_id)
+                  .RigFromWorld()
+                  .rotation()
+                  .inverse() *
+              point2.xyz;
+      constraints.push_back(FixedRigFrameConstraint{
+          point1.frame_id, point2.frame_id, center2_from_center1, 1.0});
+    }
   }
+
+  std::sort(constraints.begin(),
+            constraints.end(),
+            [](const FixedRigFrameConstraint& constraint1,
+               const FixedRigFrameConstraint& constraint2) {
+              return std::make_tuple(constraint1.frame_id1,
+                                     constraint1.frame_id2,
+                                     constraint1.center2_from_center1.x(),
+                                     constraint1.center2_from_center1.y(),
+                                     constraint1.center2_from_center1.z()) <
+                     std::make_tuple(constraint2.frame_id1,
+                                     constraint2.frame_id2,
+                                     constraint2.center2_from_center1.x(),
+                                     constraint2.center2_from_center1.y(),
+                                     constraint2.center2_from_center1.z());
+            });
+  std::vector<FixedRigFrameConstraint> aggregated_constraints;
+  for (size_t group_begin = 0; group_begin < constraints.size();) {
+    size_t group_end = group_begin + 1;
+    while (group_end < constraints.size() &&
+           constraints[group_end].frame_id1 ==
+               constraints[group_begin].frame_id1 &&
+           constraints[group_end].frame_id2 ==
+               constraints[group_begin].frame_id2) {
+      ++group_end;
+    }
+
+    Eigen::Vector3d median;
+    std::vector<double> coordinates(group_end - group_begin);
+    for (int coordinate = 0; coordinate < 3; ++coordinate) {
+      for (size_t index = group_begin; index < group_end; ++index) {
+        coordinates[index - group_begin] =
+            constraints[index].center2_from_center1(coordinate);
+      }
+      median(coordinate) = Median(coordinates);
+    }
+    std::vector<std::pair<double, size_t>> distances;
+    distances.reserve(group_end - group_begin);
+    for (size_t index = group_begin; index < group_end; ++index) {
+      distances.emplace_back(
+          (constraints[index].center2_from_center1 - median).squaredNorm(),
+          index);
+    }
+    std::sort(distances.begin(), distances.end());
+    const size_t num_inliers = (9 * distances.size() + 9) / 10;
+    Eigen::Vector3d mean = Eigen::Vector3d::Zero();
+    for (size_t index = 0; index < num_inliers; ++index) {
+      mean += constraints[distances[index].second].center2_from_center1;
+    }
+    mean /= num_inliers;
+    aggregated_constraints.push_back(
+        FixedRigFrameConstraint{constraints[group_begin].frame_id1,
+                                constraints[group_begin].frame_id2,
+                                mean,
+                                std::sqrt(static_cast<double>(num_inliers))});
+    group_begin = group_end;
+  }
+  constraints = std::move(aggregated_constraints);
+  for (const FixedRigFrameConstraint& constraint : constraints) {
+    adjacency[constraint.frame_id1].push_back(constraint.frame_id2);
+    adjacency[constraint.frame_id2].push_back(constraint.frame_id1);
+  }
+
+  if (adjacency.size() != frame_centers_.size()) {
+    return false;
+  }
+  std::unordered_set<frame_t> visited;
+  std::queue<frame_t> queue;
+  queue.push(adjacency.begin()->first);
+  while (!queue.empty()) {
+    const frame_t frame_id = queue.front();
+    queue.pop();
+    if (!visited.insert(frame_id).second) {
+      continue;
+    }
+    for (const frame_t neighbor : adjacency.at(frame_id)) {
+      queue.push(neighbor);
+    }
+  }
+  return visited.size() == frame_centers_.size();
+}
+
+bool GlobalPositioner::SolveFixedRigFramePositions(
+    Reconstruction& reconstruction,
+    const std::vector<FixedRigFrameConstraint>& constraints) {
+  for (const FixedRigFrameConstraint& constraint : constraints) {
+    problem_->AddResidualBlock(
+        FixedRigFramePositionCostFunctor::Create(
+            constraint.center2_from_center1, constraint.weight),
+        loss_function_.get(),
+        frame_centers_.at(constraint.frame_id1).data(),
+        frame_centers_.at(constraint.frame_id2).data());
+  }
+  const auto anchor =
+      std::min_element(frame_centers_.begin(),
+                       frame_centers_.end(),
+                       [](const auto& frame1, const auto& frame2) {
+                         return frame1.first < frame2.first;
+                       });
+  problem_->SetParameterBlockConstant(anchor->second.data());
+
+  ceres::Solver::Options solver_options = options_.solver_options;
+  solver_options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+  solver_options.linear_solver_ordering.reset();
+  solver_options.minimizer_progress_to_stdout = VLOG_IS_ON(2);
+  Timer stage_timer;
+  stage_timer.Start();
+  ceres::Solver::Summary summary;
+  ceres::Solve(solver_options, problem_.get(), &summary);
+  LOG(INFO) << "Fixed-rig frame positioning done in "
+            << stage_timer.ElapsedSeconds() << " seconds";
+  LOG(INFO) << (VLOG_IS_ON(2) ? summary.FullReport() : summary.BriefReport());
+
+  stage_timer.Restart();
+  ConvertBackResults(reconstruction);
+  RefineFixedRigPoints(reconstruction);
+  LOG(INFO) << "Fixed-rig point refinement done in "
+            << stage_timer.ElapsedSeconds() << " seconds";
+  return summary.IsSolutionUsable();
 }
 
 void GlobalPositioner::ParameterizeVariables(Reconstruction& reconstruction) {
@@ -601,8 +956,9 @@ void GlobalPositioner::ConvertBackResults(Reconstruction& reconstruction) {
 bool RunGlobalPositioning(const GlobalPositionerOptions& options,
                           const PoseGraph& pose_graph,
                           Reconstruction& reconstruction,
-                          const std::vector<PosePrior>& pose_priors) {
-  GlobalPositioner positioner(options);
+                          const std::vector<PosePrior>& pose_priors,
+                          double min_tri_angle_deg) {
+  GlobalPositioner positioner(options, min_tri_angle_deg);
   return positioner.Solve(pose_graph, reconstruction, pose_priors);
 }
 

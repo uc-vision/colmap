@@ -52,6 +52,9 @@ struct GlobalPipelineOptions {
   // The image path at which to find the images to extract point colors.
   std::filesystem::path image_path;
 
+  // Whether to extract colors for reconstructed points.
+  bool extract_colors = true;
+
   // Number of threads for parallel processing.
   int num_threads = -1;
 

@@ -82,7 +82,10 @@ GlobalPipeline::GlobalPipeline(
                                         options_.image_names.end()};
   database_cache_ = DatabaseCache::Create(*database, database_cache_options);
   if (options_.decompose_relative_pose) {
-    MaybeDecomposeRelativePoses(database_cache_.get());
+    const int num_decomposition_threads =
+        options_.mapper.refine_sensor_from_rig ? 1 : options_.num_threads;
+    MaybeDecomposeRelativePoses(database_cache_.get(),
+                                num_decomposition_threads);
   }
 }
 
@@ -118,7 +121,7 @@ void GlobalPipeline::Run() {
   Reconstruction& output_reconstruction =
       *reconstruction_manager_->Get(reconstruction_manager_->Add());
   output_reconstruction = *reconstruction;
-  if (!options_.image_path.empty()) {
+  if (options_.extract_colors && !options_.image_path.empty()) {
     LOG(INFO) << "Extracting colors ...";
     output_reconstruction.ExtractColorsForAllImages(options_.image_path,
                                                     options_.num_threads);

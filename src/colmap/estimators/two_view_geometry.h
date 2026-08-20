@@ -164,6 +164,21 @@ EstimateRigTwoViewGeometries(
         matches,
     const TwoViewGeometryOptions& options);
 
+// Estimate a common metric relative pose between two fixed rigs using
+// PoseLib's grouped 5+1 camera-pair sampler. RANSAC is run on a balanced,
+// bounded subset of the matches and the resulting pose is scored once over
+// all correspondences.
+std::vector<std::pair<std::pair<image_t, image_t>, TwoViewGeometry>>
+EstimateFixedRigTwoViewGeometries(
+    const Rig& rig1,
+    const Rig& rig2,
+    const std::unordered_map<image_t, Image>& images,
+    const std::unordered_map<camera_t, Camera>& cameras,
+    const std::vector<std::pair<std::pair<image_t, image_t>, FeatureMatches>>&
+        matches,
+    const TwoViewGeometryOptions& options,
+    size_t max_num_ransac_matches);
+
 // Estimate relative pose for two-view geometry.
 //
 // @param camera1         Camera of first image.
@@ -225,6 +240,7 @@ TwoViewGeometry TwoViewGeometryFromKnownRelativePose(
 // update the results in-memory. Skips pairs that already have a relative
 // pose or have invalid two-view geometries (UNDEFINED, DEGENERATE, WATERMARK,
 // MULTIPLE).
-void MaybeDecomposeRelativePoses(DatabaseCache* database_cache);
+void MaybeDecomposeRelativePoses(DatabaseCache* database_cache,
+                                 int num_threads = 1);
 
 }  // namespace colmap

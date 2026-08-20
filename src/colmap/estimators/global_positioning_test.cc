@@ -44,6 +44,12 @@
 namespace colmap {
 namespace {
 
+class TestGlobalPositioner : public GlobalPositioner {
+ public:
+  using GlobalPositioner::GlobalPositioner;
+  using GlobalPositioner::RefineFixedRigPoints;
+};
+
 TEST(GlobalPositioning, Nominal) {
   SetPRNGSeed(0);
 
@@ -200,6 +206,46 @@ TEST(GlobalPositioning, RefineSensorFromRigFalsePreservesRig) {
       const auto& sensor_from_rig_before = snapshot.at({rig_id, sensor_id});
       EXPECT_EQ(*sensor_from_rig_after, sensor_from_rig_before)
           << "rig_id=" << rig_id << ", sensor_id=" << sensor_id.id;
+    }
+  }
+
+  EXPECT_THAT(gt_reconstruction,
+              ReconstructionNear(reconstruction,
+                                 /*max_rotation_error_deg=*/0.1,
+                                 /*max_proj_center_error=*/0.5,
+                                 /*max_scale_error=*/std::nullopt,
+                                 /*num_obs_tolerance=*/0.0));
+}
+
+TEST(GlobalPositioning, FixedRigPointRefinementIsThreadDeterministic) {
+  const auto database_path = CreateTestDir() / "database.db";
+  auto database = Database::Open(database_path);
+
+  Reconstruction reconstruction;
+  SyntheticDatasetOptions synthetic_dataset_options;
+  synthetic_dataset_options.num_rigs = 2;
+  synthetic_dataset_options.num_cameras_per_rig = 3;
+  synthetic_dataset_options.num_frames_per_rig = 5;
+  synthetic_dataset_options.num_points3D = 200;
+  SynthesizeDataset(synthetic_dataset_options, &reconstruction, database.get());
+
+  Reconstruction parallel_reconstruction = reconstruction;
+  GlobalPositionerOptions serial_options;
+  serial_options.solver_options.num_threads = 1;
+  TestGlobalPositioner serial_positioner(serial_options);
+  serial_positioner.RefineFixedRigPoints(reconstruction);
+
+  GlobalPositionerOptions parallel_options;
+  parallel_options.solver_options.num_threads = 4;
+  TestGlobalPositioner parallel_positioner(parallel_options);
+  parallel_positioner.RefineFixedRigPoints(parallel_reconstruction);
+
+  for (const auto& [point3D_id, serial_point3D] : reconstruction.Points3D()) {
+    const Point3D& parallel_point3D =
+        parallel_reconstruction.Point3D(point3D_id);
+    for (int coordinate = 0; coordinate < 3; ++coordinate) {
+      EXPECT_EQ(serial_point3D.xyz(coordinate),
+                parallel_point3D.xyz(coordinate));
     }
   }
 }
