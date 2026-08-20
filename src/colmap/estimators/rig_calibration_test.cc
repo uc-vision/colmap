@@ -37,6 +37,7 @@
 #include "colmap/util/testing.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <numeric>
 
@@ -223,6 +224,53 @@ TEST(CeresRigCalibrator, FixedCalibrationEvaluatesHeldOutGroups) {
   for (const auto& [camera_id, camera] : reconstruction.Cameras()) {
     EXPECT_EQ(camera, ground_truth.Camera(camera_id));
   }
+}
+
+TEST(CeresRigCalibrator, ReportsInvalidHeldOutProjectionAsInfiniteError) {
+  const Reconstruction ground_truth = CreateSyntheticRig();
+  Reconstruction reconstruction = ground_truth;
+  const rig_t rig_id = reconstruction.Rigs().begin()->first;
+  const Rig& rig = reconstruction.Rig(rig_id);
+  std::vector<RigCalibrationGroup> groups = BuildGroups(ground_truth);
+
+  RigCalibrationGroup& group = groups.front();
+  RigCalibrationTrack invalid_track;
+  invalid_track.xyz =
+      Inverse(group.rigs_from_group[0]) * Eigen::Vector3d(0, 0, -1000);
+  for (const sensor_t sensor_id : rig.SensorIds()) {
+    const Camera& camera = reconstruction.Camera(sensor_id.id);
+    Eigen::Vector3d point_in_cam = group.rigs_from_group[0] * invalid_track.xyz;
+    if (!rig.IsRefSensor(sensor_id)) {
+      point_in_cam = rig.SensorFromRig(sensor_id) * point_in_cam;
+    }
+    ASSERT_FALSE(camera.ImgFromCam(point_in_cam).has_value());
+    invalid_track.observations.push_back(
+        {0, sensor_id.id, Eigen::Vector2d::Zero()});
+  }
+  const size_t num_invalid_observations = invalid_track.observations.size();
+  group.tracks.push_back(std::move(invalid_track));
+
+  RigCalibrationOptions options;
+  options.refine_focal_length = false;
+  options.refine_principal_point = false;
+  options.refine_distortion = false;
+  options.refine_sensor_from_rig = false;
+  options.print_summary = false;
+  const std::unique_ptr<CeresRigCalibrator> calibrator =
+      CreateCeresRigCalibrator(
+          options, rig_id, std::move(groups), reconstruction);
+  const std::shared_ptr<RigCalibrationSummary> summary = calibrator->Solve();
+
+  ASSERT_TRUE(summary->IsSolutionUsable());
+  EXPECT_EQ(summary->stage_summaries.size(), 1);
+  EXPECT_EQ(summary->num_invalid_observations, num_invalid_observations);
+  EXPECT_LT(summary->num_invalid_observations, summary->num_observations);
+  EXPECT_EQ(std::count_if(summary->reprojection_errors.begin(),
+                          summary->reprojection_errors.end(),
+                          [](const double error) { return std::isinf(error); }),
+            num_invalid_observations);
+  EXPECT_TRUE(std::isinf(summary->reprojection_rmse));
+  EXPECT_TRUE(std::isfinite(summary->distance_prior_rmse));
 }
 
 TEST(CeresRigCalibrator, PrunesBadObservationBeforeFinalSolve) {
