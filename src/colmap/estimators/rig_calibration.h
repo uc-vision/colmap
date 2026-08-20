@@ -109,6 +109,7 @@ struct RigCalibrationSummary : public CeresBundleAdjustmentSummary {
   size_t num_observations = 0;
   size_t num_filtered_groups = 0;
   size_t num_filtered_observations = 0;
+  size_t num_invalid_observations = 0;
   double reprojection_rmse = 0.0;
   double distance_prior_rmse = 0.0;
   std::vector<double> reprojection_errors;

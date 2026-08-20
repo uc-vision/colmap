@@ -95,6 +95,8 @@ void BindRigCalibration(py::module& m) {
           .def_readwrite("num_filtered_groups", &Summary::num_filtered_groups)
           .def_readwrite("num_filtered_observations",
                          &Summary::num_filtered_observations)
+          .def_readwrite("num_invalid_observations",
+                         &Summary::num_invalid_observations)
           .def_readwrite("reprojection_rmse", &Summary::reprojection_rmse)
           .def_readwrite("distance_prior_rmse", &Summary::distance_prior_rmse)
           .def_readwrite("reprojection_errors", &Summary::reprojection_errors)

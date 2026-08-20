@@ -456,7 +456,7 @@ struct CeresRigCalibrator::Impl {
     return summary;
   }
 
-  bool IsObservationOutlier(
+  std::optional<double> ReprojectionError(
       const RigCalibrationGroup& group,
       const RigCalibrationTrack& track,
       const RigCalibrationObservation& observation) const {
@@ -469,10 +469,20 @@ struct CeresRigCalibrator::Impl {
     }
     const std::optional<Eigen::Vector2d> predicted_xy =
         camera.ImgFromCam(point_in_cam);
-    if (!predicted_xy) {
-      return true;
+    if (!predicted_xy || !predicted_xy->allFinite()) {
+      return std::nullopt;
     }
-    return (*predicted_xy - observation.xy).norm() > kMaxReprojectionError;
+    const double error = (*predicted_xy - observation.xy).norm();
+    return std::isfinite(error) ? std::optional<double>(error) : std::nullopt;
+  }
+
+  bool IsObservationOutlier(
+      const RigCalibrationGroup& group,
+      const RigCalibrationTrack& track,
+      const RigCalibrationObservation& observation) const {
+    const std::optional<double> error =
+        ReprojectionError(group, track, observation);
+    return !error || *error > kMaxReprojectionError;
   }
 
   double MaxTriangulationAngleDeg(const RigCalibrationGroup& group,
@@ -580,28 +590,32 @@ struct CeresRigCalibrator::Impl {
   }
 
   void ComputeResidualStatistics(RigCalibrationSummary* summary) const {
-    ceres::Problem::EvaluateOptions eval_options;
-    eval_options.apply_loss_function = false;
-    eval_options.residual_blocks = reprojection_residual_blocks;
-    std::vector<double> residuals;
-    THROW_CHECK(
-        problem->Evaluate(eval_options, nullptr, &residuals, nullptr, nullptr));
-    THROW_CHECK_EQ(residuals.size(), 2 * reprojection_residual_blocks.size());
-
-    summary->reprojection_errors.resize(reprojection_residual_blocks.size());
-    for (size_t i = 0; i < summary->reprojection_errors.size(); ++i) {
-      summary->reprojection_errors[i] =
-          std::hypot(residuals[2 * i], residuals[2 * i + 1]);
+    summary->reprojection_errors.reserve(reprojection_residual_blocks.size());
+    double squared_reprojection_error = 0.0;
+    for (const RigCalibrationGroup& group : groups) {
+      for (const RigCalibrationTrack& track : group.tracks) {
+        for (const RigCalibrationObservation& observation :
+             track.observations) {
+          const std::optional<double> error =
+              ReprojectionError(group, track, observation);
+          if (error) {
+            summary->reprojection_errors.push_back(*error);
+            squared_reprojection_error += *error * *error;
+          } else {
+            summary->reprojection_errors.push_back(
+                std::numeric_limits<double>::infinity());
+            ++summary->num_invalid_observations;
+          }
+        }
+      }
     }
-    const double squared_reprojection_error =
-        std::accumulate(summary->reprojection_errors.begin(),
-                        summary->reprojection_errors.end(),
-                        0.0,
-                        [](const double sum, const double error) {
-                          return sum + error * error;
-                        });
-    summary->reprojection_rmse = std::sqrt(squared_reprojection_error /
-                                           summary->reprojection_errors.size());
+    THROW_CHECK_EQ(summary->reprojection_errors.size(),
+                   reprojection_residual_blocks.size());
+    summary->reprojection_rmse =
+        summary->num_invalid_observations == 0
+            ? std::sqrt(squared_reprojection_error /
+                        summary->reprojection_errors.size())
+            : std::numeric_limits<double>::infinity();
 
     summary->distance_prior_errors.reserve(groups.size());
     double squared_distance_error = 0.0;
@@ -779,10 +793,6 @@ struct CeresRigCalibrator::Impl {
     }
 
     auto result = std::make_shared<RigCalibrationSummary>();
-    const auto base_summary = CeresBundleAdjustmentSummary::Create(summary);
-    result->termination_type = base_summary->termination_type;
-    result->num_residuals = base_summary->num_residuals;
-    result->ceres_summary = summary;
     result->stage_summaries = std::move(stage_summaries);
     result->num_groups = groups.size();
     result->num_filtered_groups = num_filtered_groups;
@@ -800,7 +810,16 @@ struct CeresRigCalibrator::Impl {
     } else {
       ComputeResidualStatistics(result.get());
       result->observability = ComputeObservability();
+      if (result->num_invalid_observations == result->num_observations) {
+        summary.termination_type = ceres::FAILURE;
+        summary.message = "All retained observations have invalid projections";
+      }
     }
+
+    const auto base_summary = CeresBundleAdjustmentSummary::Create(summary);
+    result->termination_type = base_summary->termination_type;
+    result->num_residuals = base_summary->num_residuals;
+    result->ceres_summary = summary;
 
     if (options.print_summary || VLOG_IS_ON(1)) {
       PrintSolverSummary(summary, "Rig calibration report");
