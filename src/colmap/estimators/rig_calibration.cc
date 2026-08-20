@@ -222,6 +222,10 @@ struct CeresRigCalibrator::Impl {
         THROW_CHECK_GT(rig_from_group.rotation().norm(), 0);
         rig_from_group.rotation().normalize();
       }
+      THROW_CHECK_GT((group.rigs_from_group[2].TgtOriginInSrc() -
+                      group.rigs_from_group[0].TgtOriginInSrc())
+                         .norm(),
+                     0);
       for (const RigCalibrationTrack& track : group.tracks) {
         THROW_CHECK(track.xyz.allFinite());
         THROW_CHECK_GE(track.observations.size(), 2);
@@ -777,7 +781,7 @@ struct CeresRigCalibrator::Impl {
         result->num_observations += track.observations.size();
       }
     }
-    if (rejected_all_groups) {
+    if (rejected_all_groups || !summary.IsSolutionUsable()) {
       result->reprojection_rmse = std::numeric_limits<double>::infinity();
       result->distance_prior_rmse = std::numeric_limits<double>::infinity();
       result->observability = RejectedObservability();
