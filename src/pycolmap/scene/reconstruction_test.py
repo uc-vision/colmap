@@ -137,21 +137,27 @@ def test_reconstruction_track_arrays(synthetic_reconstruction):
     point_ids = tracks["point3D_ids"]
     offsets = tracks["observation_offsets"]
     image_ids = tracks["observation_image_ids"]
+    point2D_indices = tracks["observation_point2D_indices"]
     observation_xy = tracks["observation_xy"]
 
     assert point_ids.dtype == np.int64
     assert offsets.dtype == np.int64
     assert image_ids.dtype == np.uint32
+    assert point2D_indices.dtype == np.uint32
     assert observation_xy.dtype == np.float32
     assert offsets.shape == (synthetic_reconstruction.num_points3D() + 1,)
     assert offsets[-1] == synthetic_reconstruction.compute_num_observations()
     assert image_ids.shape == (offsets[-1],)
+    assert point2D_indices.shape == (offsets[-1],)
     assert observation_xy.shape == (offsets[-1], 2)
 
     for point_index, point_id in enumerate(point_ids):
         elements = synthetic_reconstruction.point3D(int(point_id)).track.elements
         start, end = offsets[point_index : point_index + 2]
         assert image_ids[start:end].tolist() == [e.image_id for e in elements]
+        assert point2D_indices[start:end].tolist() == [
+            e.point2D_idx for e in elements
+        ]
         expected_xy = [
             synthetic_reconstruction.image(e.image_id).point2D(e.point2D_idx).xy
             for e in elements

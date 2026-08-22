@@ -1,4 +1,4 @@
-#include "colmap/scene/reconstruction.h"
+#include "pycolmap/scene/reconstruction.h"
 
 #include "colmap/scene/correspondence_graph.h"
 #include "colmap/scene/database_cache.h"
@@ -36,11 +36,14 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
   py::array_t<int64_t> point3D_ids(num_points);
   py::array_t<int64_t> observation_offsets(num_points + 1);
   py::array_t<image_t> observation_image_ids(num_observations);
+  py::array_t<point2D_t> observation_point2D_indices(num_observations);
   py::array_t<float> observation_xy(std::vector<ssize_t>{num_observations, 2});
 
   int64_t* point3D_ids_ptr = point3D_ids.mutable_data();
   int64_t* observation_offsets_ptr = observation_offsets.mutable_data();
   image_t* observation_image_ids_ptr = observation_image_ids.mutable_data();
+  point2D_t* observation_point2D_indices_ptr =
+      observation_point2D_indices.mutable_data();
   float* observation_xy_ptr = observation_xy.mutable_data();
 
   {
@@ -55,6 +58,8 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
                                         .Point2D(element.point2D_idx)
                                         .xy;
         observation_image_ids_ptr[observation_index] = element.image_id;
+        observation_point2D_indices_ptr[observation_index] =
+            element.point2D_idx;
         observation_xy_ptr[2 * observation_index] = static_cast<float>(xy.x());
         observation_xy_ptr[2 * observation_index + 1] =
             static_cast<float>(xy.y());
@@ -64,10 +69,12 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
     }
   }
 
-  return py::dict("point3D_ids"_a = std::move(point3D_ids),
-                  "observation_offsets"_a = std::move(observation_offsets),
-                  "observation_image_ids"_a = std::move(observation_image_ids),
-                  "observation_xy"_a = std::move(observation_xy));
+  return py::dict(
+      "point3D_ids"_a = std::move(point3D_ids),
+      "observation_offsets"_a = std::move(observation_offsets),
+      "observation_image_ids"_a = std::move(observation_image_ids),
+      "observation_point2D_indices"_a = std::move(observation_point2D_indices),
+      "observation_xy"_a = std::move(observation_xy));
 }
 
 void BindReconstruction(py::module& m) {
