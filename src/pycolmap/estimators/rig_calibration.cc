@@ -1,5 +1,6 @@
 #include "colmap/estimators/rig_calibration.h"
 
+#include "pycolmap/estimators/rig_calibration_packed.h"
 #include "pycolmap/helpers.h"
 #include "pycolmap/pybind11_extension.h"
 
@@ -122,4 +123,6 @@ void BindRigCalibration(py::module& m) {
         "groups"_a,
         "reconstruction"_a,
         py::keep_alive<0, 4>());
+
+  BindRigCalibrationPacked(m);
 }
