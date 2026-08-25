@@ -54,8 +54,6 @@ namespace colmap {
 namespace {
 
 constexpr double kObservabilityRankTolerance = 1e-10;
-constexpr double kMaxReprojectionError = 4.0;
-constexpr double kMinTriangulationAngleDeg = 1.5;
 
 class RigCenterDistanceCostFunctor
     : public AutoDiffCostFunctor<RigCenterDistanceCostFunctor, 1, 7, 7> {
@@ -150,16 +148,6 @@ Eigen::MatrixXd SymmetricPseudoInverse(const Eigen::MatrixXd& matrix,
          eig.eigenvectors().transpose();
 }
 
-bool ShouldRetryWithCpu(const ceres::Solver::Summary& summary) {
-  if (summary.termination_type != ceres::FAILURE) {
-    return false;
-  }
-  return summary.message.find("CUDA initialization failed") !=
-             std::string::npos ||
-         summary.message.find("non-numeric") != std::string::npos ||
-         summary.message.find("Unable to create Jacobian") != std::string::npos;
-}
-
 }  // namespace
 
 RigCalibrationOptions::RigCalibrationOptions() {
@@ -172,6 +160,8 @@ RigCalibrationOptions::RigCalibrationOptions() {
 
 bool RigCalibrationOptions::Check() const {
   CHECK_OPTION_GT(distance_loss_function_scale, 0);
+  CHECK_OPTION_GT(max_reprojection_error_pixels, 0);
+  CHECK_OPTION_GE(min_triangulation_angle_deg, 0);
   return ceres.Check();
 }
 
@@ -442,17 +432,6 @@ struct CeresRigCalibrator::Impl {
 
     ceres::Solver::Summary summary;
     ceres::Solve(solver_options, problem.get(), &summary);
-    if (options.ceres.use_gpu && ShouldRetryWithCpu(summary)) {
-      LOG(WARNING) << "GPU rig calibration failed (" << summary.message
-                   << "), retrying with CPU.";
-      CeresBundleAdjustmentOptions cpu_options = options.ceres;
-      cpu_options.use_gpu = false;
-      solver_options =
-          cpu_options.CreateSolverOptions(3 * groups.size(), *problem);
-      solver_options.linear_solver_type = ceres::SPARSE_SCHUR;
-      solver_options.linear_solver_ordering = ordering;
-      ceres::Solve(solver_options, problem.get(), &summary);
-    }
     return summary;
   }
 
@@ -482,7 +461,7 @@ struct CeresRigCalibrator::Impl {
       const RigCalibrationObservation& observation) const {
     const std::optional<double> error =
         ReprojectionError(group, track, observation);
-    return !error || *error > kMaxReprojectionError;
+    return !error || *error > options.max_reprojection_error_pixels;
   }
 
   double MaxTriangulationAngleDeg(const RigCalibrationGroup& group,
@@ -538,7 +517,7 @@ struct CeresRigCalibrator::Impl {
               const RigCalibrationTrack& track) {
             if (track.observations.size() >= 2 &&
                 MaxTriangulationAngleDeg(group, track) >=
-                    kMinTriangulationAngleDeg) {
+                    options.min_triangulation_angle_deg) {
               return false;
             }
             num_filtered_observations += track.observations.size();

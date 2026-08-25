@@ -15,38 +15,6 @@ namespace py = pybind11;
 void BindRigCalibration(py::module& m) {
   IsPyceresAvailable();
 
-  using Observation = RigCalibrationObservation;
-  auto PyObservation = py::classh<Observation>(m, "RigCalibrationObservation")
-                           .def(py::init<>())
-                           .def_readwrite("frame_idx", &Observation::frame_idx)
-                           .def_readwrite("camera_id", &Observation::camera_id)
-                           .def_readwrite("xy", &Observation::xy);
-  MakeDataclass(PyObservation);
-
-  using Track = RigCalibrationTrack;
-  auto PyTrack = py::classh<Track>(m, "RigCalibrationTrack")
-                     .def(py::init<>())
-                     .def_readwrite("xyz", &Track::xyz)
-                     .def_readwrite("observations", &Track::observations);
-  MakeDataclass(PyTrack);
-
-  using DistancePrior = RigCalibrationDistancePrior;
-  auto PyDistancePrior =
-      py::classh<DistancePrior>(m, "RigCalibrationDistancePrior")
-          .def(py::init<>())
-          .def_readwrite("distance", &DistancePrior::distance)
-          .def_readwrite("stddev", &DistancePrior::stddev);
-  MakeDataclass(PyDistancePrior);
-
-  using Group = RigCalibrationGroup;
-  auto PyGroup = py::classh<Group>(m, "RigCalibrationGroup")
-                     .def(py::init<>())
-                     .def_readwrite("rigs_from_group", &Group::rigs_from_group)
-                     .def_readwrite("tracks", &Group::tracks)
-                     .def_readwrite("frame0_to_frame2_distance",
-                                    &Group::frame0_to_frame2_distance);
-  MakeDataclass(PyGroup);
-
   using Options = RigCalibrationOptions;
   auto PyOptions =
       py::classh<Options>(m, "RigCalibrationOptions")
@@ -62,6 +30,10 @@ void BindRigCalibration(py::module& m) {
                          &Options::distance_loss_function_type)
           .def_readwrite("distance_loss_function_scale",
                          &Options::distance_loss_function_scale)
+          .def_readwrite("max_reprojection_error_pixels",
+                         &Options::max_reprojection_error_pixels)
+          .def_readwrite("min_triangulation_angle_deg",
+                         &Options::min_triangulation_angle_deg)
           .def_readwrite("print_summary", &Options::print_summary)
           .def("check", &Options::Check);
   MakeDataclass(PyOptions);
@@ -115,14 +87,6 @@ void BindRigCalibration(py::module& m) {
            })
       .def_property_readonly("problem", &CeresRigCalibrator::Problem)
       .def_property_readonly("options", &CeresRigCalibrator::Options);
-
-  m.def("create_ceres_rig_calibrator",
-        &CreateCeresRigCalibrator,
-        "options"_a,
-        "rig_id"_a,
-        "groups"_a,
-        "reconstruction"_a,
-        py::keep_alive<0, 4>());
 
   BindRigCalibrationPacked(m);
 }

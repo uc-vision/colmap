@@ -123,8 +123,7 @@ int RunAutomaticReconstructor(int argc, char** argv) {
   options.AddDefaultOption("random_seed", &reconstruction_options.random_seed);
   options.AddDefaultOption("use_gpu", &reconstruction_options.use_gpu);
   options.AddDefaultOption("gpu_index", &reconstruction_options.gpu_index);
-  options.AddDefaultOption(
-      "Mapper.ba_backend", &ba_backend, "{ceres, caspar}");
+  options.AddDefaultOption("Mapper.ba_backend", &ba_backend, "{ceres, caspar}");
   if (!options.Parse(argc, argv)) {
     return EXIT_FAILURE;
   }
@@ -156,12 +155,6 @@ int RunAutomaticReconstructor(int argc, char** argv) {
   StringToUpper(&ba_backend);
   reconstruction_options.ba_backend =
       BundleAdjustmentBackendFromString(ba_backend);
-  if (reconstruction_options.ba_backend ==
-      BundleAdjustmentBackend::CASPAR_RIG_SCHUR) {
-    LOG(ERROR) << "Caspar rig-Schur requires a fixed PINHOLE rig and is not "
-                  "supported by automatic reconstruction";
-    return EXIT_FAILURE;
-  }
 
   auto reconstruction_manager = std::make_shared<ReconstructionManager>();
 

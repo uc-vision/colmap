@@ -82,6 +82,10 @@ struct RigCalibrationOptions {
   CeresBundleAdjustmentOptions::LossFunctionType distance_loss_function_type =
       CeresBundleAdjustmentOptions::LossFunctionType::HUBER;
   double distance_loss_function_scale = 1.96;
+  // Reject observations above this post-fit pixel reprojection error.
+  double max_reprojection_error_pixels = 4.0;
+  // Reject tracks whose largest triangulation angle is below this value.
+  double min_triangulation_angle_deg = 1.5;
   bool print_summary = true;
 
   RigCalibrationOptions();

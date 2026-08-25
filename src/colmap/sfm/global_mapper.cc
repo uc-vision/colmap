@@ -103,6 +103,9 @@ IncrementalTriangulator::Options GlobalMapperOptions::Retriangulation() const {
 
 GlobalMapperOptions GlobalMapperStrategy::Configure(
     const GlobalMapperOptions& options) const {
+  THROW_CHECK(options.bundle_adjustment.backend !=
+              BundleAdjustmentBackend::CASPAR_RIG_SCHUR)
+      << "Caspar rig-Schur is only supported by fixed-rig global mapping";
   return options;
 }
 

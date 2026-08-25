@@ -16,6 +16,19 @@ class FixedRigGlobalMapperStrategy final : public GlobalMapperStrategy {
       const GlobalMapperOptions& options) const override {
     GlobalMapperOptions configured_options = options;
     configured_options.refine_sensor_from_rig = false;
+    BundleAdjustmentOptions& bundle_adjustment =
+        configured_options.bundle_adjustment;
+    if (bundle_adjustment.backend ==
+        BundleAdjustmentBackend::CASPAR_RIG_SCHUR) {
+      configured_options.ba_skip_fixed_rotation_stage = true;
+      configured_options.ba_skip_joint_optimization_stage = false;
+      bundle_adjustment.refine_focal_length = false;
+      bundle_adjustment.refine_principal_point = false;
+      bundle_adjustment.refine_extra_params = false;
+      bundle_adjustment.refine_rig_from_world = true;
+      bundle_adjustment.refine_points3D = true;
+      bundle_adjustment.constant_rig_from_world_rotation = false;
+    }
     return configured_options;
   }
 
@@ -50,36 +63,6 @@ std::shared_ptr<const GlobalMapperStrategy> CreateFixedRigGlobalMapperStrategy(
     FixedRigGlobalPositionerOptions positioner_options) {
   return std::make_shared<FixedRigGlobalMapperStrategy>(
       std::move(positioner_options));
-}
-
-FixedRigGlobalMapper::FixedRigGlobalMapper(
-    std::shared_ptr<const DatabaseCache> database_cache,
-    FixedRigGlobalPositionerOptions positioner_options)
-    : mapper_(
-          std::move(database_cache),
-          CreateFixedRigGlobalMapperStrategy(std::move(positioner_options))) {}
-
-void FixedRigGlobalMapper::BeginReconstruction(
-    const std::shared_ptr<class Reconstruction>& reconstruction) {
-  mapper_.BeginReconstruction(reconstruction);
-}
-
-bool FixedRigGlobalMapper::Solve(const GlobalMapperOptions& options,
-                                 const std::function<bool()>& on_progress) {
-  return mapper_.Solve(options, on_progress);
-}
-
-bool FixedRigGlobalMapper::RotationAveraging(
-    const GlobalMapperOptions& options) {
-  return mapper_.RotationAveraging(options.RotationAveraging());
-}
-
-void FixedRigGlobalMapper::EstablishTracks(const GlobalMapperOptions& options) {
-  mapper_.EstablishTracks(options);
-}
-
-std::shared_ptr<Reconstruction> FixedRigGlobalMapper::Reconstruction() const {
-  return mapper_.Reconstruction();
 }
 
 }  // namespace colmap

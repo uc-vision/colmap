@@ -32,7 +32,7 @@ PreparedGlobalMapping::PreparedGlobalMapping(
     : options_(std::move(options)),
       database_cache_(CreateDatabaseCache(database, options_)),
       reconstruction_(std::make_shared<Reconstruction>()),
-      mapper_options_(CreateMapperOptions(options_)),
+      mapper_options_(strategy->Configure(CreateMapperOptions(options_))),
       global_mapper_(database_cache_, std::move(strategy)) {
   if (options_.decompose_relative_pose) {
     MaybeDecomposeRelativePoses(database_cache_.get());

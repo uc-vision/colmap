@@ -62,7 +62,10 @@ class BundleAdjustmentIterationCallback : public ceres::IterationCallback {
 BundleAdjustmentController::BundleAdjustmentController(
     const OptionManager& options,
     std::shared_ptr<Reconstruction> reconstruction)
-    : options_(options), reconstruction_(std::move(reconstruction)) {}
+    : options_(options), reconstruction_(std::move(reconstruction)) {
+  THROW_CHECK(options_.bundle_adjustment->backend !=
+              BundleAdjustmentBackend::CASPAR_RIG_SCHUR);
+}
 
 void BundleAdjustmentController::Run() {
   THROW_CHECK_NOTNULL(reconstruction_);

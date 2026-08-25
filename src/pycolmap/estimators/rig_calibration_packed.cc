@@ -137,7 +137,7 @@ std::unique_ptr<CeresRigCalibrator> CreateCeresRigCalibratorPacked(
 }  // namespace
 
 void BindRigCalibrationPacked(py::module& m) {
-  m.def("create_ceres_rig_calibrator_packed",
+  m.def("create_ceres_rig_calibrator",
         &CreateCeresRigCalibratorPacked,
         "options"_a,
         "rig_id"_a,
