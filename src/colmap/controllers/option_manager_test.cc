@@ -29,7 +29,6 @@
 
 #include "colmap/controllers/option_manager.h"
 
-#include "colmap/controllers/global_pipeline.h"
 #include "colmap/controllers/image_reader.h"
 #include "colmap/controllers/incremental_pipeline.h"
 #include "colmap/feature/sift.h"

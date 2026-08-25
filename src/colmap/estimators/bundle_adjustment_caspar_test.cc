@@ -204,6 +204,62 @@ TEST(DefaultBundleAdjuster, NominalMultiCameraRigConstantSensorFromRig) {
                                  /*num_obs_tolerance=*/0.0));
 }
 
+TEST(DefaultBundleAdjuster, RigSchurConverges) {
+  Reconstruction gt_reconstruction;
+  SyntheticDatasetOptions synthetic_dataset_options;
+  synthetic_dataset_options.num_rigs = 1;
+  synthetic_dataset_options.num_cameras_per_rig = 2;
+  synthetic_dataset_options.num_frames_per_rig = 6;
+  synthetic_dataset_options.num_points3D = 100;
+  synthetic_dataset_options.camera_model_id = PinholeCameraModel::model_id;
+  synthetic_dataset_options.camera_params = {1280, 1280, 512, 384};
+  SynthesizeDataset(synthetic_dataset_options, &gt_reconstruction);
+
+  Reconstruction reconstruction = gt_reconstruction;
+  SyntheticNoiseOptions synthetic_noise_options;
+  synthetic_noise_options.point2D_stddev = 0.5;
+  synthetic_noise_options.point3D_stddev = 0.1;
+  synthetic_noise_options.rig_from_world_rotation_stddev = 0.3;
+  synthetic_noise_options.rig_from_world_translation_stddev = 0.05;
+  SynthesizeNoise(synthetic_noise_options, &reconstruction);
+
+  BundleAdjustmentConfig config;
+  for (const image_t image_id : reconstruction.RegImageIds()) {
+    config.AddImage(image_id);
+  }
+  const point3D_t constant_point3D_id =
+      reconstruction.Points3D().begin()->first;
+  reconstruction.Point3D(constant_point3D_id).xyz =
+      gt_reconstruction.Point3D(constant_point3D_id).xyz;
+  reconstruction.UpdatePoint3DErrors();
+  const double initial_mean_reprojection_error =
+      reconstruction.ComputeMeanReprojectionError();
+  config.AddConstantPoint(constant_point3D_id);
+  config.FixGauge(BundleAdjustmentGauge::TWO_CAMS_FROM_WORLD);
+
+  BundleAdjustmentOptions options;
+  options.backend = BundleAdjustmentBackend::CASPAR_RIG_SCHUR;
+  options.refine_focal_length = false;
+  options.refine_principal_point = false;
+  options.refine_extra_params = false;
+  options.refine_sensor_from_rig = false;
+  const auto summary =
+      CreateDefaultBundleAdjuster(options, config, reconstruction)->Solve();
+  ASSERT_NE(summary->termination_type,
+            BundleAdjustmentTerminationType::FAILURE);
+  // The constant point's observations in the fixed two-camera frame connect
+  // no variable nodes and are therefore omitted from the solver.
+  EXPECT_EQ(summary->num_residuals, config.NumResiduals(reconstruction) - 4);
+  CheckConstantPoint(reconstruction.Point3D(constant_point3D_id),
+                     gt_reconstruction.Point3D(constant_point3D_id));
+  reconstruction.UpdatePoint3DErrors();
+  const double final_mean_reprojection_error =
+      reconstruction.ComputeMeanReprojectionError();
+  EXPECT_LT(final_mean_reprojection_error, 1.0);
+  EXPECT_LT(final_mean_reprojection_error,
+            initial_mean_reprojection_error * 0.1);
+}
+
 TEST(DefaultBundleAdjuster, MultiCameraRigLargeConstantSensorFromRig) {
   // Real-world multi-camera rigs (stereo, surround-view) have large
   // sensor_from_rig offsets — typically 20–90 degrees and 0.1–1 m baseline.
