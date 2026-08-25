@@ -7,6 +7,7 @@
 #include "colmap/feature/onnx_matchers.h"
 #endif
 
+#include "pycolmap/feature/fixed_rig_matching.h"
 #include "pycolmap/feature/types.h"
 #include "pycolmap/helpers.h"
 #include "pycolmap/utils.h"
@@ -233,6 +234,7 @@ void BindFeatureMatching(py::module& m) {
                                          &FeatureMatchingOptions::aliked);
   PyFeatureMatchingOptions.def_readwrite("loma", &FeatureMatchingOptions::loma);
 #endif
+  BindFixedRigMatchingOptions(PyFeatureMatchingOptions);
   MakeDataclass(PyFeatureMatchingOptions);
 
   auto PyFeatureMatcherCls =

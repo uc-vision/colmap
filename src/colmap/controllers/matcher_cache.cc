@@ -85,6 +85,11 @@ const Camera& FeatureMatcherCache::GetCamera(const camera_t camera_id) {
   return cameras_cache_->at(camera_id);
 }
 
+const Rig& FeatureMatcherCache::GetRig(const rig_t rig_id) {
+  MaybeLoadRigs();
+  return rigs_cache_->at(rig_id);
+}
+
 const Frame& FeatureMatcherCache::GetFrame(const frame_t frame_id) {
   MaybeLoadFrames();
   return frames_cache_->at(frame_id);
@@ -253,6 +258,20 @@ void FeatureMatcherCache::MaybeLoadCameras() {
   cameras_cache_->reserve(cameras.size());
   for (Camera& camera : cameras) {
     cameras_cache_->emplace(camera.camera_id, std::move(camera));
+  }
+}
+
+void FeatureMatcherCache::MaybeLoadRigs() {
+  std::lock_guard<std::mutex> lock(database_mutex_);
+  if (rigs_cache_) {
+    return;
+  }
+
+  std::vector<Rig> rigs = database_->ReadAllRigs();
+  rigs_cache_ = std::make_unique<NodeHashMap<rig_t, Rig>>();
+  rigs_cache_->reserve(rigs.size());
+  for (Rig& rig : rigs) {
+    rigs_cache_->emplace(rig.RigId(), std::move(rig));
   }
 }
 

@@ -30,6 +30,7 @@
 #include "colmap/controllers/feature_matching.h"
 
 #include "colmap/controllers/feature_matching_utils.h"
+#include "colmap/controllers/fixed_rig_matching.h"
 #include "colmap/estimators/two_view_geometry.h"
 #include "colmap/feature/matcher.h"
 #include "colmap/feature/utils.h"
@@ -47,7 +48,8 @@ namespace {
 void RigVerification(const std::shared_ptr<Database>& database,
                      const std::shared_ptr<FeatureMatcherCache>& cache,
                      const TwoViewGeometryOptions& geometry_options,
-                     const int num_threads) {
+                     const int num_threads,
+                     const bool preserve_same_frame_geometry) {
   NodeHashMap<rig_t, Rig> rigs;
   for (auto& rig : database->ReadAllRigs()) {
     rigs[rig.RigId()] = std::move(rig);
@@ -76,6 +78,9 @@ void RigVerification(const std::shared_ptr<Database>& database,
     frame_t frame_id2 = image_to_frame_ids.at(image_id2);
     if (frame_id1 > frame_id2) {
       std::swap(frame_id1, frame_id2);
+    }
+    if (preserve_same_frame_geometry && frame_id1 == frame_id2) {
+      continue;
     }
     auto& stats = frame_pair_stats[{frame_id1, frame_id2}];
     stats.num_image_pairs += 1;
@@ -202,6 +207,11 @@ class FeatureMatcherThread : public Thread {
       return;
     }
 
+    if (matching_options_.use_fixed_rig_geometry &&
+        !matching_options_.skip_image_pairs_in_same_frame) {
+      matcher_.Match(FixedRigIntraFrameImagePairs(cache_));
+    }
+
     std::unique_ptr<PairGenerator> pair_generator =
         THROW_CHECK_NOTNULL(pair_generator_factory_());
 
@@ -228,8 +238,11 @@ class FeatureMatcherThread : public Thread {
         matching_options_.rig_verification) {
       run_timer.Restart();
       LOG_HEADING1("Rig verification");
-      RigVerification(
-          database_, cache_, geometry_options_, matching_options_.num_threads);
+      RigVerification(database_,
+                      cache_,
+                      geometry_options_,
+                      matching_options_.num_threads,
+                      matching_options_.use_fixed_rig_geometry);
       run_timer.PrintMinutes();
     }
   }
@@ -311,7 +324,8 @@ class GeometricVerifierThread : public Thread {
       RigVerification(database_,
                       cache_,
                       geometry_options_,
-                      verifier_.Options().num_threads);
+                      verifier_.Options().num_threads,
+                      false);
       run_timer.PrintMinutes();
     }
 

@@ -38,6 +38,7 @@ COLMAP_ADD_LIBRARY(
         bundle_adjustment.h bundle_adjustment.cc
         hierarchical_pipeline.h hierarchical_pipeline.cc
         feature_extraction.h feature_extraction.cc
+        fixed_rig_matching.h fixed_rig_matching.cc
         feature_matching.h feature_matching.cc
         feature_matching_utils.h feature_matching_utils.cc
         matcher_cache.h matcher_cache.cc
@@ -109,6 +110,11 @@ COLMAP_ADD_TEST(
 COLMAP_ADD_TEST(
     NAME feature_matching_test
     SRCS feature_matching_test.cc
+    LINK_LIBS colmap_controllers
+)
+COLMAP_ADD_TEST(
+    NAME fixed_rig_matching_test
+    SRCS fixed_rig_matching_test.cc
     LINK_LIBS colmap_controllers
 )
 COLMAP_ADD_TEST(
