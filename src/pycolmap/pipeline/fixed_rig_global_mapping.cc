@@ -7,6 +7,7 @@
 #include "colmap/util/misc.h"
 
 #include "pycolmap/helpers.h"
+#include "pycolmap/pipeline/prepared_global_mapping.h"
 
 #include <filesystem>
 #include <map>
@@ -52,6 +53,21 @@ std::map<size_t, std::shared_ptr<Reconstruction>> FixedRigGlobalMapping(
   return reconstructions;
 }
 
+std::unique_ptr<PreparedGlobalMapping> PrepareFixedRigGlobalMapping(
+    Database& database,
+    GlobalPipelineOptions options,
+    FixedRigGlobalPositionerOptions positioning_options) {
+  THROW_CHECK(!options.multiple_models)
+      << "Prepared global mapping produces one reconstruction";
+  THROW_CHECK(!options.mapper.skip_rotation_averaging);
+  THROW_CHECK(!options.mapper.skip_track_establishment);
+  py::gil_scoped_release release;
+  return std::make_unique<PreparedGlobalMapping>(
+      database,
+      std::move(options),
+      CreateFixedRigGlobalMapperStrategy(std::move(positioning_options)));
+}
+
 }  // namespace
 
 void BindFixedRigGlobalMapping(py::module& m) {
@@ -76,4 +92,13 @@ void BindFixedRigGlobalMapping(py::module& m) {
                 FixedRigGlobalPositionerOptions(),
                 "FixedRigGlobalPositionerOptions()"),
       "Recover 3D points and frame poses for a calibrated camera rig");
+
+  m.def("prepare_fixed_rig_global_mapping",
+        &PrepareFixedRigGlobalMapping,
+        "database"_a,
+        "options"_a,
+        py::arg_v("positioning_options",
+                  FixedRigGlobalPositionerOptions(),
+                  "FixedRigGlobalPositionerOptions()"),
+        "Establish fixed-rig feature tracks for coordinate refinement.");
 }

@@ -12,105 +12,95 @@
 #include "pycolmap/pybind11_extension.h"
 #include "pycolmap/scene/reconstruction.h"
 
-#include <memory>
 #include <utility>
 
-#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 using namespace colmap;
 using namespace pybind11::literals;
 namespace py = pybind11;
 
-namespace {
+PreparedGlobalMapping::PreparedGlobalMapping(Database& database,
+                                             GlobalPipelineOptions options)
+    : PreparedGlobalMapping(
+          database, std::move(options), CreateGlobalMapperStrategy()) {}
 
-using ImageIdArray = py::array_t<image_t, py::array::c_style>;
-using Point2DIndexArray = py::array_t<point2D_t, py::array::c_style>;
-using Point2DArray = py::array_t<float, py::array::c_style>;
+PreparedGlobalMapping::PreparedGlobalMapping(
+    Database& database,
+    GlobalPipelineOptions options,
+    std::shared_ptr<const GlobalMapperStrategy> strategy)
+    : options_(std::move(options)),
+      database_cache_(CreateDatabaseCache(database, options_)),
+      reconstruction_(std::make_shared<Reconstruction>()),
+      mapper_options_(CreateMapperOptions(options_)),
+      global_mapper_(database_cache_, std::move(strategy)) {
+  if (options_.decompose_relative_pose) {
+    MaybeDecomposeRelativePoses(database_cache_.get());
+  }
+  global_mapper_.BeginReconstruction(reconstruction_);
+  THROW_CHECK(
+      global_mapper_.RotationAveraging(mapper_options_.RotationAveraging()));
+  global_mapper_.EstablishTracks(mapper_options_);
+}
 
-class PreparedGlobalMapping {
- public:
-  PreparedGlobalMapping(Database& database, GlobalPipelineOptions options)
-      : options_(std::move(options)),
-        database_cache_(CreateDatabaseCache(database, options_)),
-        reconstruction_(std::make_shared<Reconstruction>()),
-        mapper_options_(CreateMapperOptions(options_)),
-        global_mapper_(database_cache_) {
-    if (options_.decompose_relative_pose) {
-      MaybeDecomposeRelativePoses(database_cache_.get());
-    }
-    global_mapper_.BeginReconstruction(reconstruction_);
-    THROW_CHECK(
-        global_mapper_.RotationAveraging(mapper_options_.RotationAveraging()));
-    global_mapper_.EstablishTracks(mapper_options_);
+py::dict PreparedGlobalMapping::TrackArrays() const {
+  return ::TrackArrays(*reconstruction_);
+}
+
+std::shared_ptr<Reconstruction> PreparedGlobalMapping::Finish(
+    const ImageIdArray& image_ids,
+    const Point2DIndexArray& point2D_indices,
+    const Point2DArray& xy) {
+  THROW_CHECK_EQ(image_ids.ndim(), 1);
+  THROW_CHECK_EQ(point2D_indices.ndim(), 1);
+  THROW_CHECK_EQ(xy.ndim(), 2);
+  THROW_CHECK_EQ(image_ids.shape(0), point2D_indices.shape(0));
+  THROW_CHECK_EQ(image_ids.shape(0), xy.shape(0));
+  THROW_CHECK_EQ(xy.shape(1), 2);
+
+  const auto image_ids_view = image_ids.unchecked<1>();
+  const auto point2D_indices_view = point2D_indices.unchecked<1>();
+  const auto xy_view = xy.unchecked<2>();
+  py::gil_scoped_release release;
+  for (ssize_t index = 0; index < image_ids.shape(0); ++index) {
+    const image_t image_id = image_ids_view(index);
+    const point2D_t point2D_index = point2D_indices_view(index);
+    const Eigen::Vector2d point(xy_view(index, 0), xy_view(index, 1));
+    database_cache_->Image(image_id).Point2D(point2D_index).xy = point;
+    reconstruction_->Image(image_id).Point2D(point2D_index).xy = point;
   }
 
-  py::dict TrackArrays() const { return ::TrackArrays(*reconstruction_); }
-
-  std::shared_ptr<Reconstruction> Finish(
-      const ImageIdArray& image_ids,
-      const Point2DIndexArray& point2D_indices,
-      const Point2DArray& xy) {
-    THROW_CHECK_EQ(image_ids.ndim(), 1);
-    THROW_CHECK_EQ(point2D_indices.ndim(), 1);
-    THROW_CHECK_EQ(xy.ndim(), 2);
-    THROW_CHECK_EQ(image_ids.shape(0), point2D_indices.shape(0));
-    THROW_CHECK_EQ(image_ids.shape(0), xy.shape(0));
-    THROW_CHECK_EQ(xy.shape(1), 2);
-
-    const auto image_ids_view = image_ids.unchecked<1>();
-    const auto point2D_indices_view = point2D_indices.unchecked<1>();
-    const auto xy_view = xy.unchecked<2>();
-    py::gil_scoped_release release;
-    for (ssize_t index = 0; index < image_ids.shape(0); ++index) {
-      const image_t image_id = image_ids_view(index);
-      const point2D_t point2D_index = point2D_indices_view(index);
-      const Eigen::Vector2d point(xy_view(index, 0), xy_view(index, 1));
-      database_cache_->Image(image_id).Point2D(point2D_index).xy = point;
-      reconstruction_->Image(image_id).Point2D(point2D_index).xy = point;
-    }
-
-    GlobalMapperOptions finish_options = mapper_options_;
-    finish_options.skip_rotation_averaging = true;
-    finish_options.skip_track_establishment = true;
-    THROW_CHECK(global_mapper_.Solve(finish_options));
-    AlignReconstructionToOrigRigScales(database_cache_->Rigs(),
-                                       reconstruction_.get());
-    if (!options_.image_path.empty()) {
-      reconstruction_->ExtractColorsForAllImages(options_.image_path,
-                                                 options_.num_threads);
-    }
-    return reconstruction_;
+  GlobalMapperOptions finish_options = mapper_options_;
+  finish_options.skip_rotation_averaging = true;
+  finish_options.skip_track_establishment = true;
+  THROW_CHECK(global_mapper_.Solve(finish_options));
+  AlignReconstructionToOrigRigScales(database_cache_->Rigs(),
+                                     reconstruction_.get());
+  if (!options_.image_path.empty()) {
+    reconstruction_->ExtractColorsForAllImages(options_.image_path,
+                                               options_.num_threads);
   }
+  return reconstruction_;
+}
 
- private:
-  static std::shared_ptr<DatabaseCache> CreateDatabaseCache(
-      Database& database, const GlobalPipelineOptions& options) {
-    DatabaseCache::Options cache_options;
-    cache_options.min_num_matches = options.min_num_matches;
-    cache_options.ignore_watermarks = options.ignore_watermarks;
-    cache_options.image_names = {options.image_names.begin(),
-                                 options.image_names.end()};
-    return DatabaseCache::Create(database, cache_options);
-  }
+std::shared_ptr<DatabaseCache> PreparedGlobalMapping::CreateDatabaseCache(
+    Database& database, const GlobalPipelineOptions& options) {
+  DatabaseCache::Options cache_options;
+  cache_options.min_num_matches = options.min_num_matches;
+  cache_options.ignore_watermarks = options.ignore_watermarks;
+  cache_options.image_names = {options.image_names.begin(),
+                               options.image_names.end()};
+  return DatabaseCache::Create(database, cache_options);
+}
 
-  static GlobalMapperOptions CreateMapperOptions(
-      const GlobalPipelineOptions& options) {
-    GlobalMapperOptions mapper_options = options.mapper;
-    mapper_options.image_path = options.image_path;
-    mapper_options.num_threads = options.num_threads;
-    mapper_options.random_seed = options.random_seed;
-    return mapper_options;
-  }
-
-  const GlobalPipelineOptions options_;
-  const std::shared_ptr<DatabaseCache> database_cache_;
-  const std::shared_ptr<Reconstruction> reconstruction_;
-  const GlobalMapperOptions mapper_options_;
-  GlobalMapper global_mapper_;
-};
-
-}  // namespace
+GlobalMapperOptions PreparedGlobalMapping::CreateMapperOptions(
+    const GlobalPipelineOptions& options) {
+  GlobalMapperOptions mapper_options = options.mapper;
+  mapper_options.image_path = options.image_path;
+  mapper_options.num_threads = options.num_threads;
+  mapper_options.random_seed = options.random_seed;
+  return mapper_options;
+}
 
 void BindPreparedGlobalMapping(py::module& m) {
   py::classh<PreparedGlobalMapping>(m, "PreparedGlobalMapping")

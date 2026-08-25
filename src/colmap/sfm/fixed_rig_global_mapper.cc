@@ -71,9 +71,7 @@ bool FixedRigGlobalMapper::Solve(const GlobalMapperOptions& options,
 
 bool FixedRigGlobalMapper::RotationAveraging(
     const GlobalMapperOptions& options) {
-  const GlobalMapperOptions configured_options =
-      CreateFixedRigGlobalMapperStrategy()->Configure(options);
-  return mapper_.RotationAveraging(configured_options.RotationAveraging());
+  return mapper_.RotationAveraging(options.RotationAveraging());
 }
 
 void FixedRigGlobalMapper::EstablishTracks(const GlobalMapperOptions& options) {
