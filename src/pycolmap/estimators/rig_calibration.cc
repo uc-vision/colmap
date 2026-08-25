@@ -1,6 +1,7 @@
 #include "colmap/estimators/rig_calibration.h"
 
 #include "pycolmap/estimators/rig_calibration_packed.h"
+#include "pycolmap/estimators/rig_calibration_preparation.h"
 #include "pycolmap/helpers.h"
 #include "pycolmap/pybind11_extension.h"
 
@@ -89,4 +90,5 @@ void BindRigCalibration(py::module& m) {
       .def_property_readonly("options", &CeresRigCalibrator::Options);
 
   BindRigCalibrationPacked(m);
+  BindRigCalibrationPreparation(m);
 }
