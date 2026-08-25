@@ -107,6 +107,17 @@ struct RigCalibrationObservability {
   bool IsFullRank() const;
 };
 
+struct RigCalibrationTiming {
+  double group_preparation_seconds = 0.0;
+  double local_setup_seconds = 0.0;
+  double robust_setup_seconds = 0.0;
+  double final_setup_seconds = 0.0;
+  double filtering_seconds = 0.0;
+  double residual_statistics_seconds = 0.0;
+  double observability_evaluation_seconds = 0.0;
+  double observability_marginalization_seconds = 0.0;
+};
+
 struct RigCalibrationSummary : public CeresBundleAdjustmentSummary {
   size_t num_groups = 0;
   size_t num_tracks = 0;
@@ -120,6 +131,7 @@ struct RigCalibrationSummary : public CeresBundleAdjustmentSummary {
   std::vector<double> distance_prior_errors;
   std::vector<ceres::Solver::Summary> stage_summaries;
   RigCalibrationObservability observability;
+  RigCalibrationTiming timing;
 };
 
 // Jointly calibrates shared camera intrinsics and sensor-from-rig poses from

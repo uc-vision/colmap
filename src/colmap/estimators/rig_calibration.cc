@@ -38,6 +38,7 @@
 #include "colmap/sensor/rig.h"
 #include "colmap/util/logging.h"
 #include "colmap/util/misc.h"
+#include "colmap/util/timer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -191,7 +192,10 @@ struct CeresRigCalibrator::Impl {
     THROW_CHECK(options.Check());
     THROW_CHECK(reconstruction.ExistsRig(rig_id));
     THROW_CHECK_GT(this->groups.size(), 0);
+    Timer timer;
+    timer.Start();
     PrepareGroups();
+    timing.group_preparation_seconds = timer.ElapsedSeconds();
     BuildProblem(CalibrationStage::LOCAL);
   }
 
@@ -282,6 +286,8 @@ struct CeresRigCalibrator::Impl {
   enum class CalibrationStage { LOCAL, ROBUST_JOINT, FINAL_JOINT };
 
   void BuildProblem(const CalibrationStage stage) {
+    Timer timer;
+    timer.Start();
     const bool refine_global_calibration = stage != CalibrationStage::LOCAL;
     ceres::LossFunction* reprojection_loss_function =
         stage == CalibrationStage::FINAL_JOINT ? nullptr
@@ -421,6 +427,17 @@ struct CeresRigCalibrator::Impl {
     }
     for (double* global_block : global_parameter_blocks) {
       ordering->AddElementToGroup(global_block, 2);
+    }
+    switch (stage) {
+      case CalibrationStage::LOCAL:
+        timing.local_setup_seconds += timer.ElapsedSeconds();
+        break;
+      case CalibrationStage::ROBUST_JOINT:
+        timing.robust_setup_seconds += timer.ElapsedSeconds();
+        break;
+      case CalibrationStage::FINAL_JOINT:
+        timing.final_setup_seconds += timer.ElapsedSeconds();
+        break;
     }
   }
 
@@ -610,7 +627,10 @@ struct CeresRigCalibrator::Impl {
         std::sqrt(squared_distance_error / groups.size());
   }
 
-  RigCalibrationObservability ComputeObservability() const {
+  RigCalibrationObservability ComputeObservability() {
+    Timer total_timer;
+    total_timer.Start();
+    double evaluation_seconds = 0.0;
     RigCalibrationObservability observability;
     observability.parameter_names = global_parameter_names;
     if (global_parameter_blocks.empty()) {
@@ -643,8 +663,11 @@ struct CeresRigCalibrator::Impl {
                                            group_data.point_blocks.end());
 
       ceres::CRSMatrix jacobian_crs;
+      Timer evaluation_timer;
+      evaluation_timer.Start();
       THROW_CHECK(problem->Evaluate(
           eval_options, nullptr, nullptr, nullptr, &jacobian_crs));
+      evaluation_seconds += evaluation_timer.ElapsedSeconds();
       const Eigen::Map<const Eigen::SparseMatrix<double, Eigen::RowMajor>>
           jacobian_map(jacobian_crs.num_rows,
                        jacobian_crs.num_cols,
@@ -741,6 +764,9 @@ struct CeresRigCalibrator::Impl {
         scales.asDiagonal();
     observability.standard_deviations =
         observability.marginal_covariance.diagonal().cwiseMax(0.0).cwiseSqrt();
+    timing.observability_evaluation_seconds = evaluation_seconds;
+    timing.observability_marginalization_seconds =
+        total_timer.ElapsedSeconds() - evaluation_seconds;
     return observability;
   }
 
@@ -757,8 +783,11 @@ struct CeresRigCalibrator::Impl {
       summary = SolveProblem();
       stage_summaries.push_back(summary);
       if (summary.IsSolutionUsable()) {
+        Timer filtering_timer;
+        filtering_timer.Start();
         num_filtered_observations =
             FilterOutlierObservations(&num_filtered_groups);
+        timing.filtering_seconds = filtering_timer.ElapsedSeconds();
         if (groups.empty()) {
           rejected_all_groups = true;
           summary.termination_type = ceres::FAILURE;
@@ -787,7 +816,11 @@ struct CeresRigCalibrator::Impl {
       result->distance_prior_rmse = std::numeric_limits<double>::infinity();
       result->observability = RejectedObservability();
     } else {
+      Timer residual_statistics_timer;
+      residual_statistics_timer.Start();
       ComputeResidualStatistics(result.get());
+      timing.residual_statistics_seconds =
+          residual_statistics_timer.ElapsedSeconds();
       result->observability = ComputeObservability();
       if (result->num_invalid_observations == result->num_observations) {
         summary.termination_type = ceres::FAILURE;
@@ -799,6 +832,7 @@ struct CeresRigCalibrator::Impl {
     result->termination_type = base_summary->termination_type;
     result->num_residuals = base_summary->num_residuals;
     result->ceres_summary = summary;
+    result->timing = timing;
 
     if (options.print_summary || VLOG_IS_ON(1)) {
       PrintSolverSummary(summary, "Rig calibration report");
@@ -818,6 +852,7 @@ struct CeresRigCalibrator::Impl {
   std::shared_ptr<ceres::ParameterBlockOrdering> ordering;
   std::vector<GroupProblemData> group_problem_data;
   std::vector<ceres::ResidualBlockId> reprojection_residual_blocks;
+  RigCalibrationTiming timing;
   std::vector<double*> global_parameter_blocks;
   std::vector<std::string> global_parameter_names;
 };

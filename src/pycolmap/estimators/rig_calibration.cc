@@ -58,6 +58,24 @@ void BindRigCalibration(py::module& m) {
           .def("is_full_rank", &Observability::IsFullRank);
   MakeDataclass(PyObservability);
 
+  using Timing = RigCalibrationTiming;
+  auto PyTiming =
+      py::classh<Timing>(m, "RigCalibrationTiming")
+          .def(py::init<>())
+          .def_readwrite("group_preparation_seconds",
+                         &Timing::group_preparation_seconds)
+          .def_readwrite("local_setup_seconds", &Timing::local_setup_seconds)
+          .def_readwrite("robust_setup_seconds", &Timing::robust_setup_seconds)
+          .def_readwrite("final_setup_seconds", &Timing::final_setup_seconds)
+          .def_readwrite("filtering_seconds", &Timing::filtering_seconds)
+          .def_readwrite("residual_statistics_seconds",
+                         &Timing::residual_statistics_seconds)
+          .def_readwrite("observability_evaluation_seconds",
+                         &Timing::observability_evaluation_seconds)
+          .def_readwrite("observability_marginalization_seconds",
+                         &Timing::observability_marginalization_seconds);
+  MakeDataclass(PyTiming);
+
   using Summary = RigCalibrationSummary;
   auto PySummary =
       py::classh<Summary, CeresBundleAdjustmentSummary>(m,
@@ -77,7 +95,8 @@ void BindRigCalibration(py::module& m) {
           .def_readwrite("distance_prior_errors",
                          &Summary::distance_prior_errors)
           .def_readwrite("stage_summaries", &Summary::stage_summaries)
-          .def_readwrite("observability", &Summary::observability);
+          .def_readwrite("observability", &Summary::observability)
+          .def_readwrite("timing", &Summary::timing);
   MakeDataclass(PySummary);
 
   py::classh<CeresRigCalibrator>(m, "CeresRigCalibrator")
