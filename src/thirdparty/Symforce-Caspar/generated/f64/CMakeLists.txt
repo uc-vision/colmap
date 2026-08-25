@@ -20,11 +20,10 @@ list(FILTER CUDA_HEADERS EXCLUDE REGEX "pybind.*")
 
 add_library(caspar_lib_core STATIC ${CUDA_SOURCES} ${CUDA_HEADERS})
 target_include_directories(caspar_lib_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(caspar_lib_core PUBLIC CUDA::cudart)
+target_link_libraries(caspar_lib_core PUBLIC CUDA::cudart $<$<PLATFORM_ID:Linux>:m>)
 target_compile_options(caspar_lib_core PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
 )
 set_target_properties(caspar_lib_core PROPERTIES
   POSITION_INDEPENDENT_CODE ON
 )
-

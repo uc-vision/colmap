@@ -1,5 +1,5 @@
 if(NOT IS_MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops -ffast-math")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops -ffast-math -fno-finite-math-only")
 endif()
 
 COLMAP_ADD_LIBRARY(
