@@ -109,7 +109,9 @@ std::map<size_t, std::shared_ptr<Reconstruction>> GlobalMapping(
     const std::filesystem::path& output_path,
     GlobalPipelineOptions options) {
   THROW_CHECK_FILE_EXISTS(database_path);
-  THROW_CHECK_DIR_EXISTS(image_path);
+  if (!image_path.empty()) {
+    THROW_CHECK_DIR_EXISTS(image_path);
+  }
   CreateDirIfNotExists(output_path);
 
   py::gil_scoped_release release;
