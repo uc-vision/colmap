@@ -9,6 +9,7 @@
 
 #include "pycolmap/helpers.h"
 #include "pycolmap/pipeline/prepared_global_mapping.h"
+#include "pycolmap/pybind11_extension.h"
 
 #include <filesystem>
 #include <map>
