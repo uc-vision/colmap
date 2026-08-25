@@ -1,3 +1,5 @@
+#include "pycolmap/pipeline/prepared_global_mapping.h"
+
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
@@ -16,6 +18,7 @@ void BindPipeline(py::module& m) {
   BindExtractFeatures(m);
   BindMatchFeatures(m);
   BindSfM(m);
+  BindPreparedGlobalMapping(m);
 #if defined(COLMAP_MVS_ENABLED)
   BindMVS(m);
   BindMeshing(m);
