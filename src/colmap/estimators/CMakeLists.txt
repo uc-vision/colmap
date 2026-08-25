@@ -40,6 +40,8 @@ set(ESTIMATORS_SRCS
     covariance.h covariance.cc
     fixed_rig_two_view_geometry.h fixed_rig_two_view_geometry.cc
     fundamental_matrix_degensac.h fundamental_matrix_degensac.cc
+    fixed_rig_global_positioning.h fixed_rig_global_positioning.cc
+    fixed_rig_rotation_averaging.h fixed_rig_rotation_averaging.cc
     generalized_pose.h generalized_pose.cc
     global_positioning.h global_positioning.cc
     gravity_refinement.h gravity_refinement.cc
@@ -169,5 +171,15 @@ COLMAP_ADD_TEST(
 COLMAP_ADD_TEST(
     NAME global_positioning_test
     SRCS global_positioning_test.cc
+    LINK_LIBS colmap_estimators
+)
+COLMAP_ADD_TEST(
+    NAME fixed_rig_global_positioning_test
+    SRCS fixed_rig_global_positioning_test.cc
+    LINK_LIBS colmap_estimators
+)
+COLMAP_ADD_TEST(
+    NAME fixed_rig_rotation_averaging_test
+    SRCS fixed_rig_rotation_averaging_test.cc
     LINK_LIBS colmap_estimators
 )
