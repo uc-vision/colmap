@@ -1,3 +1,4 @@
+#include "pycolmap/pipeline/fixed_rig_global_mapping.h"
 #include "pycolmap/pipeline/prepared_global_mapping.h"
 
 #include <pybind11/pybind11.h>
@@ -19,6 +20,7 @@ void BindPipeline(py::module& m) {
   BindMatchFeatures(m);
   BindSfM(m);
   BindPreparedGlobalMapping(m);
+  BindFixedRigGlobalMapping(m);
 #if defined(COLMAP_MVS_ENABLED)
   BindMVS(m);
   BindMeshing(m);
