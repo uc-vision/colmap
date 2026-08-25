@@ -1,5 +1,7 @@
 import os
 
+import numpy as np
+
 import pycolmap
 
 
@@ -129,6 +131,45 @@ def test_reconstruction_reg_frame_ids(synthetic_reconstruction):
 def test_reconstruction_point3d_ids(synthetic_reconstruction):
     point_ids = synthetic_reconstruction.point3D_ids()
     assert len(point_ids) > 0
+
+
+def test_reconstruction_track_arrays(synthetic_reconstruction):
+    tracks = synthetic_reconstruction.track_arrays()
+    point_ids = tracks["point3D_ids"]
+    offsets = tracks["observation_offsets"]
+    image_ids = tracks["observation_image_ids"]
+    point2D_indices = tracks["observation_point2D_indices"]
+    observation_xy = tracks["observation_xy"]
+
+    assert point_ids.dtype == np.int64
+    assert offsets.dtype == np.int64
+    assert image_ids.dtype == np.uint32
+    assert point2D_indices.dtype == np.uint32
+    assert observation_xy.dtype == np.float32
+    assert offsets.shape == (synthetic_reconstruction.num_points3D() + 1,)
+    assert offsets[-1] == synthetic_reconstruction.compute_num_observations()
+    assert image_ids.shape == (offsets[-1],)
+    assert point2D_indices.shape == (offsets[-1],)
+    assert observation_xy.shape == (offsets[-1], 2)
+
+    for point_index, point_id in enumerate(point_ids):
+        elements = synthetic_reconstruction.point3D(
+            int(point_id)
+        ).track.elements
+        start, end = offsets[point_index : point_index + 2]
+        assert image_ids[start:end].tolist() == [
+            element.image_id for element in elements
+        ]
+        assert point2D_indices[start:end].tolist() == [
+            element.point2D_idx for element in elements
+        ]
+        expected_xy = [
+            synthetic_reconstruction.image(element.image_id)
+            .point2D(element.point2D_idx)
+            .xy
+            for element in elements
+        ]
+        np.testing.assert_allclose(observation_xy[start:end], expected_xy)
 
 
 def test_reconstruction_is_valid(synthetic_reconstruction):
