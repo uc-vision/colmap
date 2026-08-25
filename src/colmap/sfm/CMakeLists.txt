@@ -33,6 +33,7 @@ set(FOLDER_NAME "sfm")
 COLMAP_ADD_LIBRARY(
     NAME colmap_sfm
     SRCS
+        fixed_rig_global_mapper.h fixed_rig_global_mapper.cc
         global_mapper.h global_mapper.cc
         incremental_mapper_impl.h incremental_mapper_impl.cc
         incremental_mapper.h incremental_mapper.cc

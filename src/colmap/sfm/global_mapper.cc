@@ -101,8 +101,34 @@ IncrementalTriangulator::Options GlobalMapperOptions::Retriangulation() const {
   return opts;
 }
 
+GlobalMapperOptions GlobalMapperStrategy::Configure(
+    const GlobalMapperOptions& options) const {
+  return options;
+}
+
+void GlobalMapperStrategy::PrepareRotationAveraging(
+    PoseGraph&, const Reconstruction&, const RotationEstimatorOptions&) const {}
+
+bool GlobalMapperStrategy::RunPositioning(
+    const GlobalPositionerOptions& options,
+    const PoseGraph& pose_graph,
+    Reconstruction& reconstruction,
+    const std::vector<PosePrior>&,
+    double) const {
+  return RunGlobalPositioning(options, pose_graph, reconstruction);
+}
+
+std::shared_ptr<const GlobalMapperStrategy> CreateGlobalMapperStrategy() {
+  return std::make_shared<GlobalMapperStrategy>();
+}
+
 GlobalMapper::GlobalMapper(std::shared_ptr<const DatabaseCache> database_cache)
-    : database_cache_(std::move(THROW_CHECK_NOTNULL(database_cache))) {}
+    : GlobalMapper(std::move(database_cache), CreateGlobalMapperStrategy()) {}
+
+GlobalMapper::GlobalMapper(std::shared_ptr<const DatabaseCache> database_cache,
+                           std::shared_ptr<const GlobalMapperStrategy> strategy)
+    : database_cache_(std::move(THROW_CHECK_NOTNULL(database_cache))),
+      strategy_(std::move(THROW_CHECK_NOTNULL(strategy))) {}
 
 void GlobalMapper::BeginReconstruction(
     const std::shared_ptr<class Reconstruction>& reconstruction) {
@@ -125,6 +151,8 @@ bool GlobalMapper::RotationAveraging(const RotationEstimatorOptions& options) {
     LOG(ERROR) << "Cannot continue with empty pose graph";
     return false;
   }
+
+  strategy_->PrepareRotationAveraging(*pose_graph_, *reconstruction_, options);
 
   // Read pose priors from the database cache.
   const std::vector<PosePrior>& pose_priors = database_cache_->PosePriors();
@@ -299,7 +327,11 @@ bool GlobalMapper::GlobalPositioning(const GlobalPositionerOptions& options,
                                      double max_angular_reproj_error_deg,
                                      double max_normalized_reproj_error,
                                      double min_tri_angle_deg) {
-  if (!RunGlobalPositioning(options, *pose_graph_, *reconstruction_)) {
+  if (!strategy_->RunPositioning(options,
+                                 *pose_graph_,
+                                 *reconstruction_,
+                                 database_cache_->PosePriors(),
+                                 min_tri_angle_deg)) {
     return false;
   }
 
@@ -521,8 +553,9 @@ bool GlobalMapper::IterativeRetriangulateAndRefine(
   return true;
 }
 
-bool GlobalMapper::Solve(const GlobalMapperOptions& options,
+bool GlobalMapper::Solve(const GlobalMapperOptions& input_options,
                          const std::function<bool()>& on_progress) {
+  const GlobalMapperOptions options = strategy_->Configure(input_options);
   THROW_CHECK(options.Check());
   THROW_CHECK_NOTNULL(reconstruction_);
   THROW_CHECK_NOTNULL(pose_graph_);

@@ -116,9 +116,34 @@ struct GlobalMapperOptions {
   IncrementalTriangulator::Options Retriangulation() const;
 };
 
+// Stage policy used to specialize global reconstruction without mixing
+// specialization-specific algorithms into GlobalMapper.
+class GlobalMapperStrategy {
+ public:
+  virtual ~GlobalMapperStrategy() = default;
+
+  virtual GlobalMapperOptions Configure(
+      const GlobalMapperOptions& options) const;
+
+  virtual void PrepareRotationAveraging(
+      PoseGraph& pose_graph,
+      const Reconstruction& reconstruction,
+      const RotationEstimatorOptions& options) const;
+
+  virtual bool RunPositioning(const GlobalPositionerOptions& options,
+                              const PoseGraph& pose_graph,
+                              Reconstruction& reconstruction,
+                              const std::vector<PosePrior>& pose_priors,
+                              double min_tri_angle_deg) const;
+};
+
+std::shared_ptr<const GlobalMapperStrategy> CreateGlobalMapperStrategy();
+
 class GlobalMapper {
  public:
   explicit GlobalMapper(std::shared_ptr<const DatabaseCache> database_cache);
+  GlobalMapper(std::shared_ptr<const DatabaseCache> database_cache,
+               std::shared_ptr<const GlobalMapperStrategy> strategy);
 
   // Prepare the mapper for a new reconstruction. This will initialize the
   // reconstruction and view graph from the database.
@@ -169,6 +194,7 @@ class GlobalMapper {
 
  private:
   std::shared_ptr<const DatabaseCache> database_cache_;
+  std::shared_ptr<const GlobalMapperStrategy> strategy_;
   std::shared_ptr<class PoseGraph> pose_graph_;
   std::shared_ptr<class Reconstruction> reconstruction_;
 };
