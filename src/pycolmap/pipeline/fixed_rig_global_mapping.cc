@@ -3,6 +3,7 @@
 #include "colmap/controllers/fixed_rig_global_pipeline.h"
 #include "colmap/scene/database.h"
 #include "colmap/scene/reconstruction_manager.h"
+#include "colmap/sfm/fixed_rig_global_mapper.h"
 #include "colmap/util/file.h"
 #include "colmap/util/misc.h"
 
