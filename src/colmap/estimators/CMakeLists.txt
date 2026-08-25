@@ -38,6 +38,7 @@ set(ESTIMATORS_SRCS
     bundle_adjustment_ceres.h bundle_adjustment_ceres.cc
     coordinate_frame.h coordinate_frame.cc
     covariance.h covariance.cc
+    fixed_rig_two_view_geometry.h fixed_rig_two_view_geometry.cc
     fundamental_matrix_degensac.h fundamental_matrix_degensac.cc
     generalized_pose.h generalized_pose.cc
     global_positioning.h global_positioning.cc
@@ -115,6 +116,11 @@ COLMAP_ADD_TEST(
 COLMAP_ADD_TEST(
     NAME covariance_test
     SRCS covariance_test.cc
+    LINK_LIBS colmap_estimators
+)
+COLMAP_ADD_TEST(
+    NAME fixed_rig_two_view_geometry_test
+    SRCS fixed_rig_two_view_geometry_test.cc
     LINK_LIBS colmap_estimators
 )
 COLMAP_ADD_TEST(
