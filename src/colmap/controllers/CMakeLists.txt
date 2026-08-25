@@ -41,6 +41,7 @@ COLMAP_ADD_LIBRARY(
         fixed_rig_matching.h fixed_rig_matching.cc
         feature_matching.h feature_matching.cc
         feature_matching_utils.h feature_matching_utils.cc
+        fixed_rig_global_pipeline.h fixed_rig_global_pipeline.cc
         matcher_cache.h matcher_cache.cc
         pairing.h pairing.cc
         global_pipeline.h global_pipeline.cc

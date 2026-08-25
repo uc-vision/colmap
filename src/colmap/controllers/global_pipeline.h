@@ -90,6 +90,12 @@ class GlobalPipeline : public BaseController {
 
   void Run() override;
 
+ protected:
+  GlobalPipeline(GlobalPipelineOptions options,
+                 std::shared_ptr<Database> database,
+                 std::shared_ptr<ReconstructionManager> reconstruction_manager,
+                 std::shared_ptr<const GlobalMapperStrategy> strategy);
+
  private:
   struct ReconstructionStats {
     // Number of components that failed during rotation averaging or mapping.
@@ -113,6 +119,7 @@ class GlobalPipeline : public BaseController {
       const GlobalMapperOptions& mapper_options);
 
   const GlobalPipelineOptions options_;
+  const std::shared_ptr<const GlobalMapperStrategy> strategy_;
   std::shared_ptr<DatabaseCache> database_cache_;
   std::shared_ptr<ReconstructionManager> reconstruction_manager_;
 };

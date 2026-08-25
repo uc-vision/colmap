@@ -92,7 +92,8 @@ ComponentDecomposition ComputeComponentsByRotationAveraging(
     const PoseGraph& pose_graph,
     const Reconstruction& base,
     const std::vector<PosePrior>& pose_priors,
-    int min_model_size) {
+    int min_model_size,
+    const GlobalMapperStrategy& strategy) {
   ComponentDecomposition result;
   const std::vector<FlatHashSet<image_t>> input_components =
       pose_graph.ConnectedImageIdsForFrameComponents(
@@ -108,6 +109,8 @@ ComponentDecomposition ComputeComponentsByRotationAveraging(
     Reconstruction reconstruction = base;
     PoseGraph component_pose_graph = pose_graph;
     component_pose_graph.InvalidatePairsOutsideActiveImageIds(input_component);
+    strategy.PrepareRotationAveraging(
+        component_pose_graph, reconstruction, options);
 
     RotationEstimatorOptions decomposition_options = options;
     decomposition_options.filter_unregistered = false;
@@ -144,7 +147,18 @@ GlobalPipeline::GlobalPipeline(
     GlobalPipelineOptions options,
     std::shared_ptr<Database> database,
     std::shared_ptr<ReconstructionManager> reconstruction_manager)
+    : GlobalPipeline(std::move(options),
+                     std::move(database),
+                     std::move(reconstruction_manager),
+                     CreateGlobalMapperStrategy()) {}
+
+GlobalPipeline::GlobalPipeline(
+    GlobalPipelineOptions options,
+    std::shared_ptr<Database> database,
+    std::shared_ptr<ReconstructionManager> reconstruction_manager,
+    std::shared_ptr<const GlobalMapperStrategy> strategy)
     : options_(std::move(options)),
+      strategy_(std::move(THROW_CHECK_NOTNULL(strategy))),
       reconstruction_manager_(
           std::move(THROW_CHECK_NOTNULL(reconstruction_manager))) {
   THROW_CHECK_NOTNULL(database);
@@ -171,7 +185,7 @@ GlobalPipeline::ReconstructSingleComponent(
   auto reconstruction =
       reconstruction_manager_->Get(reconstruction_manager_->Add());
 
-  GlobalMapper global_mapper(database_cache);
+  GlobalMapper global_mapper(database_cache, strategy_);
   global_mapper.BeginReconstruction(reconstruction);
 
   Timer run_timer;
@@ -206,7 +220,7 @@ void GlobalPipeline::Run() {
   }
 
   // Prepare mapper options with top-level options.
-  GlobalMapperOptions mapper_options = options_.mapper;
+  GlobalMapperOptions mapper_options = strategy_->Configure(options_.mapper);
   mapper_options.image_path = options_.image_path;
   mapper_options.num_threads = options_.num_threads;
   mapper_options.random_seed = options_.random_seed;
@@ -294,7 +308,8 @@ GlobalPipeline::ReconstructionStats GlobalPipeline::ReconstructMultiComponents(
                                            pose_graph,
                                            base,
                                            pose_priors,
-                                           options_.min_model_size);
+                                           options_.min_model_size,
+                                           *strategy_);
   stats.num_failed += decomposition.num_failed;
   stats.num_too_small += decomposition.num_too_small;
   std::vector<FlatHashSet<image_t>>& components = decomposition.components;
