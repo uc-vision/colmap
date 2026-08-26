@@ -114,8 +114,7 @@ struct RigCalibrationTiming {
   double final_setup_seconds = 0.0;
   double filtering_seconds = 0.0;
   double residual_statistics_seconds = 0.0;
-  double observability_evaluation_seconds = 0.0;
-  double observability_marginalization_seconds = 0.0;
+  double observability_seconds = 0.0;
 };
 
 struct RigCalibrationSummary : public CeresBundleAdjustmentSummary {

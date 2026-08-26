@@ -31,6 +31,7 @@
 
 #include "colmap/estimators/cost_functions/manifold.h"
 #include "colmap/estimators/cost_functions/reprojection_error.h"
+#include "colmap/estimators/rig_calibration_observability.h"
 #include "colmap/math/math.h"
 #include "colmap/scene/camera.h"
 #include "colmap/scene/reconstruction.h"
@@ -48,8 +49,6 @@
 #include <utility>
 
 #include <Eigen/Eigenvalues>
-#include <Eigen/SparseCore>
-#include <ceres/crs_matrix.h>
 
 namespace colmap {
 namespace {
@@ -130,25 +129,6 @@ std::vector<int> ConstantCameraParams(const RigCalibrationOptions& options,
   return constant_params;
 }
 
-Eigen::MatrixXd SymmetricPseudoInverse(const Eigen::MatrixXd& matrix,
-                                       const double relative_tolerance) {
-  if (matrix.rows() == 0) {
-    return matrix;
-  }
-  const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(matrix);
-  THROW_CHECK_EQ(eig.info(), Eigen::Success);
-  const double max_eigenvalue = std::max(0.0, eig.eigenvalues().maxCoeff());
-  const double threshold = relative_tolerance * max_eigenvalue;
-  Eigen::VectorXd inv_eigenvalues = Eigen::VectorXd::Zero(matrix.rows());
-  for (Eigen::Index i = 0; i < matrix.rows(); ++i) {
-    if (eig.eigenvalues()[i] > threshold) {
-      inv_eigenvalues[i] = 1.0 / eig.eigenvalues()[i];
-    }
-  }
-  return eig.eigenvectors() * inv_eigenvalues.asDiagonal() *
-         eig.eigenvectors().transpose();
-}
-
 }  // namespace
 
 RigCalibrationOptions::RigCalibrationOptions() {
@@ -171,12 +151,6 @@ bool RigCalibrationObservability::IsFullRank() const {
 }
 
 struct CeresRigCalibrator::Impl {
-  struct GroupProblemData {
-    std::vector<ceres::ResidualBlockId> residual_blocks;
-    std::vector<double*> local_pose_blocks;
-    std::vector<double*> point_blocks;
-  };
-
   Impl(const RigCalibrationOptions& options,
        const rig_t rig_id,
        std::vector<RigCalibrationGroup> groups,
@@ -276,14 +250,104 @@ struct CeresRigCalibrator::Impl {
         ConstantCameraParams(options, camera, options.refine_distortion);
     if (constant_params.size() == camera.params.size()) {
       problem->SetParameterBlockConstant(camera.params.data());
-    } else if (!constant_params.empty()) {
+      return;
+    }
+    problem->SetParameterBlockVariable(camera.params.data());
+    if (!constant_params.empty()) {
       SetManifold(problem.get(),
                   camera.params.data(),
                   CreateSubsetManifold(camera.params.size(), constant_params));
     }
   }
 
-  enum class CalibrationStage { LOCAL, ROBUST_JOINT, FINAL_JOINT };
+  void AddGlobalParameterBlocks() {
+    Rig& rig = reconstruction.Rig(rig_id);
+    for (const auto& [sensor_id, maybe_sensor_from_rig] : rig.NonRefSensors()) {
+      THROW_CHECK(maybe_sensor_from_rig.has_value());
+      Rigid3d& sensor_from_rig = rig.SensorFromRig(sensor_id);
+      if (!problem->HasParameterBlock(sensor_from_rig.params.data())) {
+        problem->AddParameterBlock(sensor_from_rig.params.data(), 7);
+      }
+      SetManifold(problem.get(),
+                  sensor_from_rig.params.data(),
+                  CreateProductManifold(CreateEigenQuaternionManifold(),
+                                        CreateEuclideanManifold<3>()));
+    }
+    for (const camera_t camera_id : rig_camera_ids) {
+      Camera& camera = reconstruction.Camera(camera_id);
+      if (!problem->HasParameterBlock(camera.params.data())) {
+        problem->AddParameterBlock(camera.params.data(), camera.params.size());
+      }
+    }
+  }
+
+  void ConfigureGlobalCalibration(const bool refine_global_calibration) {
+    global_parameter_blocks.clear();
+    global_parameter_names.clear();
+
+    Rig& rig = reconstruction.Rig(rig_id);
+    for (const auto& [sensor_id, maybe_sensor_from_rig] : rig.NonRefSensors()) {
+      THROW_CHECK(maybe_sensor_from_rig.has_value());
+      Rigid3d& sensor_from_rig = rig.SensorFromRig(sensor_id);
+      if (refine_global_calibration && options.refine_sensor_from_rig) {
+        problem->SetParameterBlockVariable(sensor_from_rig.params.data());
+        global_parameter_blocks.push_back(sensor_from_rig.params.data());
+        const std::string prefix =
+            StringPrintf("sensor_from_rig[camera:%u].", sensor_id.id);
+        global_parameter_names.insert(global_parameter_names.end(),
+                                      {prefix + "rotation_x",
+                                       prefix + "rotation_y",
+                                       prefix + "rotation_z",
+                                       prefix + "translation_x",
+                                       prefix + "translation_y",
+                                       prefix + "translation_z"});
+      } else {
+        problem->SetParameterBlockConstant(sensor_from_rig.params.data());
+      }
+    }
+
+    for (const camera_t camera_id : rig_camera_ids) {
+      Camera& camera = reconstruction.Camera(camera_id);
+      ParameterizeCamera(camera, refine_global_calibration);
+      if (!problem->IsParameterBlockConstant(camera.params.data())) {
+        global_parameter_blocks.push_back(camera.params.data());
+        const std::vector<int> constant_params =
+            ConstantCameraParams(options, camera, options.refine_distortion);
+        const std::unordered_set<int> constant_params_set(
+            constant_params.begin(), constant_params.end());
+        const std::vector<std::string> param_names =
+            CSVToVector<std::string>(camera.ParamsInfo());
+        for (size_t param_idx = 0; param_idx < camera.params.size();
+             ++param_idx) {
+          if (constant_params_set.count(static_cast<int>(param_idx)) != 0) {
+            continue;
+          }
+          const std::string param_name =
+              param_idx < param_names.size()
+                  ? param_names[param_idx]
+                  : StringPrintf("param_%zu", param_idx);
+          global_parameter_names.push_back(
+              StringPrintf("camera[%u].%s", camera_id, param_name.c_str()));
+        }
+      }
+    }
+  }
+
+  void OrderGlobalParameterBlocks() {
+    for (double* global_block : global_parameter_blocks) {
+      ordering->AddElementToGroup(global_block, 2);
+    }
+  }
+
+  void EnableGlobalCalibration() {
+    Timer timer;
+    timer.Start();
+    ConfigureGlobalCalibration(true);
+    OrderGlobalParameterBlocks();
+    timing.robust_setup_seconds += timer.ElapsedSeconds();
+  }
+
+  enum class CalibrationStage { LOCAL, FINAL_JOINT };
 
   void BuildProblem(const CalibrationStage stage) {
     Timer timer;
@@ -298,16 +362,27 @@ struct CeresRigCalibrator::Impl {
     ordering = std::make_shared<ceres::ParameterBlockOrdering>();
     group_problem_data.clear();
     reprojection_residual_blocks.clear();
-    global_parameter_blocks.clear();
-    global_parameter_names.clear();
     group_problem_data.resize(groups.size());
 
     Rig& rig = reconstruction.Rig(rig_id);
     for (size_t group_idx = 0; group_idx < groups.size(); ++group_idx) {
       RigCalibrationGroup& group = groups[group_idx];
-      GroupProblemData& group_data = group_problem_data[group_idx];
+      internal::RigCalibrationObservabilityGroupData& group_data =
+          group_problem_data[group_idx];
+      group_data.tracks.reserve(group.tracks.size());
+      const size_t num_track_residual_blocks = std::accumulate(
+          group.tracks.begin(),
+          group.tracks.end(),
+          size_t{0},
+          [](const size_t count, const RigCalibrationTrack& track) {
+            return count + track.observations.size();
+          });
+      group_data.track_residual_blocks.reserve(num_track_residual_blocks);
+      group_data.local_pose_blocks.reserve(2);
+      group_data.non_track_residual_blocks.reserve(1);
       for (RigCalibrationTrack& track : group.tracks) {
-        group_data.point_blocks.push_back(track.xyz.data());
+        const size_t first_residual_idx =
+            group_data.track_residual_blocks.size();
         for (const RigCalibrationObservation& observation :
              track.observations) {
           Camera& camera = reconstruction.Camera(observation.camera_id);
@@ -334,8 +409,11 @@ struct CeresRigCalibrator::Impl {
                 camera.params.data());
           }
           reprojection_residual_blocks.push_back(residual_block);
-          group_data.residual_blocks.push_back(residual_block);
+          group_data.track_residual_blocks.push_back(residual_block);
         }
+        group_data.tracks.emplace_back(
+            track.xyz.data(),
+            group_data.track_residual_blocks.size() - first_residual_idx);
       }
 
       const RigCalibrationDistancePrior& prior =
@@ -346,7 +424,7 @@ struct CeresRigCalibrator::Impl {
                                     distance_loss.get(),
                                     group.rigs_from_group[0].params.data(),
                                     group.rigs_from_group[2].params.data());
-      group_data.residual_blocks.push_back(distance_residual);
+      group_data.non_track_residual_blocks.push_back(distance_residual);
 
       for (size_t frame_idx = 0; frame_idx < 3; ++frame_idx) {
         Rigid3d& rig_from_group = group.rigs_from_group[frame_idx];
@@ -362,78 +440,23 @@ struct CeresRigCalibrator::Impl {
       }
     }
 
-    for (const auto& [sensor_id, maybe_sensor_from_rig] : rig.NonRefSensors()) {
-      THROW_CHECK(maybe_sensor_from_rig.has_value());
-      Rigid3d& sensor_from_rig = rig.SensorFromRig(sensor_id);
-      if (!problem->HasParameterBlock(sensor_from_rig.params.data())) {
-        problem->AddParameterBlock(sensor_from_rig.params.data(), 7);
-      }
-      SetManifold(problem.get(),
-                  sensor_from_rig.params.data(),
-                  CreateProductManifold(CreateEigenQuaternionManifold(),
-                                        CreateEuclideanManifold<3>()));
-      if (refine_global_calibration && options.refine_sensor_from_rig) {
-        global_parameter_blocks.push_back(sensor_from_rig.params.data());
-        const std::string prefix =
-            StringPrintf("sensor_from_rig[camera:%u].", sensor_id.id);
-        global_parameter_names.insert(global_parameter_names.end(),
-                                      {prefix + "rotation_x",
-                                       prefix + "rotation_y",
-                                       prefix + "rotation_z",
-                                       prefix + "translation_x",
-                                       prefix + "translation_y",
-                                       prefix + "translation_z"});
-      } else {
-        problem->SetParameterBlockConstant(sensor_from_rig.params.data());
-      }
-    }
+    AddGlobalParameterBlocks();
+    ConfigureGlobalCalibration(refine_global_calibration);
 
-    for (const camera_t camera_id : rig_camera_ids) {
-      Camera& camera = reconstruction.Camera(camera_id);
-      if (!problem->HasParameterBlock(camera.params.data())) {
-        problem->AddParameterBlock(camera.params.data(), camera.params.size());
-      }
-      ParameterizeCamera(camera, refine_global_calibration);
-      if (!problem->IsParameterBlockConstant(camera.params.data())) {
-        global_parameter_blocks.push_back(camera.params.data());
-        const std::vector<int> constant_params =
-            ConstantCameraParams(options, camera, options.refine_distortion);
-        const std::unordered_set<int> constant_params_set(
-            constant_params.begin(), constant_params.end());
-        const std::vector<std::string> param_names =
-            CSVToVector<std::string>(camera.ParamsInfo());
-        for (size_t param_idx = 0; param_idx < camera.params.size();
-             ++param_idx) {
-          if (constant_params_set.count(static_cast<int>(param_idx)) != 0) {
-            continue;
-          }
-          const std::string param_name =
-              param_idx < param_names.size()
-                  ? param_names[param_idx]
-                  : StringPrintf("param_%zu", param_idx);
-          global_parameter_names.push_back(
-              StringPrintf("camera[%u].%s", camera_id, param_name.c_str()));
-        }
-      }
-    }
-
-    for (const GroupProblemData& group_data : group_problem_data) {
-      for (double* point_block : group_data.point_blocks) {
-        ordering->AddElementToGroup(point_block, 0);
+    for (const internal::RigCalibrationObservabilityGroupData& group_data :
+         group_problem_data) {
+      for (const internal::RigCalibrationObservabilityTrackData& track :
+           group_data.tracks) {
+        ordering->AddElementToGroup(track.point_block, 0);
       }
       for (double* pose_block : group_data.local_pose_blocks) {
         ordering->AddElementToGroup(pose_block, 1);
       }
     }
-    for (double* global_block : global_parameter_blocks) {
-      ordering->AddElementToGroup(global_block, 2);
-    }
+    OrderGlobalParameterBlocks();
     switch (stage) {
       case CalibrationStage::LOCAL:
         timing.local_setup_seconds += timer.ElapsedSeconds();
-        break;
-      case CalibrationStage::ROBUST_JOINT:
-        timing.robust_setup_seconds += timer.ElapsedSeconds();
         break;
       case CalibrationStage::FINAL_JOINT:
         timing.final_setup_seconds += timer.ElapsedSeconds();
@@ -630,7 +653,6 @@ struct CeresRigCalibrator::Impl {
   RigCalibrationObservability ComputeObservability() {
     Timer total_timer;
     total_timer.Start();
-    double evaluation_seconds = 0.0;
     RigCalibrationObservability observability;
     observability.parameter_names = global_parameter_names;
     if (global_parameter_blocks.empty()) {
@@ -639,6 +661,7 @@ struct CeresRigCalibrator::Impl {
       observability.standard_deviations = Eigen::VectorXd(0);
       observability.normalized_information_eigenvalues = Eigen::VectorXd(0);
       observability.normalized_condition_number = 1.0;
+      timing.observability_seconds = total_timer.ElapsedSeconds();
       return observability;
     }
 
@@ -647,87 +670,13 @@ struct CeresRigCalibrator::Impl {
       num_global_params += ParameterBlockTangentSize(*problem, global_block);
     }
     THROW_CHECK_EQ(num_global_params, global_parameter_names.size());
-    Eigen::MatrixXd marginal_information =
-        Eigen::MatrixXd::Zero(num_global_params, num_global_params);
-
-    for (const GroupProblemData& group_data : group_problem_data) {
-      ceres::Problem::EvaluateOptions eval_options;
-      eval_options.apply_loss_function = true;
-      eval_options.residual_blocks = group_data.residual_blocks;
-      eval_options.parameter_blocks = global_parameter_blocks;
-      eval_options.parameter_blocks.insert(eval_options.parameter_blocks.end(),
-                                           group_data.local_pose_blocks.begin(),
-                                           group_data.local_pose_blocks.end());
-      eval_options.parameter_blocks.insert(eval_options.parameter_blocks.end(),
-                                           group_data.point_blocks.begin(),
-                                           group_data.point_blocks.end());
-
-      ceres::CRSMatrix jacobian_crs;
-      Timer evaluation_timer;
-      evaluation_timer.Start();
-      THROW_CHECK(problem->Evaluate(
-          eval_options, nullptr, nullptr, nullptr, &jacobian_crs));
-      evaluation_seconds += evaluation_timer.ElapsedSeconds();
-      const Eigen::Map<const Eigen::SparseMatrix<double, Eigen::RowMajor>>
-          jacobian_map(jacobian_crs.num_rows,
-                       jacobian_crs.num_cols,
-                       jacobian_crs.values.size(),
-                       jacobian_crs.rows.data(),
-                       jacobian_crs.cols.data(),
-                       jacobian_crs.values.data());
-      const Eigen::SparseMatrix<double> jacobian = jacobian_map;
-
-      int num_local_pose_params = 0;
-      for (const double* pose_block : group_data.local_pose_blocks) {
-        num_local_pose_params +=
-            ParameterBlockTangentSize(*problem, pose_block);
-      }
-      const int num_a_params = num_global_params + num_local_pose_params;
-      const int num_point_params =
-          static_cast<int>(3 * group_data.point_blocks.size());
-      THROW_CHECK_EQ(jacobian.cols(), num_a_params + num_point_params);
-
-      const Eigen::SparseMatrix<double> jacobian_a =
-          jacobian.leftCols(num_a_params);
-      const Eigen::SparseMatrix<double> jacobian_points =
-          jacobian.rightCols(num_point_params);
-      Eigen::MatrixXd schur =
-          Eigen::MatrixXd(jacobian_a.transpose() * jacobian_a);
-      const Eigen::MatrixXd hessian_a_points =
-          Eigen::MatrixXd(jacobian_a.transpose() * jacobian_points);
-      const Eigen::SparseMatrix<double> hessian_points =
-          jacobian_points.transpose() * jacobian_points;
-      for (size_t point_idx = 0; point_idx < group_data.point_blocks.size();
-           ++point_idx) {
-        const Eigen::Index offset = 3 * point_idx;
-        const Eigen::Matrix3d point_hessian =
-            Eigen::MatrixXd(hessian_points.block(offset, offset, 3, 3));
-        const Eigen::Matrix3d point_hessian_inv =
-            SymmetricPseudoInverse(point_hessian, kObservabilityRankTolerance);
-        const Eigen::MatrixXd cross = hessian_a_points.middleCols(offset, 3);
-        schur.noalias() -= cross * point_hessian_inv * cross.transpose();
-      }
-      schur = 0.5 * (schur + schur.transpose());
-
-      const Eigen::MatrixXd global_information =
-          schur.topLeftCorner(num_global_params, num_global_params);
-      if (num_local_pose_params == 0) {
-        marginal_information += global_information;
-      } else {
-        const Eigen::MatrixXd global_local =
-            schur.topRightCorner(num_global_params, num_local_pose_params);
-        const Eigen::MatrixXd local_information = schur.bottomRightCorner(
-            num_local_pose_params, num_local_pose_params);
-        marginal_information.noalias() +=
-            global_information -
-            global_local *
-                SymmetricPseudoInverse(local_information,
-                                       kObservabilityRankTolerance) *
-                global_local.transpose();
-      }
-    }
-    marginal_information =
-        0.5 * (marginal_information + marginal_information.transpose());
+    const Eigen::MatrixXd marginal_information =
+        internal::ComputeRigCalibrationMarginalInformation(
+            *problem,
+            global_parameter_blocks,
+            group_problem_data,
+            kObservabilityRankTolerance,
+            options.ceres.solver_options.num_threads);
     observability.marginal_information = marginal_information;
 
     Eigen::VectorXd scales(num_global_params);
@@ -764,9 +713,7 @@ struct CeresRigCalibrator::Impl {
         scales.asDiagonal();
     observability.standard_deviations =
         observability.marginal_covariance.diagonal().cwiseMax(0.0).cwiseSqrt();
-    timing.observability_evaluation_seconds = evaluation_seconds;
-    timing.observability_marginalization_seconds =
-        total_timer.ElapsedSeconds() - evaluation_seconds;
+    timing.observability_seconds = total_timer.ElapsedSeconds();
     return observability;
   }
 
@@ -779,7 +726,7 @@ struct CeresRigCalibrator::Impl {
     size_t num_filtered_observations = 0;
     bool rejected_all_groups = false;
     if (summary.IsSolutionUsable() && HasRequestedGlobalCalibration()) {
-      BuildProblem(CalibrationStage::ROBUST_JOINT);
+      EnableGlobalCalibration();
       summary = SolveProblem();
       stage_summaries.push_back(summary);
       if (summary.IsSolutionUsable()) {
@@ -850,7 +797,8 @@ struct CeresRigCalibrator::Impl {
 
   std::shared_ptr<ceres::Problem> problem;
   std::shared_ptr<ceres::ParameterBlockOrdering> ordering;
-  std::vector<GroupProblemData> group_problem_data;
+  std::vector<internal::RigCalibrationObservabilityGroupData>
+      group_problem_data;
   std::vector<ceres::ResidualBlockId> reprojection_residual_blocks;
   RigCalibrationTiming timing;
   std::vector<double*> global_parameter_blocks;

@@ -70,10 +70,8 @@ void BindRigCalibration(py::module& m) {
           .def_readwrite("filtering_seconds", &Timing::filtering_seconds)
           .def_readwrite("residual_statistics_seconds",
                          &Timing::residual_statistics_seconds)
-          .def_readwrite("observability_evaluation_seconds",
-                         &Timing::observability_evaluation_seconds)
-          .def_readwrite("observability_marginalization_seconds",
-                         &Timing::observability_marginalization_seconds);
+          .def_readwrite("observability_seconds",
+                         &Timing::observability_seconds);
   MakeDataclass(PyTiming);
 
   using Summary = RigCalibrationSummary;
