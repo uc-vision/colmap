@@ -33,7 +33,6 @@
 #include "colmap/geometry/rigid3.h"
 #include "colmap/util/types.h"
 
-#include <array>
 #include <limits>
 #include <memory>
 #include <string>
@@ -58,15 +57,15 @@ struct RigCalibrationTrack {
 };
 
 struct RigCalibrationDistancePrior {
-  // Metric distance between the rig centers in group frames 0 and 2.
+  // Metric distance between the first and last rig centers in the group.
   double distance = 0.0;
   double stddev = 1.0;
 };
 
 struct RigCalibrationGroup {
-  std::array<Rigid3d, 3> rigs_from_group;
+  std::vector<Rigid3d> rigs_from_group;
   std::vector<RigCalibrationTrack> tracks;
-  RigCalibrationDistancePrior frame0_to_frame2_distance;
+  RigCalibrationDistancePrior first_to_last_distance;
 };
 
 struct RigCalibrationOptions {
@@ -134,8 +133,9 @@ struct RigCalibrationSummary : public CeresBundleAdjustmentSummary {
 };
 
 // Jointly calibrates shared camera intrinsics and sensor-from-rig poses from
-// independent three-frame groups. Group-local poses and points are nuisance
-// variables owned by this object and are not added to the reconstruction.
+// independent groups with a uniform frame count of at least two. Group-local
+// poses and points are nuisance variables owned by this object and are not
+// added to the reconstruction.
 class CeresRigCalibrator {
  public:
   CeresRigCalibrator(const RigCalibrationOptions& options,

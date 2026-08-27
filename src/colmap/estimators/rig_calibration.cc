@@ -189,19 +189,22 @@ struct CeresRigCalibrator::Impl {
         THROW_CHECK(rig.HasSensorFromRig(sensor_id));
       }
     }
+    const size_t group_size = groups.front().rigs_from_group.size();
+    THROW_CHECK_GE(group_size, 2);
     for (RigCalibrationGroup& group : groups) {
-      THROW_CHECK_GT(group.frame0_to_frame2_distance.distance, 0);
-      THROW_CHECK_GT(group.frame0_to_frame2_distance.stddev, 0);
+      THROW_CHECK_EQ(group.rigs_from_group.size(), group_size);
+      THROW_CHECK_GT(group.first_to_last_distance.distance, 0);
+      THROW_CHECK_GT(group.first_to_last_distance.stddev, 0);
       THROW_CHECK_GT(group.tracks.size(), 0);
 
-      std::array<bool, 3> frame_has_observation = {false, false, false};
+      std::vector<bool> frame_has_observation(group_size);
       for (Rigid3d& rig_from_group : group.rigs_from_group) {
         THROW_CHECK(rig_from_group.params.allFinite());
         THROW_CHECK_GT(rig_from_group.rotation().norm(), 0);
         rig_from_group.rotation().normalize();
       }
-      THROW_CHECK_GT((group.rigs_from_group[2].TgtOriginInSrc() -
-                      group.rigs_from_group[0].TgtOriginInSrc())
+      THROW_CHECK_GT((group.rigs_from_group.back().TgtOriginInSrc() -
+                      group.rigs_from_group.front().TgtOriginInSrc())
                          .norm(),
                      0);
       for (const RigCalibrationTrack& track : group.tracks) {
@@ -210,7 +213,7 @@ struct CeresRigCalibrator::Impl {
         std::set<std::pair<size_t, camera_t>> observed_images;
         for (const RigCalibrationObservation& observation :
              track.observations) {
-          THROW_CHECK_LT(observation.frame_idx, 3);
+          THROW_CHECK_LT(observation.frame_idx, group_size);
           THROW_CHECK(observation.xy.allFinite());
           THROW_CHECK(reconstruction.ExistsCamera(observation.camera_id));
           const Camera& camera = reconstruction.Camera(observation.camera_id);
@@ -228,14 +231,13 @@ struct CeresRigCalibrator::Impl {
                               frame_has_observation.end(),
                               [](const bool value) { return value; }));
 
-      const Rigid3d frame0_from_old_group = group.rigs_from_group[0];
+      const Rigid3d first_from_old_group = group.rigs_from_group.front();
       for (Rigid3d& rig_from_old_group : group.rigs_from_group) {
-        rig_from_old_group =
-            rig_from_old_group * Inverse(frame0_from_old_group);
+        rig_from_old_group = rig_from_old_group * Inverse(first_from_old_group);
       }
-      group.rigs_from_group[0] = Rigid3d();
+      group.rigs_from_group.front() = Rigid3d();
       for (RigCalibrationTrack& track : group.tracks) {
-        track.xyz = frame0_from_old_group * track.xyz;
+        track.xyz = first_from_old_group * track.xyz;
       }
     }
   }
@@ -378,7 +380,7 @@ struct CeresRigCalibrator::Impl {
             return count + track.observations.size();
           });
       group_data.track_residual_blocks.reserve(num_track_residual_blocks);
-      group_data.local_pose_blocks.reserve(2);
+      group_data.local_pose_blocks.reserve(group.rigs_from_group.size() - 1);
       group_data.non_track_residual_blocks.reserve(1);
       for (RigCalibrationTrack& track : group.tracks) {
         const size_t first_residual_idx =
@@ -416,17 +418,17 @@ struct CeresRigCalibrator::Impl {
             group_data.track_residual_blocks.size() - first_residual_idx);
       }
 
-      const RigCalibrationDistancePrior& prior =
-          group.frame0_to_frame2_distance;
+      const RigCalibrationDistancePrior& prior = group.first_to_last_distance;
       const ceres::ResidualBlockId distance_residual =
           problem->AddResidualBlock(RigCenterDistanceCostFunctor::Create(
                                         prior.distance, prior.stddev),
                                     distance_loss.get(),
-                                    group.rigs_from_group[0].params.data(),
-                                    group.rigs_from_group[2].params.data());
+                                    group.rigs_from_group.front().params.data(),
+                                    group.rigs_from_group.back().params.data());
       group_data.non_track_residual_blocks.push_back(distance_residual);
 
-      for (size_t frame_idx = 0; frame_idx < 3; ++frame_idx) {
+      for (size_t frame_idx = 0; frame_idx < group.rigs_from_group.size();
+           ++frame_idx) {
         Rigid3d& rig_from_group = group.rigs_from_group[frame_idx];
         SetManifold(problem.get(),
                     rig_from_group.params.data(),
@@ -465,8 +467,10 @@ struct CeresRigCalibrator::Impl {
   }
 
   ceres::Solver::Summary SolveProblem() {
+    const size_t num_frames =
+        groups.size() * groups.front().rigs_from_group.size();
     ceres::Solver::Options solver_options =
-        options.ceres.CreateSolverOptions(3 * groups.size(), *problem);
+        options.ceres.CreateSolverOptions(num_frames, *problem);
     solver_options.linear_solver_type = ceres::SPARSE_SCHUR;
     solver_options.linear_solver_ordering = ordering;
 
@@ -570,7 +574,7 @@ struct CeresRigCalibrator::Impl {
         groups.begin(),
         groups.end(),
         [&num_filtered_observations](const RigCalibrationGroup& group) {
-          std::array<bool, 3> frame_has_observation = {false, false, false};
+          std::vector<bool> frame_has_observation(group.rigs_from_group.size());
           for (const RigCalibrationTrack& track : group.tracks) {
             for (const RigCalibrationObservation& observation :
                  track.observations) {
@@ -639,10 +643,10 @@ struct CeresRigCalibrator::Impl {
     summary->distance_prior_errors.reserve(groups.size());
     double squared_distance_error = 0.0;
     for (const RigCalibrationGroup& group : groups) {
-      const double error = (group.rigs_from_group[2].TgtOriginInSrc() -
-                            group.rigs_from_group[0].TgtOriginInSrc())
+      const double error = (group.rigs_from_group.back().TgtOriginInSrc() -
+                            group.rigs_from_group.front().TgtOriginInSrc())
                                .norm() -
-                           group.frame0_to_frame2_distance.distance;
+                           group.first_to_last_distance.distance;
       summary->distance_prior_errors.push_back(error);
       squared_distance_error += error * error;
     }

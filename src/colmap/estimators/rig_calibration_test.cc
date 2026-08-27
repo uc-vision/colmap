@@ -47,27 +47,28 @@ namespace colmap {
 namespace {
 
 std::vector<RigCalibrationGroup> BuildGroups(
-    const Reconstruction& reconstruction) {
+    const Reconstruction& reconstruction, const size_t group_size = 3) {
   std::vector<frame_t> frame_ids = reconstruction.RegFrameIds();
   std::sort(frame_ids.begin(), frame_ids.end());
-  THROW_CHECK_EQ(frame_ids.size() % 3, 0);
+  THROW_CHECK_EQ(frame_ids.size() % group_size, 0);
 
   std::vector<RigCalibrationGroup> groups;
   for (size_t group_begin = 0; group_begin < frame_ids.size();
-       group_begin += 3) {
+       group_begin += group_size) {
     RigCalibrationGroup group;
+    group.rigs_from_group.reserve(group_size);
     std::map<frame_t, size_t> frame_indices;
-    for (size_t frame_idx = 0; frame_idx < 3; ++frame_idx) {
+    for (size_t frame_idx = 0; frame_idx < group_size; ++frame_idx) {
       const frame_t frame_id = frame_ids[group_begin + frame_idx];
       frame_indices.emplace(frame_id, frame_idx);
-      group.rigs_from_group[frame_idx] =
-          reconstruction.Frame(frame_id).RigFromWorld();
+      group.rigs_from_group.push_back(
+          reconstruction.Frame(frame_id).RigFromWorld());
     }
-    group.frame0_to_frame2_distance.distance =
-        (group.rigs_from_group[2].TgtOriginInSrc() -
-         group.rigs_from_group[0].TgtOriginInSrc())
+    group.first_to_last_distance.distance =
+        (group.rigs_from_group.back().TgtOriginInSrc() -
+         group.rigs_from_group.front().TgtOriginInSrc())
             .norm();
-    group.frame0_to_frame2_distance.stddev = 1e-3;
+    group.first_to_last_distance.stddev = 1e-3;
 
     for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
       RigCalibrationTrack track;
@@ -187,11 +188,11 @@ TEST(CeresRigCalibrator, RecoversSharedCalibrationAndMetricScale) {
   }
 }
 
-TEST(CeresRigCalibrator, FixedCalibrationEvaluatesHeldOutGroups) {
+TEST(CeresRigCalibrator, FixedCalibrationEvaluatesNineFrameGroup) {
   const Reconstruction ground_truth = CreateSyntheticRig();
   Reconstruction reconstruction = ground_truth;
   const rig_t rig_id = reconstruction.Rigs().begin()->first;
-  std::vector<RigCalibrationGroup> groups = BuildGroups(ground_truth);
+  std::vector<RigCalibrationGroup> groups = BuildGroups(ground_truth, 9);
   const size_t num_observations =
       std::accumulate(groups.begin(),
                       groups.end(),

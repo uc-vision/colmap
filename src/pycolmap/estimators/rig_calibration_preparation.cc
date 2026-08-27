@@ -11,7 +11,6 @@
 #include "colmap/util/types.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -28,14 +27,13 @@ namespace py = pybind11;
 namespace {
 
 using DoubleArray = py::array_t<double, py::array::c_style>;
-using Uint8Array = py::array_t<uint8_t, py::array::c_style>;
 using Uint32Array = py::array_t<uint32_t, py::array::c_style>;
 using Uint64Array = py::array_t<uint64_t, py::array::c_style>;
 
 struct PackedRigCalibrationPreparation {
   Uint64Array track_observation_offsets;
   DoubleArray xyz;
-  Uint8Array frame_indices;
+  Uint32Array frame_indices;
   Uint32Array camera_ids;
   DoubleArray xy;
   size_t attempted_tracks = 0;
@@ -45,7 +43,7 @@ struct PackedRigCalibrationPreparation {
 struct NativeRigCalibrationPreparation {
   std::vector<uint64_t> track_observation_offsets = {0};
   std::vector<double> xyz;
-  std::vector<uint8_t> frame_indices;
+  std::vector<uint32_t> frame_indices;
   std::vector<uint32_t> camera_ids;
   std::vector<double> xy;
   size_t attempted_tracks = 0;
@@ -59,17 +57,18 @@ struct PackedPreparationInput {
   size_t num_ordered_components;
   size_t max_tracks;
   const uint32_t* image_ids;
-  const uint8_t* image_frame_indices;
+  const uint32_t* image_frame_indices;
   const uint32_t* image_camera_ids;
   const uint32_t* image_keypoint_offsets;
   size_t num_images;
   const double* keypoints;
   size_t num_keypoints;
   const double* rigs_from_group;
+  size_t group_size;
 };
 
 struct PreparedImage {
-  uint8_t frame_idx;
+  uint32_t frame_idx;
   camera_t camera_id;
   uint32_t keypoint_offset;
   uint32_t num_keypoints;
@@ -99,16 +98,18 @@ DoubleArray MatrixArrayFromVector(std::vector<double>&& values,
   return array;
 }
 
-std::array<Rigid3d, 3> ReadRigsFromGroup(const double* matrices) {
-  std::array<Rigid3d, 3> rigs_from_group;
-  for (size_t frame_idx = 0; frame_idx < rigs_from_group.size(); ++frame_idx) {
+std::vector<Rigid3d> ReadRigsFromGroup(const double* matrices,
+                                       const size_t group_size) {
+  std::vector<Rigid3d> rigs_from_group;
+  rigs_from_group.reserve(group_size);
+  for (size_t frame_idx = 0; frame_idx < group_size; ++frame_idx) {
     Eigen::Matrix3x4d matrix;
     for (size_t row = 0; row < 3; ++row) {
       for (size_t column = 0; column < 4; ++column) {
         matrix(row, column) = matrices[frame_idx * 12 + row * 4 + column];
       }
     }
-    rigs_from_group[frame_idx] = Rigid3d::FromMatrix(matrix);
+    rigs_from_group.push_back(Rigid3d::FromMatrix(matrix));
   }
   return rigs_from_group;
 }
@@ -118,8 +119,8 @@ NativeRigCalibrationPreparation PrepareRigCalibrationGroup(
     const rig_t rig_id,
     const PackedPreparationInput& input) {
   const Rig& rig = reconstruction.Rig(rig_id);
-  const std::array<Rigid3d, 3> rigs_from_group =
-      ReadRigsFromGroup(input.rigs_from_group);
+  const std::vector<Rigid3d> rigs_from_group =
+      ReadRigsFromGroup(input.rigs_from_group, input.group_size);
   std::vector<PreparedImage> images;
   images.reserve(input.num_images);
   FlatHashMap<image_t, size_t> image_slots;
@@ -128,7 +129,7 @@ NativeRigCalibrationPreparation PrepareRigCalibrationGroup(
   std::vector<uint8_t> keypoint_ray_valid(input.num_keypoints, false);
   for (size_t image_idx = 0; image_idx < input.num_images; ++image_idx) {
     const image_t image_id = input.image_ids[image_idx];
-    const uint8_t frame_idx = input.image_frame_indices[image_idx];
+    const uint32_t frame_idx = input.image_frame_indices[image_idx];
     THROW_CHECK_LT(frame_idx, rigs_from_group.size());
     const camera_t camera_id = input.image_camera_ids[image_idx];
     const Camera& camera = reconstruction.Camera(camera_id);
@@ -170,7 +171,7 @@ NativeRigCalibrationPreparation PrepareRigCalibrationGroup(
   std::vector<Eigen::Vector2d> points;
   std::vector<Rigid3d> cams_from_group;
   std::vector<const Camera*> cameras;
-  std::vector<uint8_t> frame_indices;
+  std::vector<uint32_t> frame_indices;
   std::vector<uint32_t> camera_ids;
   std::vector<char> inlier_mask;
   EstimateTriangulationOptions triangulation_options;
@@ -284,7 +285,7 @@ PackedRigCalibrationPreparation PyPrepareRigCalibrationGroup(
     const Uint32Array& ordered_component_indices,
     const size_t max_tracks,
     const Uint32Array& image_ids,
-    const Uint8Array& image_frame_indices,
+    const Uint32Array& image_frame_indices,
     const Uint32Array& image_camera_ids,
     const Uint32Array& image_keypoint_offsets,
     const DoubleArray& keypoints,
@@ -306,9 +307,10 @@ PackedRigCalibrationPreparation PyPrepareRigCalibrationGroup(
   THROW_CHECK_EQ(keypoints.shape(1), 2);
   const size_t num_keypoints = keypoints.shape(0);
   THROW_CHECK_EQ(rigs_from_group.ndim(), 3);
-  THROW_CHECK_EQ(rigs_from_group.shape(0), 3);
+  THROW_CHECK_GE(rigs_from_group.shape(0), 2);
   THROW_CHECK_EQ(rigs_from_group.shape(1), 3);
   THROW_CHECK_EQ(rigs_from_group.shape(2), 4);
+  const size_t group_size = static_cast<size_t>(rigs_from_group.shape(0));
 
   const auto component_offsets_view =
       component_observation_offsets.unchecked<1>();
@@ -351,7 +353,8 @@ PackedRigCalibrationPreparation PyPrepareRigCalibrationGroup(
       num_images,
       keypoints.data(),
       num_keypoints,
-      rigs_from_group.data()};
+      rigs_from_group.data(),
+      group_size};
   NativeRigCalibrationPreparation native_result;
   {
     py::gil_scoped_release release;

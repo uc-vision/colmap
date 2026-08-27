@@ -3,12 +3,12 @@ import numpy as np
 import pycolmap
 
 
-def test_packed_rig_calibration_handoff():
+def test_packed_rig_calibration_handoff_with_four_frames():
     reconstruction = pycolmap.synthesize_dataset(
         pycolmap.SyntheticDatasetOptions(
             num_rigs=1,
             num_cameras_per_rig=3,
-            num_frames_per_rig=3,
+            num_frames_per_rig=4,
             num_points3D=12,
             num_points2D_without_point3D=0,
         )
@@ -54,24 +54,30 @@ def test_packed_rig_calibration_handoff():
         print_summary=False,
     )
     options.ceres.use_gpu = False
-    distance = float(
+    first_to_last_distance = float(
         np.linalg.norm(
-            poses[2].tgt_origin_in_src() - poses[0].tgt_origin_in_src()
+            poses[-1].tgt_origin_in_src() - poses[0].tgt_origin_in_src()
         )
     )
     summary = pycolmap.create_ceres_rig_calibrator(
-        options,
-        next(iter(reconstruction.rigs)),
-        pycolmap.Reconstruction(reconstruction),
-        np.asarray([[pose.matrix() for pose in poses]], dtype=np.float64),
-        np.asarray([distance], dtype=np.float64),
-        0.01,
-        np.asarray([0, len(xyz)], dtype=np.uint64),
-        np.asarray(track_observation_offsets, dtype=np.uint64),
-        np.asarray(xyz, dtype=np.float64),
-        np.asarray(frame_indices, dtype=np.uint8),
-        np.asarray(camera_ids, dtype=np.uint32),
-        np.asarray(xy, dtype=np.float64),
+        options=options,
+        rig_id=next(iter(reconstruction.rigs)),
+        reconstruction=pycolmap.Reconstruction(reconstruction),
+        rigs_from_group=np.asarray(
+            [[pose.matrix() for pose in poses]], dtype=np.float64
+        ),
+        first_to_last_distances=np.asarray(
+            [first_to_last_distance], dtype=np.float64
+        ),
+        distance_stddev=0.01,
+        group_track_offsets=np.asarray([0, len(xyz)], dtype=np.uint64),
+        track_observation_offsets=np.asarray(
+            track_observation_offsets, dtype=np.uint64
+        ),
+        xyz=np.asarray(xyz, dtype=np.float64),
+        frame_indices=np.asarray(frame_indices, dtype=np.uint32),
+        camera_ids=np.asarray(camera_ids, dtype=np.uint32),
+        xy=np.asarray(xy, dtype=np.float64),
     ).solve()
 
     assert summary.is_solution_usable()
@@ -80,13 +86,13 @@ def test_packed_rig_calibration_handoff():
     assert summary.num_observations == len(frame_indices)
 
 
-def test_packed_rig_preparation_retries_robust_track_to_cap():
+def test_four_frame_packed_preparation_retries_robust_track_to_cap():
     pycolmap.set_random_seed(0)
     reconstruction = pycolmap.synthesize_dataset(
         pycolmap.SyntheticDatasetOptions(
             num_rigs=1,
             num_cameras_per_rig=3,
-            num_frames_per_rig=3,
+            num_frames_per_rig=4,
             num_points3D=4,
             num_points2D_without_point3D=0,
         )
@@ -109,7 +115,7 @@ def test_packed_rig_preparation_retries_robust_track_to_cap():
             frame_index_by_id[reconstruction.image(int(image_id)).frame_id]
             for image_id in image_ids
         ],
-        dtype=np.uint8,
+        dtype=np.uint32,
     )
     image_camera_ids = np.asarray(
         [
@@ -135,7 +141,7 @@ def test_packed_rig_preparation_retries_robust_track_to_cap():
     first_camera = reconstruction.camera(int(image_camera_ids[0]))
     width = first_camera.width
     height = first_camera.height
-    # The first candidate has no coherent three-view geometry and must fail.
+    # The first candidate has no coherent multi-view geometry and must fail.
     keypoints_by_image[:, 0] = np.asarray(
         [
             ((index + 1) * width * 10, -(index + 1) * height * 10)
@@ -219,11 +225,14 @@ def test_packed_rig_preparation_retries_robust_track_to_cap():
 
     assert result.attempted_tracks == 3
     assert result.retained_tracks == 2
-    np.testing.assert_array_equal(result.track_observation_offsets, [0, 9, 18])
+    np.testing.assert_array_equal(
+        result.track_observation_offsets, [0, num_images, 2 * num_images]
+    )
     np.testing.assert_allclose(result.xyz, [points[1].xyz, points[2].xyz])
     np.testing.assert_allclose(
         result.xy,
         np.concatenate((keypoints_by_image[:, 1], keypoints_by_image[:, 2])),
     )
     assert result.frame_indices[0] == result.frame_indices[1]
+    assert result.frame_indices.dtype == np.uint32
     assert result.camera_ids[0] != result.camera_ids[1]
