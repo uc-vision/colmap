@@ -34,12 +34,18 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
   const ssize_t num_observations =
       static_cast<ssize_t>(reconstruction.ComputeNumObservations());
   py::array_t<int64_t> point3D_ids(num_points);
+  py::array_t<float> point_xyz(std::vector<ssize_t>{num_points, 3});
+  py::array_t<uint8_t> point_rgb(std::vector<ssize_t>{num_points, 3});
+  py::array_t<double> point_errors(num_points);
   py::array_t<int64_t> observation_offsets(num_points + 1);
   py::array_t<image_t> observation_image_ids(num_observations);
   py::array_t<point2D_t> observation_point2D_indices(num_observations);
   py::array_t<float> observation_xy(std::vector<ssize_t>{num_observations, 2});
 
   int64_t* point3D_ids_ptr = point3D_ids.mutable_data();
+  float* point_xyz_ptr = point_xyz.mutable_data();
+  uint8_t* point_rgb_ptr = point_rgb.mutable_data();
+  double* point_errors_ptr = point_errors.mutable_data();
   int64_t* observation_offsets_ptr = observation_offsets.mutable_data();
   image_t* observation_image_ids_ptr = observation_image_ids.mutable_data();
   point2D_t* observation_point2D_indices_ptr =
@@ -53,6 +59,12 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
     observation_offsets_ptr[0] = 0;
     for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
       point3D_ids_ptr[point_index] = static_cast<int64_t>(point3D_id);
+      for (int index = 0; index < 3; ++index) {
+        point_xyz_ptr[3 * point_index + index] =
+            static_cast<float>(point3D.xyz[index]);
+        point_rgb_ptr[3 * point_index + index] = point3D.color[index];
+      }
+      point_errors_ptr[point_index] = point3D.error;
       for (const TrackElement& element : point3D.track.Elements()) {
         const Eigen::Vector2d& xy = reconstruction.Image(element.image_id)
                                         .Point2D(element.point2D_idx)
@@ -71,6 +83,9 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
 
   return py::dict(
       "point3D_ids"_a = std::move(point3D_ids),
+      "point_xyz"_a = std::move(point_xyz),
+      "point_rgb"_a = std::move(point_rgb),
+      "point_errors"_a = std::move(point_errors),
       "observation_offsets"_a = std::move(observation_offsets),
       "observation_image_ids"_a = std::move(observation_image_ids),
       "observation_point2D_indices"_a = std::move(observation_point2D_indices),
@@ -151,8 +166,8 @@ void BindReconstruction(py::module& m) {
       .def("point3D_ids", &Reconstruction::Point3DIds)
       .def("track_arrays",
            &TrackArrays,
-           "Export point tracks as contiguous NumPy arrays without creating "
-           "Python objects per observation.")
+           "Export points and tracks as contiguous NumPy arrays without "
+           "creating Python objects per observation.")
       .def("exists_rig", &Reconstruction::ExistsRig, "rig_id"_a)
       .def("exists_camera", &Reconstruction::ExistsCamera, "camera_id"_a)
       .def("exists_frame", &Reconstruction::ExistsFrame, "frame_id"_a)

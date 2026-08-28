@@ -2,7 +2,6 @@
 
 #include "colmap/estimators/bundle_adjustment_caspar.h"
 #include "colmap/estimators/rotation_averaging.h"
-#include "colmap/math/union_find.h"
 #include "colmap/scene/projection.h"
 #include "colmap/sfm/incremental_mapper.h"
 #include "colmap/sfm/observation_manager.h"
@@ -12,6 +11,8 @@
 #include "colmap/util/timer.h"
 
 #include <algorithm>
+#include <limits>
+#include <numeric>
 
 namespace colmap {
 namespace {
@@ -186,143 +187,252 @@ bool GlobalMapper::RotationAveraging(const RotationEstimatorOptions& options) {
 }
 
 void GlobalMapper::EstablishTracks(const GlobalMapperOptions& options) {
-  using Observation = std::pair<image_t, point2D_t>;
   THROW_CHECK_EQ(reconstruction_->NumPoints3D(), 0);
 
-  // Build keypoints map from registered images.
-  NodeHashMap<image_t, std::vector<Eigen::Vector2d>> image_id_to_keypoints;
-  for (const auto image_id : reconstruction_->RegImageIds()) {
-    const auto& image = reconstruction_->Image(image_id);
-    std::vector<Eigen::Vector2d> points;
-    points.reserve(image.NumPoints2D());
-    for (const auto& point2D : image.Points2D()) {
-      points.push_back(point2D.xy);
-    }
-    image_id_to_keypoints.emplace(image_id, std::move(points));
+  auto corr_graph = database_cache_->CorrespondenceGraph();
+  std::vector<image_t> image_ids = reconstruction_->RegImageIds();
+  std::sort(image_ids.begin(), image_ids.end());
+
+  FlatHashMap<image_t, size_t> image_indices;
+  image_indices.reserve(image_ids.size());
+  for (size_t image_index = 0; image_index < image_ids.size(); ++image_index) {
+    image_indices.emplace(image_ids[image_index], image_index);
   }
 
-  auto corr_graph = database_cache_->CorrespondenceGraph();
+  std::vector<TrackElement> observations;
+  std::vector<size_t> grouped_observation_ids;
+  std::vector<size_t> component_offsets;
+  std::vector<size_t> component_roots;
+  {
+    std::vector<size_t> parents;
+    {
+      const size_t invalid_observation_id = std::numeric_limits<size_t>::max();
+      std::vector<std::vector<size_t>> observation_ids;
+      observation_ids.reserve(image_ids.size());
+      for (const image_t image_id : image_ids) {
+        observation_ids.emplace_back(
+            reconstruction_->Image(image_id).NumPoints2D(),
+            invalid_observation_id);
+      }
 
-  // Union all matching observations.
-  UnionFind<Observation, PairHash> uf;
-  FeatureMatches matches;
-  for (const auto& [pair_id, edge] : pose_graph_->ValidEdges()) {
-    const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
-    THROW_CHECK(image_id_to_keypoints.count(image_id1))
-        << "Missing keypoints for image " << image_id1;
-    THROW_CHECK(image_id_to_keypoints.count(image_id2))
-        << "Missing keypoints for image " << image_id2;
-    corr_graph->ExtractMatchesBetweenImages(image_id1, image_id2, matches);
-    for (const auto& match : matches) {
-      const Observation obs1(image_id1, match.point2D_idx1);
-      const Observation obs2(image_id2, match.point2D_idx2);
-      if (obs2 < obs1) {
-        uf.Union(obs1, obs2);
-      } else {
-        uf.Union(obs2, obs1);
+      FeatureMatches matches;
+      for (const auto& pair : pose_graph_->ValidEdges()) {
+        const auto [image_id1, image_id2] = PairIdToImagePair(pair.first);
+        auto& observation_ids1 = observation_ids[image_indices.at(image_id1)];
+        auto& observation_ids2 = observation_ids[image_indices.at(image_id2)];
+        corr_graph->ExtractMatchesBetweenImages(image_id1, image_id2, matches);
+        for (const auto& match : matches) {
+          observation_ids1[match.point2D_idx1] = 0;
+          observation_ids2[match.point2D_idx2] = 0;
+        }
+      }
+
+      for (size_t image_index = 0; image_index < image_ids.size();
+           ++image_index) {
+        auto& image_observation_ids = observation_ids[image_index];
+        for (size_t point2D_idx = 0; point2D_idx < image_observation_ids.size();
+             ++point2D_idx) {
+          if (image_observation_ids[point2D_idx] == invalid_observation_id) {
+            continue;
+          }
+          image_observation_ids[point2D_idx] = observations.size();
+          observations.emplace_back(image_ids[image_index],
+                                    static_cast<point2D_t>(point2D_idx));
+        }
+      }
+
+      parents.resize(observations.size());
+      std::iota(parents.begin(), parents.end(), 0);
+      std::vector<size_t> component_sizes(observations.size(), 1);
+      const auto find_root = [&parents](size_t observation_id) {
+        while (parents[observation_id] != observation_id) {
+          parents[observation_id] = parents[parents[observation_id]];
+          observation_id = parents[observation_id];
+        }
+        return observation_id;
+      };
+
+      for (const auto& pair : pose_graph_->ValidEdges()) {
+        const auto [image_id1, image_id2] = PairIdToImagePair(pair.first);
+        const auto& observation_ids1 =
+            observation_ids[image_indices.at(image_id1)];
+        const auto& observation_ids2 =
+            observation_ids[image_indices.at(image_id2)];
+        corr_graph->ExtractMatchesBetweenImages(image_id1, image_id2, matches);
+        for (const auto& match : matches) {
+          size_t root1 = find_root(observation_ids1[match.point2D_idx1]);
+          size_t root2 = find_root(observation_ids2[match.point2D_idx2]);
+          if (root1 == root2) {
+            continue;
+          }
+          if (component_sizes[root1] < component_sizes[root2] ||
+              (component_sizes[root1] == component_sizes[root2] &&
+               root2 < root1)) {
+            std::swap(root1, root2);
+          }
+          parents[root2] = root1;
+          component_sizes[root1] += component_sizes[root2];
+        }
+      }
+
+      for (size_t observation_id = 0; observation_id < parents.size();
+           ++observation_id) {
+        parents[observation_id] = find_root(observation_id);
       }
     }
+
+    component_offsets.assign(observations.size() + 1, 0);
+    for (const size_t root : parents) {
+      ++component_offsets[root + 1];
+    }
+    for (size_t root = 0; root < parents.size(); ++root) {
+      if (component_offsets[root + 1] != 0) {
+        component_roots.push_back(root);
+      }
+    }
+    std::partial_sum(component_offsets.begin(),
+                     component_offsets.end(),
+                     component_offsets.begin());
+
+    grouped_observation_ids.resize(observations.size());
+    for (size_t observation_id = observations.size(); observation_id > 0;
+         --observation_id) {
+      const size_t id = observation_id - 1;
+      const size_t root = parents[id];
+      grouped_observation_ids[--component_offsets[root + 1]] = id;
+    }
   }
 
-  // Group observations by their root.
-  uf.Compress();
-  NodeHashMap<Observation, std::vector<Observation>, PairHash> track_map;
-  for (const auto& [obs, root] : uf.Parents()) {
-    track_map[root].push_back(obs);
-  }
-  LOG(INFO) << "Established " << track_map.size() << " tracks from "
-            << uf.Parents().size() << " observations";
+  LOG(INFO) << "Established " << component_roots.size() << " tracks from "
+            << observations.size() << " observations";
 
-  // Validate tracks, check consistency, and collect valid ones with lengths.
-  NodeHashMap<point3D_t, Point3D> candidate_points3D;
-  std::vector<std::pair<size_t, point3D_t>> track_lengths;
+  struct TrackCandidate {
+    size_t begin;
+    size_t end;
+    size_t canonical_observation_id;
+  };
+  std::vector<TrackCandidate> candidates;
+  candidates.reserve(component_roots.size());
   size_t discarded_counter = 0;
-  point3D_t next_point3D_id = 0;
+  const double squared_consistency_threshold =
+      options.track_intra_image_consistency_threshold *
+      options.track_intra_image_consistency_threshold;
 
-  for (const auto& [track_id, observations] : track_map) {
-    NodeHashMap<image_t, std::vector<Eigen::Vector2d>> image_id_set;
-    Point3D point3D;
+  for (size_t component_index = 0; component_index < component_roots.size();
+       ++component_index) {
+    const size_t begin =
+        component_offsets[component_roots[component_index] + 1];
+    const size_t end =
+        component_index + 1 < component_roots.size()
+            ? component_offsets[component_roots[component_index + 1] + 1]
+            : observations.size();
     bool is_consistent = true;
+    size_t num_images = 0;
+    size_t image_begin = begin;
+    while (image_begin < end) {
+      const image_t image_id =
+          observations[grouped_observation_ids[image_begin]].image_id;
+      size_t image_end = image_begin + 1;
+      while (image_end < end &&
+             observations[grouped_observation_ids[image_end]].image_id ==
+                 image_id) {
+        ++image_end;
+      }
+      ++num_images;
 
-    for (const auto& [image_id, feature_id] : observations) {
-      const Eigen::Vector2d& xy =
-          image_id_to_keypoints.at(image_id).at(feature_id);
-
-      auto it = image_id_set.find(image_id);
-      if (it != image_id_set.end()) {
-        for (const auto& existing_xy : it->second) {
-          const double sq_threshold =
-              options.track_intra_image_consistency_threshold *
-              options.track_intra_image_consistency_threshold;
-          if ((existing_xy - xy).squaredNorm() > sq_threshold) {
+      const auto& image = reconstruction_->Image(image_id);
+      for (size_t observation_index = image_begin + 1;
+           observation_index < image_end;
+           ++observation_index) {
+        const auto& observation =
+            observations[grouped_observation_ids[observation_index]];
+        const Eigen::Vector2d& xy = image.Point2D(observation.point2D_idx).xy;
+        for (size_t other_index = image_begin; other_index < observation_index;
+             ++other_index) {
+          const auto& other =
+              observations[grouped_observation_ids[other_index]];
+          if ((image.Point2D(other.point2D_idx).xy - xy).squaredNorm() >
+              squared_consistency_threshold) {
             is_consistent = false;
             break;
           }
         }
         if (!is_consistent) {
-          ++discarded_counter;
           break;
         }
-        it->second.push_back(xy);
-      } else {
-        image_id_set[image_id].push_back(xy);
       }
-      point3D.track.AddElement(image_id, feature_id);
+      if (!is_consistent) {
+        break;
+      }
+      image_begin = image_end;
     }
 
-    if (!is_consistent) continue;
-
-    const size_t num_images = image_id_set.size();
-    if (num_images < static_cast<size_t>(options.track_min_num_views_per_track))
+    if (!is_consistent) {
+      ++discarded_counter;
       continue;
-
-    const point3D_t point3D_id = next_point3D_id++;
-    track_lengths.emplace_back(point3D.track.Length(), point3D_id);
-    candidate_points3D.emplace(point3D_id, std::move(point3D));
+    }
+    if (num_images <
+        static_cast<size_t>(options.track_min_num_views_per_track)) {
+      continue;
+    }
+    candidates.push_back({begin, end, grouped_observation_ids[begin]});
   }
 
-  LOG(INFO) << "Kept " << candidate_points3D.size() << " tracks, discarded "
+  LOG(INFO) << "Kept " << candidates.size() << " tracks, discarded "
             << discarded_counter << " due to inconsistency";
 
-  // Sort tracks by length (descending) and select for problem.
-  std::sort(track_lengths.begin(), track_lengths.end(), std::greater<>());
+  std::sort(candidates.begin(),
+            candidates.end(),
+            [](const auto& candidate1, const auto& candidate2) {
+              const size_t length1 = candidate1.end - candidate1.begin;
+              const size_t length2 = candidate2.end - candidate2.begin;
+              return length1 != length2
+                         ? length1 > length2
+                         : candidate1.canonical_observation_id <
+                               candidate2.canonical_observation_id;
+            });
 
-  NodeHashMap<image_t, size_t> tracks_per_image;
-  size_t images_left = image_id_to_keypoints.size();
+  FlatHashMap<image_t, size_t> tracks_per_image;
+  size_t images_left = image_ids.size();
   const size_t max_num_tracks =
       static_cast<size_t>(options.keep_max_num_tracks);
-  for (const auto& [track_length, point3D_id] : track_lengths) {
+  point3D_t next_point3D_id = 0;
+  for (const auto& candidate : candidates) {
     // Stop once the global track budget is exhausted. As tracks are sorted by
     // decreasing length, this keeps the longest tracks and bounds memory usage.
     if (reconstruction_->NumPoints3D() >= max_num_tracks) break;
 
-    auto& point3D = candidate_points3D.at(point3D_id);
-
     // Check if any image in this track still needs more observations.
-    const bool should_add = std::any_of(
-        point3D.track.Elements().begin(),
-        point3D.track.Elements().end(),
-        [&](const auto& obs) {
-          return tracks_per_image[obs.image_id] <=
-                 static_cast<size_t>(options.track_required_tracks_per_view);
-        });
+    bool should_add = false;
+    for (size_t index = candidate.begin; index < candidate.end; ++index) {
+      const auto& observation = observations[grouped_observation_ids[index]];
+      if (tracks_per_image[observation.image_id] <=
+          static_cast<size_t>(options.track_required_tracks_per_view)) {
+        should_add = true;
+        break;
+      }
+    }
     if (!should_add) continue;
 
+    Point3D point3D;
+    point3D.track.Reserve(candidate.end - candidate.begin);
     // Update image counts.
-    for (const auto& obs : point3D.track.Elements()) {
-      auto& count = tracks_per_image[obs.image_id];
+    for (size_t index = candidate.begin; index < candidate.end; ++index) {
+      const auto& observation = observations[grouped_observation_ids[index]];
+      point3D.track.AddElement(observation);
+      auto& count = tracks_per_image[observation.image_id];
       if (count == static_cast<size_t>(options.track_required_tracks_per_view))
         --images_left;
       ++count;
     }
 
     // Add track after updating counts so we can move.
-    reconstruction_->AddPoint3D(point3D_id, std::move(point3D));
+    reconstruction_->AddPoint3D(next_point3D_id++, std::move(point3D));
 
     if (images_left == 0) break;
   }
 
-  LOG(INFO) << "Before filtering: " << candidate_points3D.size()
+  LOG(INFO) << "Before filtering: " << candidates.size()
             << ", after filtering: " << reconstruction_->NumPoints3D();
 }
 
@@ -340,48 +450,55 @@ bool GlobalMapper::GlobalPositioning(const GlobalPositionerOptions& options,
 
   // Filter tracks based on the estimation
   ObservationManager obs_manager(*reconstruction_);
+  const FlatHashSet<point3D_t> point3D_ids = reconstruction_->Point3DIds();
 
-  // First pass: use relaxed threshold (2x) for cameras without prior focal.
-  obs_manager.FilterPoints3DWithLargeReprojectionError(
-      2.0 * max_angular_reproj_error_deg,
-      reconstruction_->Point3DIds(),
-      ReprojectionErrorType::ANGULAR);
-
-  // Second pass: apply strict threshold for cameras with prior focal length.
+  // Apply the strict threshold to calibrated cameras and a relaxed threshold
+  // to cameras whose focal length was estimated.
   const double max_angular_error_rad = DegToRad(max_angular_reproj_error_deg);
-  std::vector<std::pair<image_t, point2D_t>> obs_to_delete;
-  for (const auto point3D_id : reconstruction_->Point3DIds()) {
+  std::vector<TrackElement> observations_to_delete;
+  for (const point3D_t point3D_id : point3D_ids) {
     if (!reconstruction_->ExistsPoint3D(point3D_id)) {
       continue;
     }
     const auto& point3D = reconstruction_->Point3D(point3D_id);
+    if (point3D.track.Length() < 2) {
+      obs_manager.DeletePoint3D(point3D_id);
+      continue;
+    }
+
+    observations_to_delete.clear();
     for (const auto& track_el : point3D.track.Elements()) {
       const auto& image = reconstruction_->Image(track_el.image_id);
       const auto& camera = *image.CameraPtr();
-      if (!camera.has_prior_focal_length) {
-        continue;
-      }
       const auto& point2D = image.Point2D(track_el.point2D_idx);
       const double error = CalculateAngularReprojectionError(
           point2D.xy, point3D.xyz, image.CamFromWorld(), camera);
-      if (error > max_angular_error_rad) {
-        obs_to_delete.emplace_back(track_el.image_id, track_el.point2D_idx);
+      const bool exceeds_threshold =
+          camera.has_prior_focal_length
+              ? error > max_angular_error_rad
+              : RadToDeg(error) > 2.0 * max_angular_reproj_error_deg;
+      if (exceeds_threshold) {
+        observations_to_delete.push_back(track_el);
       }
     }
-  }
-  for (const auto& [image_id, point2D_idx] : obs_to_delete) {
-    if (reconstruction_->Image(image_id).Point2D(point2D_idx).HasPoint3D()) {
-      obs_manager.DeleteObservation(image_id, point2D_idx);
+
+    if (observations_to_delete.size() >= point3D.track.Length() - 1) {
+      obs_manager.DeletePoint3D(point3D_id);
+    } else {
+      for (const TrackElement& observation : observations_to_delete) {
+        obs_manager.DeleteObservation(observation.image_id,
+                                      observation.point2D_idx);
+      }
     }
   }
 
   // Filter tracks based on triangulation angle and reprojection error
-  obs_manager.FilterPoints3DWithSmallTriangulationAngle(
-      min_tri_angle_deg, reconstruction_->Point3DIds());
+  obs_manager.FilterPoints3DWithSmallTriangulationAngle(min_tri_angle_deg,
+                                                        point3D_ids);
   // Set the threshold to be larger to avoid removing too many tracks
   obs_manager.FilterPoints3DWithLargeReprojectionError(
       10 * max_normalized_reproj_error,
-      reconstruction_->Point3DIds(),
+      point3D_ids,
       ReprojectionErrorType::NORMALIZED);
 
   // Normalize the structure for numerical stability.
@@ -400,7 +517,10 @@ bool GlobalMapper::IterativeBundleAdjustment(
     bool skip_fixed_rotation_stage,
     bool skip_joint_optimization_stage,
     const std::function<bool()>& on_progress) {
+  bool filtered_at_final_threshold = false;
   for (int ite = 0; ite < num_iterations; ite++) {
+    filtered_at_final_threshold = false;
+
     // Optional fixed-rotation stage: optimize positions only
     if (!skip_fixed_rotation_stage) {
       BundleAdjustmentOptions opts_position_only = options;
@@ -453,12 +573,14 @@ bool GlobalMapper::IterativeBundleAdjustment(
     ObservationManager obs_manager(*reconstruction_);
     bool status = true;
     size_t filtered_num = 0;
+    const FlatHashSet<point3D_t> point3D_ids = reconstruction_->Point3DIds();
     while (status && ite < num_iterations) {
       double scaling = std::max(3 - ite, 1);
       filtered_num += obs_manager.FilterPoints3DWithLargeReprojectionError(
           scaling * max_normalized_reproj_error,
-          reconstruction_->Point3DIds(),
+          point3D_ids,
           ReprojectionErrorType::NORMALIZED);
+      filtered_at_final_threshold = scaling == 1.0;
 
       if (filtered_num > 1e-3 * reconstruction_->NumPoints3D()) {
         status = false;
@@ -472,16 +594,18 @@ bool GlobalMapper::IterativeBundleAdjustment(
     }
   }
 
-  // Filter tracks based on the estimation
-  LOG(INFO) << "Filtering tracks by reprojection ...";
   {
     ObservationManager obs_manager(*reconstruction_);
-    obs_manager.FilterPoints3DWithLargeReprojectionError(
-        max_normalized_reproj_error,
-        reconstruction_->Point3DIds(),
-        ReprojectionErrorType::NORMALIZED);
-    obs_manager.FilterPoints3DWithSmallTriangulationAngle(
-        min_tri_angle_deg, reconstruction_->Point3DIds());
+    const FlatHashSet<point3D_t> point3D_ids = reconstruction_->Point3DIds();
+    if (!filtered_at_final_threshold) {
+      LOG(INFO) << "Filtering tracks by reprojection ...";
+      obs_manager.FilterPoints3DWithLargeReprojectionError(
+          max_normalized_reproj_error,
+          point3D_ids,
+          ReprojectionErrorType::NORMALIZED);
+    }
+    obs_manager.FilterPoints3DWithSmallTriangulationAngle(min_tri_angle_deg,
+                                                          point3D_ids);
   }
 
   return true;
