@@ -22,6 +22,17 @@ import symforce.symbolic as sf  # noqa: E402
 from symforce import typing as T  # noqa: E402
 from symforce.caspar import CasparLibrary  # noqa: E402
 from symforce.caspar import memory as mem  # noqa: E402
+from symforce.caspar.code_formulation import ftypes  # noqa: E402
+
+
+class CasparEuler(ftypes.Func):
+    """Euler's number, missing from Caspar's expression lowering."""
+
+    def assign_code(self, outs, args, dtype):
+        return f"{outs[0]} = 2.71828182845904523536;"
+
+
+ftypes.EXPR_TO_FUNC[ftypes.symengine_wrapper.Exp1] = CasparEuler
 
 
 # Point and ConstPoint are shared across camera models so that different
@@ -35,6 +46,18 @@ class ConstPoint(sf.V3):
 
 
 class ConstPixel(sf.V2):
+    pass
+
+
+class SensorFromRigLogScale(sf.V1):
+    pass
+
+
+class ConstReferencePosition(sf.V3):
+    pass
+
+
+class ConstPositionSqrtInformation(sf.V9):
     pass
 
 
@@ -262,6 +285,38 @@ def pinhole_core(
     return sf.V2([fx * p[0] + cx, fy * p[1] + cy]) - pixel
 
 
+def fixed_rig_pinhole(
+    pose: T.Annotated[PinholePose, mem.TunableShared],
+    sensor_from_rig: T.Annotated[
+        ConstPinholeSensorFromRig, mem.ConstantSequential
+    ],
+    sensor_from_rig_log_scale: T.Annotated[
+        SensorFromRigLogScale, mem.TunableUnique
+    ],
+    calib: T.Annotated[ConstPinholeCalib, mem.ConstantSequential],
+    point: T.Annotated[Point, mem.TunableShared],
+    pixel: T.Annotated[ConstPixel, mem.ConstantSequential],
+) -> sf.V2:
+    """Fixed-calibration rig reprojection with one shared baseline scale."""
+    scaled_sensor_from_rig = sf.Pose3(
+        sensor_from_rig.R,
+        sf.exp(sensor_from_rig_log_scale[0]) * sensor_from_rig.t,
+    )
+    return pinhole_core(pose, scaled_sensor_from_rig, calib, point, pixel)
+
+
+def fixed_rig_position_prior(
+    pose: T.Annotated[PinholePose, mem.TunableShared],
+    position: T.Annotated[ConstReferencePosition, mem.ConstantSequential],
+    sqrt_information: T.Annotated[
+        ConstPositionSqrtInformation, mem.ConstantSequential
+    ],
+) -> sf.V3:
+    """Covariance-weighted prior on a reference camera's world position."""
+    weight = sf.Matrix33.from_storage(sqrt_information.to_storage())
+    return weight * (pose.inverse().t - position)
+
+
 # Split cores delegate to merged cores to avoid duplicating projection math.
 
 
@@ -373,6 +428,8 @@ register_camera_model(
 register_camera_model(
     caslib, "pinhole", pinhole_core, FIXABLE_PINHOLE, include_all_fixed=True
 )
+caslib.add_factor(fixed_rig_pinhole)
+caslib.add_factor(fixed_rig_position_prior)
 
 # Split: all variants where at least one of
 # {focal_and_extra, principal_point} is fixed (11 variants per model).

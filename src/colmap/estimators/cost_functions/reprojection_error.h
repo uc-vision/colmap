@@ -383,6 +383,45 @@ class RigReprojErrorCostFunctor
   const Eigen::Vector2d point2D_;
 };
 
+// Rig bundle adjustment cost function with a fixed sensor-from-rig rotation
+// and a shared positive scale correction on its translation. The correction is
+// parameterized in log-space and is intended to be shared by every factor in a
+// fixed-rig bundle adjustment problem.
+template <typename CameraModel>
+class ScaledRigReprojErrorCostFunctor
+    : public AutoDiffCostFunctor<ScaledRigReprojErrorCostFunctor<CameraModel>,
+                                 2,
+                                 3,
+                                 7,
+                                 CameraModel::num_params,
+                                 1> {
+ public:
+  ScaledRigReprojErrorCostFunctor(const Eigen::Vector2d& point2D,
+                                  const Rigid3d& sensor_from_rig)
+      : sensor_from_rig_(sensor_from_rig), reproj_cost_(point2D) {}
+
+  template <typename T>
+  bool operator()(const T* const point3D_in_world,
+                  const T* const rig_from_world,
+                  const T* const camera_params,
+                  const T* const sensor_from_rig_log_scale,
+                  T* residuals) const {
+    Eigen::Matrix<T, 7, 1> scaled_sensor_from_rig =
+        sensor_from_rig_.params.cast<T>();
+    scaled_sensor_from_rig.template tail<3>() *=
+        ceres::exp(sensor_from_rig_log_scale[0]);
+    return reproj_cost_(point3D_in_world,
+                        scaled_sensor_from_rig.data(),
+                        rig_from_world,
+                        camera_params,
+                        residuals);
+  }
+
+ private:
+  const Rigid3d sensor_from_rig_;
+  const RigReprojErrorCostFunctor<CameraModel> reproj_cost_;
+};
+
 // Rig bundle adjustment cost function for variable camera pose and camera
 // calibration and point parameters but fixed rig extrinsic poses.
 template <typename CameraModel>

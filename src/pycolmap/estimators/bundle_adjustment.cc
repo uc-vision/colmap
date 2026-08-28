@@ -94,6 +94,17 @@ void BindBundleAdjuster(py::module& m) {
                          "Full Ceres solver summary.");
   MakeDataclass(PyCeresBundleAdjustmentSummary);
 
+  using FixedRigPosePriorBASummary = FixedRigPosePriorBundleAdjustmentSummary;
+  auto PyFixedRigPosePriorBundleAdjustmentSummary =
+      py::classh<FixedRigPosePriorBASummary, BASummary>(
+          m, "FixedRigPosePriorBundleAdjustmentSummary")
+          .def(py::init<>())
+          .def_readwrite("sensor_from_rig_scale",
+                         &FixedRigPosePriorBASummary::sensor_from_rig_scale,
+                         "Multiplicative correction applied to the current "
+                         "sensor-from-rig translations.");
+  MakeDataclass(PyFixedRigPosePriorBundleAdjustmentSummary);
+
 #ifdef CASPAR_ENABLED
   using CasparBASummary = CasparBundleAdjustmentSummary;
   auto PyCasparBundleAdjustmentSummary =
@@ -385,6 +396,34 @@ void BindBundleAdjuster(py::module& m) {
           .def("check", &PosePriorBAOpts::Check);
   MakeDataclass(PyPosePriorBundleAdjustmentOptions);
 
+  using FixedRigPosePriorBAOpts = FixedRigPosePriorBundleAdjustmentOptions;
+  auto PyFixedRigPosePriorBundleAdjustmentOptions =
+      py::classh<FixedRigPosePriorBAOpts>(
+          m, "FixedRigPosePriorBundleAdjustmentOptions")
+          .def(py::init<>())
+          .def_readwrite(
+              "prior_position_fallback_stddev",
+              &FixedRigPosePriorBAOpts::prior_position_fallback_stddev,
+              "Fallback standard deviation if a reference-camera "
+              "position covariance is absent.")
+          .def_readwrite("min_track_length",
+                         &FixedRigPosePriorBAOpts::min_track_length,
+                         "Minimum track length for a 3D point.")
+          .def_readwrite("print_summary",
+                         &FixedRigPosePriorBAOpts::print_summary,
+                         "Whether to print a final summary.")
+          .def_readwrite("backend",
+                         &FixedRigPosePriorBAOpts::backend,
+                         "Solver backend to use for bundle adjustment.")
+          .def_readwrite("ceres",
+                         &FixedRigPosePriorBAOpts::ceres,
+                         "Ceres-specific bundle adjustment options.")
+          .def_readwrite("caspar",
+                         &FixedRigPosePriorBAOpts::caspar,
+                         "Caspar-specific bundle adjustment options.")
+          .def("check", &FixedRigPosePriorBAOpts::Check);
+  MakeDataclass(PyFixedRigPosePriorBundleAdjustmentOptions);
+
   py::classh<BundleAdjuster, PyBundleAdjuster>(m, "BundleAdjuster")
       .def(py::init([](const BundleAdjustmentOptions& options,
                        const BundleAdjustmentConfig& config) {
@@ -433,4 +472,13 @@ void BindBundleAdjuster(py::module& m) {
         "config"_a,
         "pose_priors"_a,
         "reconstruction"_a);
+
+  m.def("fixed_rig_pose_prior_bundle_adjustment",
+        FixedRigPosePriorBundleAdjustment,
+        "reconstruction"_a,
+        "pose_priors"_a,
+        "options"_a = FixedRigPosePriorBundleAdjustmentOptions(),
+        "Jointly optimize rig-frame poses and 3D points with reference-camera "
+        "position priors, a first-frame rotation gauge anchor, and one shared "
+        "positive correction on non-reference sensor-from-rig translations.");
 }

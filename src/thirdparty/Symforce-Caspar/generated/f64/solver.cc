@@ -70,6 +70,19 @@
 #include "kernel_Point_update_r_first.h"
 #include "kernel_Point_update_step.h"
 #include "kernel_Point_update_step_first.h"
+#include "kernel_SensorFromRigLogScale_alpha_denominator_or_beta_numerator.h"
+#include "kernel_SensorFromRigLogScale_alpha_numerator_denominator.h"
+#include "kernel_SensorFromRigLogScale_normalize.h"
+#include "kernel_SensorFromRigLogScale_pred_decrease_times_two.h"
+#include "kernel_SensorFromRigLogScale_retract.h"
+#include "kernel_SensorFromRigLogScale_start_w.h"
+#include "kernel_SensorFromRigLogScale_start_w_contribute.h"
+#include "kernel_SensorFromRigLogScale_update_Mp.h"
+#include "kernel_SensorFromRigLogScale_update_p.h"
+#include "kernel_SensorFromRigLogScale_update_r.h"
+#include "kernel_SensorFromRigLogScale_update_r_first.h"
+#include "kernel_SensorFromRigLogScale_update_step.h"
+#include "kernel_SensorFromRigLogScale_update_step_first.h"
 #include "kernel_SimpleRadialCalib_alpha_denominator_or_beta_numerator.h"
 #include "kernel_SimpleRadialCalib_alpha_numerator_denominator.h"
 #include "kernel_SimpleRadialCalib_normalize.h"
@@ -122,6 +135,14 @@
 #include "kernel_SimpleRadialPrincipalPoint_update_r_first.h"
 #include "kernel_SimpleRadialPrincipalPoint_update_step.h"
 #include "kernel_SimpleRadialPrincipalPoint_update_step_first.h"
+#include "kernel_fixed_rig_pinhole_jtjnjtr_direct.h"
+#include "kernel_fixed_rig_pinhole_res_jac.h"
+#include "kernel_fixed_rig_pinhole_res_jac_first.h"
+#include "kernel_fixed_rig_pinhole_score.h"
+#include "kernel_fixed_rig_position_prior_jtjnjtr_direct.h"
+#include "kernel_fixed_rig_position_prior_res_jac.h"
+#include "kernel_fixed_rig_position_prior_res_jac_first.h"
+#include "kernel_fixed_rig_position_prior_score.h"
 #include "kernel_pinhole_fixed_point_jtjnjtr_direct.h"
 #include "kernel_pinhole_fixed_point_res_jac.h"
 #include "kernel_pinhole_fixed_point_res_jac_first.h"
@@ -282,6 +303,7 @@ GraphSolver::GraphSolver(
     size_t PinholePose_num_max,
     size_t PinholePrincipalPoint_num_max,
     size_t Point_num_max,
+    size_t SensorFromRigLogScale_num_max,
     size_t SimpleRadialCalib_num_max,
     size_t SimpleRadialFocalAndExtra_num_max,
     size_t SimpleRadialPose_num_max,
@@ -294,6 +316,8 @@ GraphSolver::GraphSolver(
     size_t pinhole_fixed_pose_num_max,
     size_t pinhole_fixed_point_num_max,
     size_t pinhole_fixed_pose_fixed_point_num_max,
+    size_t fixed_rig_pinhole_num_max,
+    size_t fixed_rig_position_prior_num_max,
     size_t simple_radial_split_fixed_focal_and_extra_num_max,
     size_t simple_radial_split_fixed_principal_point_num_max,
     size_t simple_radial_split_fixed_pose_fixed_focal_and_extra_num_max,
@@ -334,6 +358,8 @@ GraphSolver::GraphSolver(
       PinholePrincipalPoint_num_max_(PinholePrincipalPoint_num_max),
       Point_num_(Point_num_max),
       Point_num_max_(Point_num_max),
+      SensorFromRigLogScale_num_(SensorFromRigLogScale_num_max),
+      SensorFromRigLogScale_num_max_(SensorFromRigLogScale_num_max),
       SimpleRadialCalib_num_(SimpleRadialCalib_num_max),
       SimpleRadialCalib_num_max_(SimpleRadialCalib_num_max),
       SimpleRadialFocalAndExtra_num_(SimpleRadialFocalAndExtra_num_max),
@@ -362,6 +388,10 @@ GraphSolver::GraphSolver(
           pinhole_fixed_pose_fixed_point_num_max),
       pinhole_fixed_pose_fixed_point_num_max_(
           pinhole_fixed_pose_fixed_point_num_max),
+      fixed_rig_pinhole_num_(fixed_rig_pinhole_num_max),
+      fixed_rig_pinhole_num_max_(fixed_rig_pinhole_num_max),
+      fixed_rig_position_prior_num_(fixed_rig_position_prior_num_max),
+      fixed_rig_position_prior_num_max_(fixed_rig_position_prior_num_max),
       simple_radial_split_fixed_focal_and_extra_num_(
           simple_radial_split_fixed_focal_and_extra_num_max),
       simple_radial_split_fixed_focal_and_extra_num_max_(
@@ -507,6 +537,13 @@ GraphSolver::GraphSolver(
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
   nodes__Point__storage_new_best_ =
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
+  nodes__SensorFromRigLogScale__storage_current_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
+  nodes__SensorFromRigLogScale__storage_check_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
+  nodes__SensorFromRigLogScale__storage_new_best_ =
+      assign_and_increment<double>(
+          origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
   nodes__SimpleRadialCalib__storage_current_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialCalib__storage_check_ = assign_and_increment<double>(
@@ -662,6 +699,31 @@ GraphSolver::GraphSolver(
   facs__pinhole_fixed_pose_fixed_point__args__point__data_ =
       assign_and_increment<double>(
           origin_ptr_, offset, 4 * pinhole_fixed_pose_fixed_point_num_, 4);
+  facs__fixed_rig_pinhole__args__pose__idx_shared_ =
+      assign_and_increment<SharedIndex>(
+          origin_ptr_, offset, 1 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__sensor_from_rig__data_ =
+      assign_and_increment<double>(
+          origin_ptr_, offset, 8 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__idx_shared_ =
+      assign_and_increment<SharedIndex>(
+          origin_ptr_, offset, 1 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__calib__data_ = assign_and_increment<double>(
+      origin_ptr_, offset, 4 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__point__idx_shared_ =
+      assign_and_increment<SharedIndex>(
+          origin_ptr_, offset, 1 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__pixel__data_ = assign_and_increment<double>(
+      origin_ptr_, offset, 2 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_position_prior__args__pose__idx_shared_ =
+      assign_and_increment<SharedIndex>(
+          origin_ptr_, offset, 1 * fixed_rig_position_prior_num_, 4);
+  facs__fixed_rig_position_prior__args__position__data_ =
+      assign_and_increment<double>(
+          origin_ptr_, offset, 4 * fixed_rig_position_prior_num_, 4);
+  facs__fixed_rig_position_prior__args__sqrt_information__data_ =
+      assign_and_increment<double>(
+          origin_ptr_, offset, 9 * fixed_rig_position_prior_num_, 4);
   facs__simple_radial_split_fixed_focal_and_extra__args__pose__idx_shared_ =
       assign_and_increment<SharedIndex>(
           origin_ptr_,
@@ -1440,6 +1502,10 @@ GraphSolver::GraphSolver(
       origin_ptr_, offset, 2 * pinhole_fixed_point_num_, 4);
   facs__pinhole_fixed_pose_fixed_point__res_ = assign_and_increment<double>(
       origin_ptr_, offset, 2 * pinhole_fixed_pose_fixed_point_num_, 4);
+  facs__fixed_rig_pinhole__res_ = assign_and_increment<double>(
+      origin_ptr_, offset, 2 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_position_prior__res_ = assign_and_increment<double>(
+      origin_ptr_, offset, 4 * fixed_rig_position_prior_num_, 4);
   facs__simple_radial_split_fixed_focal_and_extra__res_ =
       assign_and_increment<double>(
           origin_ptr_,
@@ -1606,6 +1672,16 @@ GraphSolver::GraphSolver(
   facs__pinhole_fixed_pose_fixed_point__args__calib__jac_ =
       assign_and_increment<double>(
           origin_ptr_, offset, 2 * pinhole_fixed_pose_fixed_point_num_, 4);
+  facs__fixed_rig_pinhole__args__pose__jac_ = assign_and_increment<double>(
+      origin_ptr_, offset, 12 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_ =
+      assign_and_increment<double>(
+          origin_ptr_, offset, 2 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__point__jac_ = assign_and_increment<double>(
+      origin_ptr_, offset, 6 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_position_prior__args__pose__jac_ =
+      assign_and_increment<double>(
+          origin_ptr_, offset, 18 * fixed_rig_position_prior_num_, 4);
   facs__simple_radial_split_fixed_focal_and_extra__args__pose__jac_ =
       assign_and_increment<double>(
           origin_ptr_,
@@ -1853,6 +1929,10 @@ GraphSolver::GraphSolver(
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
   nodes__Point__z_end__ =
       assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
+  nodes__SensorFromRigLogScale__z_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
+  nodes__SensorFromRigLogScale__z_end__ =
+      assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
   nodes__SimpleRadialCalib__z_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialCalib__z_end__ =
@@ -1888,6 +1968,10 @@ GraphSolver::GraphSolver(
   nodes__Point__p_ =
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
   nodes__Point__p_end__ =
+      assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
+  nodes__SensorFromRigLogScale__p_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
+  nodes__SensorFromRigLogScale__p_end__ =
       assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
   nodes__SimpleRadialCalib__p_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
@@ -1925,6 +2009,10 @@ GraphSolver::GraphSolver(
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
   nodes__Point__step_end__ =
       assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
+  nodes__SensorFromRigLogScale__step_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
+  nodes__SensorFromRigLogScale__step_end__ =
+      assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
   nodes__SimpleRadialCalib__step_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialCalib__step_end__ =
@@ -1953,6 +2041,8 @@ GraphSolver::GraphSolver(
       origin_ptr_, offset, 2 * PinholePrincipalPoint_num_, 4);
   nodes__Point__w_ =
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
+  nodes__SensorFromRigLogScale__w_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
   nodes__SimpleRadialCalib__w_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialFocalAndExtra__w_ = assign_and_increment<double>(
@@ -1974,6 +2064,8 @@ GraphSolver::GraphSolver(
       origin_ptr_, offset, 2 * PinholePrincipalPoint_num_, 4);
   nodes__Point__r_0_ =
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
+  nodes__SensorFromRigLogScale__r_0_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
   nodes__SimpleRadialCalib__r_0_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialFocalAndExtra__r_0_ = assign_and_increment<double>(
@@ -1996,6 +2088,8 @@ GraphSolver::GraphSolver(
       origin_ptr_, offset, 2 * PinholePrincipalPoint_num_, 4);
   nodes__Point__r_k_ =
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
+  nodes__SensorFromRigLogScale__r_k_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
   nodes__SimpleRadialCalib__r_k_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialFocalAndExtra__r_k_ = assign_and_increment<double>(
@@ -2018,6 +2112,8 @@ GraphSolver::GraphSolver(
       origin_ptr_, offset, 2 * PinholePrincipalPoint_num_, 4);
   nodes__Point__Mp_ =
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
+  nodes__SensorFromRigLogScale__Mp_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
   nodes__SimpleRadialCalib__Mp_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialFocalAndExtra__Mp_ = assign_and_increment<double>(
@@ -2049,6 +2145,10 @@ GraphSolver::GraphSolver(
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
   nodes__Point__precond_tril_ =
       assign_and_increment<double>(origin_ptr_, offset, 4 * Point_num_, 4);
+  nodes__SensorFromRigLogScale__precond_diag_ = assign_and_increment<double>(
+      origin_ptr_, offset, 1 * SensorFromRigLogScale_num_, 4);
+  nodes__SensorFromRigLogScale__precond_tril_ = assign_and_increment<double>(
+      origin_ptr_, offset, 0 * SensorFromRigLogScale_num_, 4);
   nodes__SimpleRadialCalib__precond_diag_ = assign_and_increment<double>(
       origin_ptr_, offset, 4 * SimpleRadialCalib_num_, 4);
   nodes__SimpleRadialCalib__precond_tril_ = assign_and_increment<double>(
@@ -2093,6 +2193,10 @@ GraphSolver::GraphSolver(
       origin_ptr_, offset, 2 * pinhole_fixed_point_num_, 4);
   facs__pinhole_fixed_pose_fixed_point__jp_ = assign_and_increment<double>(
       origin_ptr_, offset, 2 * pinhole_fixed_pose_fixed_point_num_, 4);
+  facs__fixed_rig_pinhole__jp_ = assign_and_increment<double>(
+      origin_ptr_, offset, 2 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_position_prior__jp_ = assign_and_increment<double>(
+      origin_ptr_, offset, 4 * fixed_rig_position_prior_num_, 4);
   facs__simple_radial_split_fixed_focal_and_extra__jp_ =
       assign_and_increment<double>(
           origin_ptr_,
@@ -2314,6 +2418,8 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
                   nodes__PinholePrincipalPoint__storage_new_best_);
         std::swap(nodes__Point__storage_check_,
                   nodes__Point__storage_new_best_);
+        std::swap(nodes__SensorFromRigLogScale__storage_check_,
+                  nodes__SensorFromRigLogScale__storage_new_best_);
         std::swap(nodes__SimpleRadialCalib__storage_check_,
                   nodes__SimpleRadialCalib__storage_new_best_);
         std::swap(nodes__SimpleRadialFocalAndExtra__storage_check_,
@@ -2346,6 +2452,8 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
       std::swap(nodes__PinholePrincipalPoint__storage_check_,
                 nodes__PinholePrincipalPoint__storage_new_best_);
       std::swap(nodes__Point__storage_check_, nodes__Point__storage_new_best_);
+      std::swap(nodes__SensorFromRigLogScale__storage_check_,
+                nodes__SensorFromRigLogScale__storage_new_best_);
       std::swap(nodes__SimpleRadialCalib__storage_check_,
                 nodes__SimpleRadialCalib__storage_new_best_);
       std::swap(nodes__SimpleRadialFocalAndExtra__storage_check_,
@@ -2378,6 +2486,8 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
                 nodes__PinholePrincipalPoint__storage_new_best_);
       std::swap(nodes__Point__storage_current_,
                 nodes__Point__storage_new_best_);
+      std::swap(nodes__SensorFromRigLogScale__storage_current_,
+                nodes__SensorFromRigLogScale__storage_new_best_);
       std::swap(nodes__SimpleRadialCalib__storage_current_,
                 nodes__SimpleRadialCalib__storage_new_best_);
       std::swap(nodes__SimpleRadialFocalAndExtra__storage_current_,
@@ -2718,6 +2828,67 @@ double GraphSolver::DoResJacFirst() {
       nodes__PinholeCalib__precond_tril_,
       PinholeCalib_num_,
       pinhole_fixed_pose_fixed_point_num_);
+
+  FixedRigPinholeResJacFirst(
+      nodes__PinholePose__storage_current_,
+      PinholePose_num_max_,
+      facs__fixed_rig_pinhole__args__pose__idx_shared_,
+      facs__fixed_rig_pinhole__args__sensor_from_rig__data_,
+      fixed_rig_pinhole_num_max_,
+      nodes__SensorFromRigLogScale__storage_current_,
+      facs__fixed_rig_pinhole__args__calib__data_,
+      fixed_rig_pinhole_num_max_,
+      nodes__Point__storage_current_,
+      Point_num_max_,
+      facs__fixed_rig_pinhole__args__point__idx_shared_,
+      facs__fixed_rig_pinhole__args__pixel__data_,
+      fixed_rig_pinhole_num_max_,
+
+      facs__fixed_rig_pinhole__res_,
+      fixed_rig_pinhole_num_,
+      solver__res_tot_,
+      facs__fixed_rig_pinhole__args__pose__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__PinholePose__r_k_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_diag_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_tril_,
+      PinholePose_num_,
+      facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__SensorFromRigLogScale__r_k_,
+      nodes__SensorFromRigLogScale__precond_diag_,
+      nodes__SensorFromRigLogScale__precond_tril_,
+      facs__fixed_rig_pinhole__args__point__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__Point__r_k_,
+      Point_num_,
+      nodes__Point__precond_diag_,
+      Point_num_,
+      nodes__Point__precond_tril_,
+      Point_num_,
+      fixed_rig_pinhole_num_);
+
+  FixedRigPositionPriorResJacFirst(
+      nodes__PinholePose__storage_current_,
+      PinholePose_num_max_,
+      facs__fixed_rig_position_prior__args__pose__idx_shared_,
+      facs__fixed_rig_position_prior__args__position__data_,
+      fixed_rig_position_prior_num_max_,
+      facs__fixed_rig_position_prior__args__sqrt_information__data_,
+      fixed_rig_position_prior_num_max_,
+
+      facs__fixed_rig_position_prior__res_,
+      fixed_rig_position_prior_num_,
+      solver__res_tot_,
+      nodes__PinholePose__r_k_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_diag_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_tril_,
+      PinholePose_num_,
+      fixed_rig_position_prior_num_);
 
   SimpleRadialSplitFixedFocalAndExtraResJacFirst(
       nodes__SimpleRadialPose__storage_current_,
@@ -3761,6 +3932,67 @@ void GraphSolver::DoResJac() {
       PinholeCalib_num_,
       pinhole_fixed_pose_fixed_point_num_);
 
+  FixedRigPinholeResJac(
+      nodes__PinholePose__storage_current_,
+      PinholePose_num_max_,
+      facs__fixed_rig_pinhole__args__pose__idx_shared_,
+      facs__fixed_rig_pinhole__args__sensor_from_rig__data_,
+      fixed_rig_pinhole_num_max_,
+      nodes__SensorFromRigLogScale__storage_current_,
+      facs__fixed_rig_pinhole__args__calib__data_,
+      fixed_rig_pinhole_num_max_,
+      nodes__Point__storage_current_,
+      Point_num_max_,
+      facs__fixed_rig_pinhole__args__point__idx_shared_,
+      facs__fixed_rig_pinhole__args__pixel__data_,
+      fixed_rig_pinhole_num_max_,
+
+      facs__fixed_rig_pinhole__res_,
+      fixed_rig_pinhole_num_,
+
+      facs__fixed_rig_pinhole__args__pose__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__PinholePose__r_k_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_diag_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_tril_,
+      PinholePose_num_,
+      facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__SensorFromRigLogScale__r_k_,
+      nodes__SensorFromRigLogScale__precond_diag_,
+      nodes__SensorFromRigLogScale__precond_tril_,
+      facs__fixed_rig_pinhole__args__point__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__Point__r_k_,
+      Point_num_,
+      nodes__Point__precond_diag_,
+      Point_num_,
+      nodes__Point__precond_tril_,
+      Point_num_,
+      fixed_rig_pinhole_num_);
+
+  FixedRigPositionPriorResJac(
+      nodes__PinholePose__storage_current_,
+      PinholePose_num_max_,
+      facs__fixed_rig_position_prior__args__pose__idx_shared_,
+      facs__fixed_rig_position_prior__args__position__data_,
+      fixed_rig_position_prior_num_max_,
+      facs__fixed_rig_position_prior__args__sqrt_information__data_,
+      fixed_rig_position_prior_num_max_,
+
+      facs__fixed_rig_position_prior__res_,
+      fixed_rig_position_prior_num_,
+
+      nodes__PinholePose__r_k_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_diag_,
+      PinholePose_num_,
+      nodes__PinholePose__precond_tril_,
+      PinholePose_num_,
+      fixed_rig_position_prior_num_);
+
   SimpleRadialSplitFixedFocalAndExtraResJac(
       nodes__SimpleRadialPose__storage_current_,
       SimpleRadialPose_num_max_,
@@ -4585,6 +4817,18 @@ void GraphSolver::DoNormalize() {
                  z,
                  Point_num_,
                  Point_num_);
+  z = pcg_iter_ == 0 ? nodes__SensorFromRigLogScale__p_
+                     : nodes__SensorFromRigLogScale__z_;
+  SensorFromRigLogScaleNormalize(nodes__SensorFromRigLogScale__precond_diag_,
+                                 SensorFromRigLogScale_num_,
+                                 nodes__SensorFromRigLogScale__precond_tril_,
+                                 SensorFromRigLogScale_num_,
+                                 nodes__SensorFromRigLogScale__r_k_,
+                                 SensorFromRigLogScale_num_,
+                                 solver__current_diag_,
+                                 z,
+                                 SensorFromRigLogScale_num_,
+                                 SensorFromRigLogScale_num_);
   z = pcg_iter_ == 0 ? nodes__SimpleRadialCalib__p_
                      : nodes__SimpleRadialCalib__z_;
   SimpleRadialCalibNormalize(nodes__SimpleRadialCalib__precond_diag_,
@@ -4688,6 +4932,16 @@ void GraphSolver::DoUpdateMp() {
                 nodes__Point__w_,
                 Point_num_,
                 Point_num_);
+  SensorFromRigLogScaleUpdateMp(nodes__SensorFromRigLogScale__r_k_,
+                                SensorFromRigLogScale_num_,
+                                nodes__SensorFromRigLogScale__Mp_,
+                                SensorFromRigLogScale_num_,
+                                solver__beta_,
+                                nodes__SensorFromRigLogScale__Mp_,
+                                SensorFromRigLogScale_num_,
+                                nodes__SensorFromRigLogScale__w_,
+                                SensorFromRigLogScale_num_,
+                                SensorFromRigLogScale_num_);
   SimpleRadialCalibUpdateMp(nodes__SimpleRadialCalib__r_k_,
                             SimpleRadialCalib_num_,
                             nodes__SimpleRadialCalib__Mp_,
@@ -4839,6 +5093,26 @@ void GraphSolver::DoJtjpDirect() {
       nodes__PinholeCalib__w_,
       PinholeCalib_num_,
       pinhole_fixed_point_num_);
+  FixedRigPinholeJtjnjtrDirect(
+      nodes__PinholePose__p_,
+      PinholePose_num_,
+      facs__fixed_rig_pinhole__args__pose__idx_shared_,
+      facs__fixed_rig_pinhole__args__pose__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__SensorFromRigLogScale__p_,
+      facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__Point__p_,
+      Point_num_,
+      facs__fixed_rig_pinhole__args__point__idx_shared_,
+      facs__fixed_rig_pinhole__args__point__jac_,
+      fixed_rig_pinhole_num_,
+      nodes__PinholePose__w_,
+      PinholePose_num_,
+      nodes__SensorFromRigLogScale__w_,
+      nodes__Point__w_,
+      Point_num_,
+      fixed_rig_pinhole_num_);
   SimpleRadialSplitFixedFocalAndExtraJtjnjtrDirect(
       nodes__SimpleRadialPose__p_,
       SimpleRadialPose_num_,
@@ -5143,6 +5417,16 @@ void GraphSolver::DoAlphaFirst() {
                                  solver__alpha_numerator_,
                                  solver__alpha_denominator_,
                                  Point_num_);
+  SensorFromRigLogScaleAlphaNumeratorDenominator(
+      nodes__SensorFromRigLogScale__p_,
+      SensorFromRigLogScale_num_,
+      nodes__SensorFromRigLogScale__r_k_,
+      SensorFromRigLogScale_num_,
+      nodes__SensorFromRigLogScale__w_,
+      SensorFromRigLogScale_num_,
+      solver__alpha_numerator_,
+      solver__alpha_denominator_,
+      SensorFromRigLogScale_num_);
   SimpleRadialCalibAlphaNumeratorDenominator(nodes__SimpleRadialCalib__p_,
                                              SimpleRadialCalib_num_,
                                              nodes__SimpleRadialCalib__r_k_,
@@ -5221,6 +5505,13 @@ void GraphSolver::DoAlpha() {
                                        Point_num_,
                                        solver__alpha_denominator_,
                                        Point_num_);
+  SensorFromRigLogScaleAlphaDenominatorOrBetaNumerator(
+      nodes__SensorFromRigLogScale__p_,
+      SensorFromRigLogScale_num_,
+      nodes__SensorFromRigLogScale__w_,
+      SensorFromRigLogScale_num_,
+      solver__alpha_denominator_,
+      SensorFromRigLogScale_num_);
   SimpleRadialCalibAlphaDenominatorOrBetaNumerator(nodes__SimpleRadialCalib__p_,
                                                    SimpleRadialCalib_num_,
                                                    nodes__SimpleRadialCalib__w_,
@@ -5285,6 +5576,12 @@ void GraphSolver::DoUpdateStepFirst() {
                        nodes__Point__step_,
                        Point_num_,
                        Point_num_);
+  SensorFromRigLogScaleUpdateStepFirst(nodes__SensorFromRigLogScale__p_,
+                                       SensorFromRigLogScale_num_,
+                                       solver__alpha_,
+                                       nodes__SensorFromRigLogScale__step_,
+                                       SensorFromRigLogScale_num_,
+                                       SensorFromRigLogScale_num_);
   SimpleRadialCalibUpdateStepFirst(nodes__SimpleRadialCalib__p_,
                                    SimpleRadialCalib_num_,
                                    solver__alpha_,
@@ -5354,6 +5651,14 @@ void GraphSolver::DoUpdateStep() {
                   nodes__Point__step_,
                   Point_num_,
                   Point_num_);
+  SensorFromRigLogScaleUpdateStep(nodes__SensorFromRigLogScale__step_,
+                                  SensorFromRigLogScale_num_,
+                                  nodes__SensorFromRigLogScale__p_,
+                                  SensorFromRigLogScale_num_,
+                                  solver__alpha_,
+                                  nodes__SensorFromRigLogScale__step_,
+                                  SensorFromRigLogScale_num_,
+                                  SensorFromRigLogScale_num_);
   SimpleRadialCalibUpdateStep(nodes__SimpleRadialCalib__step_,
                               SimpleRadialCalib_num_,
                               nodes__SimpleRadialCalib__p_,
@@ -5445,6 +5750,17 @@ void GraphSolver::DoUpdateRFirst() {
                     solver__r_0_norm2_tot_,
                     solver__r_kp1_norm2_tot_,
                     Point_num_);
+
+  SensorFromRigLogScaleUpdateRFirst(nodes__SensorFromRigLogScale__r_k_,
+                                    SensorFromRigLogScale_num_,
+                                    nodes__SensorFromRigLogScale__w_,
+                                    SensorFromRigLogScale_num_,
+                                    solver__neg_alpha_,
+                                    nodes__SensorFromRigLogScale__r_k_,
+                                    SensorFromRigLogScale_num_,
+                                    solver__r_0_norm2_tot_,
+                                    solver__r_kp1_norm2_tot_,
+                                    SensorFromRigLogScale_num_);
 
   SimpleRadialCalibUpdateRFirst(nodes__SimpleRadialCalib__r_k_,
                                 SimpleRadialCalib_num_,
@@ -5543,6 +5859,15 @@ void GraphSolver::DoUpdateR() {
                Point_num_,
                solver__r_kp1_norm2_tot_,
                Point_num_);
+  SensorFromRigLogScaleUpdateR(nodes__SensorFromRigLogScale__r_k_,
+                               SensorFromRigLogScale_num_,
+                               nodes__SensorFromRigLogScale__w_,
+                               SensorFromRigLogScale_num_,
+                               solver__neg_alpha_,
+                               nodes__SensorFromRigLogScale__r_k_,
+                               SensorFromRigLogScale_num_,
+                               solver__r_kp1_norm2_tot_,
+                               SensorFromRigLogScale_num_);
   SimpleRadialCalibUpdateR(nodes__SimpleRadialCalib__r_k_,
                            SimpleRadialCalib_num_,
                            nodes__SimpleRadialCalib__w_,
@@ -5618,6 +5943,13 @@ double GraphSolver::DoRetractScore() {
                nodes__Point__storage_check_,
                Point_num_max_,
                Point_num_);
+  SensorFromRigLogScaleRetract(nodes__SensorFromRigLogScale__storage_current_,
+                               SensorFromRigLogScale_num_max_,
+                               nodes__SensorFromRigLogScale__step_,
+                               SensorFromRigLogScale_num_,
+                               nodes__SensorFromRigLogScale__storage_check_,
+                               SensorFromRigLogScale_num_max_,
+                               SensorFromRigLogScale_num_);
   SimpleRadialCalibRetract(nodes__SimpleRadialCalib__storage_current_,
                            SimpleRadialCalib_num_max_,
                            nodes__SimpleRadialCalib__step_,
@@ -5766,6 +6098,31 @@ double GraphSolver::DoRetractScore() {
       pinhole_fixed_pose_fixed_point_num_max_,
       solver__res_tot_,
       pinhole_fixed_pose_fixed_point_num_);
+  FixedRigPinholeScore(nodes__PinholePose__storage_check_,
+                       PinholePose_num_max_,
+                       facs__fixed_rig_pinhole__args__pose__idx_shared_,
+                       facs__fixed_rig_pinhole__args__sensor_from_rig__data_,
+                       fixed_rig_pinhole_num_max_,
+                       nodes__SensorFromRigLogScale__storage_check_,
+                       facs__fixed_rig_pinhole__args__calib__data_,
+                       fixed_rig_pinhole_num_max_,
+                       nodes__Point__storage_check_,
+                       Point_num_max_,
+                       facs__fixed_rig_pinhole__args__point__idx_shared_,
+                       facs__fixed_rig_pinhole__args__pixel__data_,
+                       fixed_rig_pinhole_num_max_,
+                       solver__res_tot_,
+                       fixed_rig_pinhole_num_);
+  FixedRigPositionPriorScore(
+      nodes__PinholePose__storage_check_,
+      PinholePose_num_max_,
+      facs__fixed_rig_position_prior__args__pose__idx_shared_,
+      facs__fixed_rig_position_prior__args__position__data_,
+      fixed_rig_position_prior_num_max_,
+      facs__fixed_rig_position_prior__args__sqrt_information__data_,
+      fixed_rig_position_prior_num_max_,
+      solver__res_tot_,
+      fixed_rig_position_prior_num_);
   SimpleRadialSplitFixedFocalAndExtraScore(
       nodes__SimpleRadialPose__storage_check_,
       SimpleRadialPose_num_max_,
@@ -6178,6 +6535,14 @@ void GraphSolver::DoBeta() {
                                        solver__beta_numerator_,
                                        Point_num_);
 
+  SensorFromRigLogScaleAlphaDenominatorOrBetaNumerator(
+      nodes__SensorFromRigLogScale__r_k_,
+      SensorFromRigLogScale_num_,
+      nodes__SensorFromRigLogScale__z_,
+      SensorFromRigLogScale_num_,
+      solver__beta_numerator_,
+      SensorFromRigLogScale_num_);
+
   SimpleRadialCalibAlphaDenominatorOrBetaNumerator(
       nodes__SimpleRadialCalib__r_k_,
       SimpleRadialCalib_num_,
@@ -6253,6 +6618,14 @@ void GraphSolver::DoUpdateP() {
                nodes__Point__p_,
                Point_num_,
                Point_num_);
+  SensorFromRigLogScaleUpdateP(nodes__SensorFromRigLogScale__z_,
+                               SensorFromRigLogScale_num_,
+                               nodes__SensorFromRigLogScale__p_,
+                               SensorFromRigLogScale_num_,
+                               solver__beta_,
+                               nodes__SensorFromRigLogScale__p_,
+                               SensorFromRigLogScale_num_,
+                               SensorFromRigLogScale_num_);
   SimpleRadialCalibUpdateP(nodes__SimpleRadialCalib__z_,
                            SimpleRadialCalib_num_,
                            nodes__SimpleRadialCalib__p_,
@@ -6335,6 +6708,16 @@ double GraphSolver::GetPredDecrease() {
                             Point_num_,
                             solver__pred_decrease_tot_,
                             Point_num_);
+  SensorFromRigLogScalePredDecreaseTimesTwo(
+      nodes__SensorFromRigLogScale__step_,
+      SensorFromRigLogScale_num_,
+      nodes__SensorFromRigLogScale__precond_diag_,
+      SensorFromRigLogScale_num_,
+      solver__current_diag_,
+      nodes__SensorFromRigLogScale__r_0_,
+      SensorFromRigLogScale_num_,
+      solver__pred_decrease_tot_,
+      SensorFromRigLogScale_num_);
   SimpleRadialCalibPredDecreaseTimesTwo(nodes__SimpleRadialCalib__step_,
                                         SimpleRadialCalib_num_,
                                         nodes__SimpleRadialCalib__precond_diag_,
@@ -6745,6 +7128,83 @@ void GraphSolver::GetPointNodesToStackedDevice(double* const data,
   }
   PointCasparToStacked(
       nodes__Point__storage_current_, data, Point_num_max_, offset, num);
+}
+
+void GraphSolver::SetSensorFromRigLogScaleNum(const size_t num) {
+  cudaSetDevice(device_id_);
+  if (num > SensorFromRigLogScale_num_max_) {
+    throw std::runtime_error(std::to_string(num) +
+                             " > SensorFromRigLogScale_num_max_");
+  }
+  SensorFromRigLogScale_num_ = num;
+}
+
+void GraphSolver::SetSensorFromRigLogScaleNodesFromStackedHost(
+    const double* const data, const size_t offset, const size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > SensorFromRigLogScale_num_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > SensorFromRigLogScale_num_");
+  }
+  cudaMemcpy(marker__scratch_inout_,
+             data,
+             1 * num * sizeof(double),
+             cudaMemcpyHostToDevice);
+  SensorFromRigLogScaleStackedToCaspar(
+      marker__scratch_inout_,
+      nodes__SensorFromRigLogScale__storage_current_,
+      SensorFromRigLogScale_num_max_,
+      offset,
+      num);
+}
+
+void GraphSolver::SetSensorFromRigLogScaleNodesFromStackedDevice(
+    const double* const data, const size_t offset, const size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > SensorFromRigLogScale_num_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > SensorFromRigLogScale_num_");
+  }
+  SensorFromRigLogScaleStackedToCaspar(
+      data,
+      nodes__SensorFromRigLogScale__storage_current_,
+      SensorFromRigLogScale_num_max_,
+      offset,
+      num);
+}
+
+void GraphSolver::GetSensorFromRigLogScaleNodesToStackedHost(
+    double* const data, const size_t offset, const size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > SensorFromRigLogScale_num_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > SensorFromRigLogScale_num_");
+  }
+  SensorFromRigLogScaleCasparToStacked(
+      nodes__SensorFromRigLogScale__storage_current_,
+      marker__scratch_inout_,
+      SensorFromRigLogScale_num_max_,
+      offset,
+      num);
+  cudaMemcpy(data,
+             marker__scratch_inout_,
+             1 * num * sizeof(double),
+             cudaMemcpyDeviceToHost);
+}
+
+void GraphSolver::GetSensorFromRigLogScaleNodesToStackedDevice(
+    double* const data, const size_t offset, const size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > SensorFromRigLogScale_num_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > SensorFromRigLogScale_num_");
+  }
+  SensorFromRigLogScaleCasparToStacked(
+      nodes__SensorFromRigLogScale__storage_current_,
+      data,
+      SensorFromRigLogScale_num_max_,
+      offset,
+      num);
 }
 
 void GraphSolver::SetSimpleRadialCalibNum(const size_t num) {
@@ -8493,6 +8953,293 @@ void GraphSolver::SetPinholeFixedPoseFixedPointPointDataFromStackedDevice(
       data,
       facs__pinhole_fixed_pose_fixed_point__args__point__data_,
       pinhole_fixed_pose_fixed_point_num_max_,
+      offset,
+      num);
+}
+void GraphSolver::SetFixedRigPinholeNum(const size_t num) {
+  if (num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  fixed_rig_pinhole_num_ = num;
+}
+void GraphSolver::SetFixedRigPinholePoseIndicesFromHost(
+    const unsigned int* const indices, size_t num) {
+  cudaSetDevice(device_id_);
+  if (num != fixed_rig_pinhole_num_) {
+    throw std::runtime_error(std::to_string(num) +
+                             " != fixed_rig_pinhole_num_. Use "
+                             "Setfixed_rig_pinholeNum before setting indices.");
+  }
+  cudaMemcpy((unsigned int*)marker__scratch_inout_,
+             indices,
+             num * sizeof(unsigned int),
+             cudaMemcpyHostToDevice);
+  SetFixedRigPinholePoseIndicesFromDevice((unsigned int*)marker__scratch_inout_,
+                                          num);
+}
+
+void GraphSolver::SetFixedRigPinholePoseIndicesFromDevice(
+    const unsigned int* const indices, size_t num) {
+  indices_valid_ = false;
+  cudaSetDevice(device_id_);
+
+  if (num != fixed_rig_pinhole_num_) {
+    throw std::runtime_error(std::to_string(num) +
+                             " != fixed_rig_pinhole_num_. Use "
+                             "Setfixed_rig_pinholeNum before setting indices.");
+  }
+
+  size_t tmp_size = SortIndicesGetTmpNbytes(num);
+  if (tmp_size + num > scratch_inout_size_) {
+    throw std::runtime_error(
+        "Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
+        ", num: " + std::to_string(num) +
+        ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
+  }
+  SharedIndices(indices, facs__fixed_rig_pinhole__args__pose__idx_shared_, num);
+}
+void GraphSolver::SetFixedRigPinholePointIndicesFromHost(
+    const unsigned int* const indices, size_t num) {
+  cudaSetDevice(device_id_);
+  if (num != fixed_rig_pinhole_num_) {
+    throw std::runtime_error(std::to_string(num) +
+                             " != fixed_rig_pinhole_num_. Use "
+                             "Setfixed_rig_pinholeNum before setting indices.");
+  }
+  cudaMemcpy((unsigned int*)marker__scratch_inout_,
+             indices,
+             num * sizeof(unsigned int),
+             cudaMemcpyHostToDevice);
+  SetFixedRigPinholePointIndicesFromDevice(
+      (unsigned int*)marker__scratch_inout_, num);
+}
+
+void GraphSolver::SetFixedRigPinholePointIndicesFromDevice(
+    const unsigned int* const indices, size_t num) {
+  indices_valid_ = false;
+  cudaSetDevice(device_id_);
+
+  if (num != fixed_rig_pinhole_num_) {
+    throw std::runtime_error(std::to_string(num) +
+                             " != fixed_rig_pinhole_num_. Use "
+                             "Setfixed_rig_pinholeNum before setting indices.");
+  }
+
+  size_t tmp_size = SortIndicesGetTmpNbytes(num);
+  if (tmp_size + num > scratch_inout_size_) {
+    throw std::runtime_error(
+        "Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
+        ", num: " + std::to_string(num) +
+        ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
+  }
+  SharedIndices(
+      indices, facs__fixed_rig_pinhole__args__point__idx_shared_, num);
+}
+void GraphSolver::SetFixedRigPinholeSensorFromRigDataFromStackedHost(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  cudaMemcpy(marker__scratch_inout_,
+             data,
+             7 * num * sizeof(double),
+             cudaMemcpyHostToDevice);
+  ConstPinholeSensorFromRigStackedToCaspar(
+      marker__scratch_inout_,
+      facs__fixed_rig_pinhole__args__sensor_from_rig__data_,
+      fixed_rig_pinhole_num_max_,
+      offset,
+      num);
+}
+
+void GraphSolver::SetFixedRigPinholeSensorFromRigDataFromStackedDevice(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  ConstPinholeSensorFromRigStackedToCaspar(
+      data,
+      facs__fixed_rig_pinhole__args__sensor_from_rig__data_,
+      fixed_rig_pinhole_num_max_,
+      offset,
+      num);
+}
+void GraphSolver::SetFixedRigPinholeCalibDataFromStackedHost(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  cudaMemcpy(marker__scratch_inout_,
+             data,
+             4 * num * sizeof(double),
+             cudaMemcpyHostToDevice);
+  ConstPinholeCalibStackedToCaspar(marker__scratch_inout_,
+                                   facs__fixed_rig_pinhole__args__calib__data_,
+                                   fixed_rig_pinhole_num_max_,
+                                   offset,
+                                   num);
+}
+
+void GraphSolver::SetFixedRigPinholeCalibDataFromStackedDevice(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  ConstPinholeCalibStackedToCaspar(data,
+                                   facs__fixed_rig_pinhole__args__calib__data_,
+                                   fixed_rig_pinhole_num_max_,
+                                   offset,
+                                   num);
+}
+void GraphSolver::SetFixedRigPinholePixelDataFromStackedHost(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  cudaMemcpy(marker__scratch_inout_,
+             data,
+             2 * num * sizeof(double),
+             cudaMemcpyHostToDevice);
+  ConstPixelStackedToCaspar(marker__scratch_inout_,
+                            facs__fixed_rig_pinhole__args__pixel__data_,
+                            fixed_rig_pinhole_num_max_,
+                            offset,
+                            num);
+}
+
+void GraphSolver::SetFixedRigPinholePixelDataFromStackedDevice(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  ConstPixelStackedToCaspar(data,
+                            facs__fixed_rig_pinhole__args__pixel__data_,
+                            fixed_rig_pinhole_num_max_,
+                            offset,
+                            num);
+}
+void GraphSolver::SetFixedRigPositionPriorNum(const size_t num) {
+  if (num > fixed_rig_position_prior_num_max_) {
+    throw std::runtime_error(std::to_string(num) +
+                             " > fixed_rig_position_prior_num_max_");
+  }
+  fixed_rig_position_prior_num_ = num;
+}
+void GraphSolver::SetFixedRigPositionPriorPoseIndicesFromHost(
+    const unsigned int* const indices, size_t num) {
+  cudaSetDevice(device_id_);
+  if (num != fixed_rig_position_prior_num_) {
+    throw std::runtime_error(
+        std::to_string(num) +
+        " != fixed_rig_position_prior_num_. Use Setfixed_rig_position_priorNum "
+        "before setting indices.");
+  }
+  cudaMemcpy((unsigned int*)marker__scratch_inout_,
+             indices,
+             num * sizeof(unsigned int),
+             cudaMemcpyHostToDevice);
+  SetFixedRigPositionPriorPoseIndicesFromDevice(
+      (unsigned int*)marker__scratch_inout_, num);
+}
+
+void GraphSolver::SetFixedRigPositionPriorPoseIndicesFromDevice(
+    const unsigned int* const indices, size_t num) {
+  indices_valid_ = false;
+  cudaSetDevice(device_id_);
+
+  if (num != fixed_rig_position_prior_num_) {
+    throw std::runtime_error(
+        std::to_string(num) +
+        " != fixed_rig_position_prior_num_. Use Setfixed_rig_position_priorNum "
+        "before setting indices.");
+  }
+
+  size_t tmp_size = SortIndicesGetTmpNbytes(num);
+  if (tmp_size + num > scratch_inout_size_) {
+    throw std::runtime_error(
+        "Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
+        ", num: " + std::to_string(num) +
+        ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
+  }
+  SharedIndices(
+      indices, facs__fixed_rig_position_prior__args__pose__idx_shared_, num);
+}
+void GraphSolver::SetFixedRigPositionPriorPositionDataFromStackedHost(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_position_prior_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_position_prior_num_max_");
+  }
+  cudaMemcpy(marker__scratch_inout_,
+             data,
+             3 * num * sizeof(double),
+             cudaMemcpyHostToDevice);
+  ConstReferencePositionStackedToCaspar(
+      marker__scratch_inout_,
+      facs__fixed_rig_position_prior__args__position__data_,
+      fixed_rig_position_prior_num_max_,
+      offset,
+      num);
+}
+
+void GraphSolver::SetFixedRigPositionPriorPositionDataFromStackedDevice(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_position_prior_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_position_prior_num_max_");
+  }
+  ConstReferencePositionStackedToCaspar(
+      data,
+      facs__fixed_rig_position_prior__args__position__data_,
+      fixed_rig_position_prior_num_max_,
+      offset,
+      num);
+}
+void GraphSolver::SetFixedRigPositionPriorSqrtInformationDataFromStackedHost(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_position_prior_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_position_prior_num_max_");
+  }
+  cudaMemcpy(marker__scratch_inout_,
+             data,
+             9 * num * sizeof(double),
+             cudaMemcpyHostToDevice);
+  ConstPositionSqrtInformationStackedToCaspar(
+      marker__scratch_inout_,
+      facs__fixed_rig_position_prior__args__sqrt_information__data_,
+      fixed_rig_position_prior_num_max_,
+      offset,
+      num);
+}
+
+void GraphSolver::SetFixedRigPositionPriorSqrtInformationDataFromStackedDevice(
+    const double* const data, size_t offset, size_t num) {
+  cudaSetDevice(device_id_);
+  if (offset + num > fixed_rig_position_prior_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_position_prior_num_max_");
+  }
+  ConstPositionSqrtInformationStackedToCaspar(
+      data,
+      facs__fixed_rig_position_prior__args__sqrt_information__data_,
+      fixed_rig_position_prior_num_max_,
       offset,
       num);
 }
@@ -14082,6 +14829,9 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 4 * Point_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
@@ -14140,6 +14890,15 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 2 * pinhole_fixed_pose_fixed_point_num_, 4);
   increment_offset<double>(offset, 8 * pinhole_fixed_pose_fixed_point_num_, 4);
   increment_offset<double>(offset, 4 * pinhole_fixed_pose_fixed_point_num_, 4);
+  increment_offset<SharedIndex>(offset, 1 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 8 * fixed_rig_pinhole_num_, 4);
+  increment_offset<SharedIndex>(offset, 1 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 4 * fixed_rig_pinhole_num_, 4);
+  increment_offset<SharedIndex>(offset, 1 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 2 * fixed_rig_pinhole_num_, 4);
+  increment_offset<SharedIndex>(offset, 1 * fixed_rig_position_prior_num_, 4);
+  increment_offset<double>(offset, 4 * fixed_rig_position_prior_num_, 4);
+  increment_offset<double>(offset, 9 * fixed_rig_position_prior_num_, 4);
   increment_offset<SharedIndex>(
       offset, 1 * simple_radial_split_fixed_focal_and_extra_num_, 4);
   increment_offset<double>(
@@ -14525,6 +15284,7 @@ size_t GraphSolver::get_nbytes() {
                                   7 * PinholePose_num_max_,
                                   2 * PinholePrincipalPoint_num_max_,
                                   3 * Point_num_max_,
+                                  1 * SensorFromRigLogScale_num_max_,
                                   4 * SimpleRadialCalib_num_max_,
                                   2 * SimpleRadialFocalAndExtra_num_max_,
                                   7 * SimpleRadialPose_num_max_,
@@ -14540,6 +15300,8 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 2 * pinhole_fixed_pose_num_, 4);
   increment_offset<double>(offset, 2 * pinhole_fixed_point_num_, 4);
   increment_offset<double>(offset, 2 * pinhole_fixed_pose_fixed_point_num_, 4);
+  increment_offset<double>(offset, 2 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 4 * fixed_rig_position_prior_num_, 4);
   increment_offset<double>(
       offset, 2 * simple_radial_split_fixed_focal_and_extra_num_, 4);
   increment_offset<double>(
@@ -14620,6 +15382,10 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 12 * pinhole_fixed_point_num_, 4);
   increment_offset<double>(offset, 2 * pinhole_fixed_point_num_, 4);
   increment_offset<double>(offset, 2 * pinhole_fixed_pose_fixed_point_num_, 4);
+  increment_offset<double>(offset, 12 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 2 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 6 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 18 * fixed_rig_position_prior_num_, 4);
   increment_offset<double>(
       offset, 12 * simple_radial_split_fixed_focal_and_extra_num_, 4);
   increment_offset<double>(
@@ -14734,23 +15500,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
   increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 6 * SimpleRadialPose_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 2 * SimpleRadialPrincipalPoint_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 4 * PinholeCalib_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 2 * PinholeFocal_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 6 * PinholePose_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 2 * PinholePrincipalPoint_num_, 4);
-  increment_offset<double>(offset, 0 * 0, 4);
-  increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 0 * 0, 4);
@@ -14770,6 +15520,28 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
   increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 6 * SimpleRadialPose_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 2 * SimpleRadialPrincipalPoint_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 4 * PinholeCalib_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 2 * PinholeFocal_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 6 * PinholePose_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 2 * PinholePrincipalPoint_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
+  increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
@@ -14784,6 +15556,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 6 * PinholePose_num_, 4);
   increment_offset<double>(offset, 2 * PinholePrincipalPoint_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
   increment_offset<double>(offset, 6 * SimpleRadialPose_num_, 4);
@@ -14795,6 +15568,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 6 * PinholePose_num_, 4);
   increment_offset<double>(offset, 2 * PinholePrincipalPoint_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
   increment_offset<double>(offset, 6 * SimpleRadialPose_num_, 4);
@@ -14806,6 +15580,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 6 * PinholePose_num_, 4);
   increment_offset<double>(offset, 2 * PinholePrincipalPoint_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
   increment_offset<double>(offset, 6 * SimpleRadialPose_num_, 4);
@@ -14817,6 +15592,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 6 * PinholePose_num_, 4);
   increment_offset<double>(offset, 2 * PinholePrincipalPoint_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
   increment_offset<double>(offset, 6 * SimpleRadialPose_num_, 4);
@@ -14833,6 +15609,8 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 1 * PinholePrincipalPoint_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
   increment_offset<double>(offset, 4 * Point_num_, 4);
+  increment_offset<double>(offset, 1 * SensorFromRigLogScale_num_, 4);
+  increment_offset<double>(offset, 0 * SensorFromRigLogScale_num_, 4);
   increment_offset<double>(offset, 4 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 6 * SimpleRadialCalib_num_, 4);
   increment_offset<double>(offset, 2 * SimpleRadialFocalAndExtra_num_, 4);
@@ -14852,6 +15630,8 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 2 * pinhole_fixed_pose_num_, 4);
   increment_offset<double>(offset, 2 * pinhole_fixed_point_num_, 4);
   increment_offset<double>(offset, 2 * pinhole_fixed_pose_fixed_point_num_, 4);
+  increment_offset<double>(offset, 2 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 4 * fixed_rig_position_prior_num_, 4);
   increment_offset<double>(
       offset, 2 * simple_radial_split_fixed_focal_and_extra_num_, 4);
   increment_offset<double>(

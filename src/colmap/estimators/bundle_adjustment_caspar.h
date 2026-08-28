@@ -132,6 +132,13 @@ std::unique_ptr<BundleAdjuster> CreateDefaultCasparRigSchurBundleAdjuster(
     const BundleAdjustmentConfig& config,
     Reconstruction& reconstruction);
 
+std::unique_ptr<BundleAdjuster>
+CreateFixedRigPosePriorCasparRigSchurBundleAdjuster(
+    const FixedRigPosePriorBundleAdjustmentOptions& options,
+    const BundleAdjustmentConfig& config,
+    std::vector<PosePrior> pose_priors,
+    Reconstruction& reconstruction);
+
 #ifdef CASPAR_ENABLED
 struct CasparBundleAdjustmentSummary : public BundleAdjustmentSummary {
   static std::shared_ptr<CasparBundleAdjustmentSummary> Create(

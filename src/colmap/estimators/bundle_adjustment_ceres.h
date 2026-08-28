@@ -135,6 +135,12 @@ std::unique_ptr<CeresBundleAdjuster> CreatePosePriorCeresBundleAdjuster(
     std::vector<PosePrior> pose_priors,
     Reconstruction& reconstruction);
 
+std::unique_ptr<CeresBundleAdjuster> CreateFixedRigPosePriorCeresBundleAdjuster(
+    const FixedRigPosePriorBundleAdjustmentOptions& options,
+    const BundleAdjustmentConfig& config,
+    std::vector<PosePrior> pose_priors,
+    Reconstruction& reconstruction);
+
 void PrintSolverSummary(const ceres::Solver::Summary& summary,
                         const std::string& header);
 

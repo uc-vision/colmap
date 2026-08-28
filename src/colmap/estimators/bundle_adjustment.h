@@ -271,4 +271,41 @@ std::unique_ptr<BundleAdjuster> CreatePosePriorBundleAdjuster(
     std::vector<PosePrior> pose_priors,
     Reconstruction& reconstruction);
 
+// Options for a reconstruction-wide fixed-rig bundle adjustment with position
+// priors. Camera intrinsics and sensor-from-rig rotations are fixed. Eligible
+// 3D points, every rig translation, and every rig rotation except the first
+// reference frame's gauge anchor are variable. One shared positive scale
+// correction is applied to every non-reference sensor-from-rig translation.
+struct FixedRigPosePriorBundleAdjustmentOptions
+    : public BundleAdjustmentBackendOptions {
+  // Fallback if no reference-camera position covariance is provided.
+  double prior_position_fallback_stddev = 1.0;
+  int min_track_length = 0;
+  bool print_summary = true;
+  BundleAdjustmentBackend backend = BundleAdjustmentBackend::CERES;
+
+  bool Check() const;
+};
+
+struct FixedRigPosePriorBundleAdjustmentSummary
+    : public BundleAdjustmentSummary {
+  // Multiplicative correction applied to the reconstruction's sensor-from-rig
+  // translations. A value of 1 means no change.
+  double sensor_from_rig_scale = 1.0;
+
+  std::string BriefReport() const override;
+};
+
+std::unique_ptr<BundleAdjuster> CreateFixedRigPosePriorBundleAdjuster(
+    const FixedRigPosePriorBundleAdjustmentOptions& options,
+    const BundleAdjustmentConfig& config,
+    std::vector<PosePrior> pose_priors,
+    Reconstruction& reconstruction);
+
+std::shared_ptr<FixedRigPosePriorBundleAdjustmentSummary>
+FixedRigPosePriorBundleAdjustment(
+    Reconstruction& reconstruction,
+    std::vector<PosePrior> pose_priors,
+    const FixedRigPosePriorBundleAdjustmentOptions& options = {});
+
 }  // namespace colmap

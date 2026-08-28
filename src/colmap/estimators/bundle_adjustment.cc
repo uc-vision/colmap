@@ -311,8 +311,7 @@ bool BundleAdjustmentOptions::Check() const {
   return THROW_CHECK_NOTNULL(ceres)->Check();
 }
 
-bool IsBundleAdjustmentBackendAvailable(
-    const BundleAdjustmentBackend backend) {
+bool IsBundleAdjustmentBackendAvailable(const BundleAdjustmentBackend backend) {
   switch (backend) {
     case BundleAdjustmentBackend::CERES:
       return true;
@@ -439,6 +438,80 @@ std::unique_ptr<BundleAdjuster> CreatePosePriorBundleAdjuster(
   LOG(FATAL_THROW) << "Unknown bundle adjustment backend: "
                    << static_cast<int>(options.backend);
   return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// FixedRigPosePriorBundleAdjustment
+////////////////////////////////////////////////////////////////////////////////
+
+bool FixedRigPosePriorBundleAdjustmentOptions::Check() const {
+  CHECK_OPTION_GT(prior_position_fallback_stddev, 0);
+  CHECK_OPTION_GE(min_track_length, 0);
+  THROW_CHECK_NOTNULL(ceres)->Check();
+  return true;
+}
+
+std::string FixedRigPosePriorBundleAdjustmentSummary::BriefReport() const {
+  return BundleAdjustmentSummary::BriefReport() +
+         ", sensor_from_rig_scale=" + std::to_string(sensor_from_rig_scale);
+}
+
+std::unique_ptr<BundleAdjuster> CreateFixedRigPosePriorBundleAdjuster(
+    const FixedRigPosePriorBundleAdjustmentOptions& options,
+    const BundleAdjustmentConfig& config,
+    std::vector<PosePrior> pose_priors,
+    Reconstruction& reconstruction) {
+  THROW_CHECK(options.Check());
+  switch (options.backend) {
+    case BundleAdjustmentBackend::CERES:
+      return CreateFixedRigPosePriorCeresBundleAdjuster(
+          options, config, std::move(pose_priors), reconstruction);
+    case BundleAdjustmentBackend::CASPAR:
+#ifdef CASPAR_ENABLED
+      LOG(FATAL_THROW)
+          << "Caspar BA backend does not support fixed-rig pose-prior BA";
+#else
+      LOG(FATAL_THROW)
+          << "Caspar BA backend selected but COLMAP was built without "
+             "CASPAR_ENABLED; rebuild with -DCASPAR_ENABLED=ON to use it";
+#endif
+      return nullptr;
+    case BundleAdjustmentBackend::CASPAR_RIG_SCHUR:
+#ifdef CASPAR_ENABLED
+      return CreateFixedRigPosePriorCasparRigSchurBundleAdjuster(
+          options, config, std::move(pose_priors), reconstruction);
+#else
+      LOG(FATAL_THROW)
+          << "Caspar rig-Schur BA backend selected but COLMAP was built "
+             "without CASPAR_ENABLED; rebuild with -DCASPAR_ENABLED=ON to "
+             "use it";
+#endif
+      return nullptr;
+  }
+  LOG(FATAL_THROW) << "Unknown bundle adjustment backend: "
+                   << static_cast<int>(options.backend);
+  return nullptr;
+}
+
+std::shared_ptr<FixedRigPosePriorBundleAdjustmentSummary>
+FixedRigPosePriorBundleAdjustment(
+    Reconstruction& reconstruction,
+    std::vector<PosePrior> pose_priors,
+    const FixedRigPosePriorBundleAdjustmentOptions& options) {
+  BundleAdjustmentConfig config;
+  for (const image_t image_id : reconstruction.RegImageIds()) {
+    config.AddImage(image_id);
+  }
+
+  const std::shared_ptr<BundleAdjustmentSummary> summary =
+      CreateFixedRigPosePriorBundleAdjuster(
+          options, config, std::move(pose_priors), reconstruction)
+          ->Solve();
+  auto fixed_rig_summary =
+      std::dynamic_pointer_cast<FixedRigPosePriorBundleAdjustmentSummary>(
+          summary);
+  THROW_CHECK_NOTNULL(fixed_rig_summary);
+  return fixed_rig_summary;
 }
 
 }  // namespace colmap

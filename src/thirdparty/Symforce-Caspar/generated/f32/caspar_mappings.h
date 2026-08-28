@@ -4,6 +4,18 @@
 
 namespace caspar {
 
+cudaError_t ConstPinholeCalibStackedToCaspar(const float* stacked_data,
+                                             float* cas_data,
+                                             const unsigned int cas_stride,
+                                             const unsigned int cas_offset,
+                                             const unsigned int num_objects);
+
+cudaError_t ConstPinholeCalibCasparToStacked(const float* cas_data,
+                                             float* stacked_data,
+                                             const unsigned int cas_stride,
+                                             const unsigned int cas_offset,
+                                             const unsigned int num_objects);
+
 cudaError_t ConstPinholeFocalStackedToCaspar(const float* stacked_data,
                                              float* cas_data,
                                              const unsigned int cas_stride,
@@ -79,6 +91,34 @@ cudaError_t ConstPointCasparToStacked(const float* cas_data,
                                       const unsigned int cas_stride,
                                       const unsigned int cas_offset,
                                       const unsigned int num_objects);
+
+cudaError_t ConstPositionSqrtInformationStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstPositionSqrtInformationCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstReferencePositionStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstReferencePositionCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
 
 cudaError_t ConstSimpleRadialFocalAndExtraStackedToCaspar(
     const float* stacked_data,
@@ -197,6 +237,20 @@ cudaError_t PointCasparToStacked(const float* cas_data,
                                  const unsigned int cas_stride,
                                  const unsigned int cas_offset,
                                  const unsigned int num_objects);
+
+cudaError_t SensorFromRigLogScaleStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t SensorFromRigLogScaleCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
 
 cudaError_t SimpleRadialCalibStackedToCaspar(const float* stacked_data,
                                              float* cas_data,

@@ -1689,5 +1689,53 @@ TEST(PosePriorBundleAdjuster, OptimizationRobustToOutliers) {
                                  /*num_obs_tolerance=*/0.02));
 }
 
+TEST(FixedRigPosePriorBundleAdjuster, RecoversSensorBaselineScale) {
+  Reconstruction ground_truth;
+  SyntheticDatasetOptions synthetic_options;
+  synthetic_options.num_rigs = 1;
+  synthetic_options.num_cameras_per_rig = 2;
+  synthetic_options.num_frames_per_rig = 8;
+  synthetic_options.num_points3D = 200;
+  synthetic_options.sensor_from_rig_translation_stddev = 0.5;
+  synthetic_options.prior_position = true;
+  const auto database_path = CreateTestDir() / "database.db";
+  auto database = Database::Open(database_path);
+  SynthesizeDataset(synthetic_options, &ground_truth, database.get());
+
+  Reconstruction reconstruction = ground_truth;
+  const rig_t rig_id = reconstruction.Rigs().begin()->first;
+  Rig& rig = reconstruction.Rig(rig_id);
+  const sensor_t sensor_id = rig.NonRefSensors().begin()->first;
+  const Rigid3d original_sensor_from_rig = rig.SensorFromRig(sensor_id);
+  constexpr double kInitialBaselineScale = 0.8;
+  rig.SensorFromRig(sensor_id).translation() *= kInitialBaselineScale;
+
+  std::vector<PosePrior> pose_priors = database->ReadAllPosePriors();
+  for (PosePrior& pose_prior : pose_priors) {
+    pose_prior.position_covariance = 1e-6 * Eigen::Matrix3d::Identity();
+    if (!reconstruction.Image(pose_prior.corr_data_id.id).IsRefInFrame()) {
+      // Non-reference priors are derived from the nominal baseline and must not
+      // participate in either initialization or the final objective.
+      pose_prior.position += Eigen::Vector3d(100.0, -50.0, 25.0);
+    }
+  }
+
+  FixedRigPosePriorBundleAdjustmentOptions options;
+  options.print_summary = false;
+  const auto summary = FixedRigPosePriorBundleAdjustment(
+      reconstruction, std::move(pose_priors), options);
+
+  ASSERT_TRUE(summary->IsSolutionUsable());
+  EXPECT_NEAR(
+      summary->sensor_from_rig_scale, 1.0 / kInitialBaselineScale, 1e-4);
+  EXPECT_THAT(reconstruction.Rig(rig_id).SensorFromRig(sensor_id),
+              Rigid3dNear(original_sensor_from_rig,
+                          /*max_rotation_error_deg=*/1e-12,
+                          /*max_translation_error=*/1e-5));
+  for (const auto& [camera_id, camera] : reconstruction.Cameras()) {
+    EXPECT_EQ(camera.params, ground_truth.Camera(camera_id).params);
+  }
+}
+
 }  // namespace
 }  // namespace colmap

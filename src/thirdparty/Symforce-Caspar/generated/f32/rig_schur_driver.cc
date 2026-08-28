@@ -25,14 +25,38 @@ void GraphSolver::SetRigSchurTopology(
     throw std::invalid_argument(
         "Rig Schur topology does not match generated factor counts");
   }
-  rig_schur_solver_ =
-      std::make_unique<RigSchurSolver>(device_id_,
-                                       PinholePose_num_,
-                                       Point_num_,
-                                       pose_indices,
-                                       point_indices,
-                                       fixed_pose_point_indices,
-                                       fixed_point_pose_indices);
+  rig_schur_solver_ = std::make_unique<RigSchurSolver>(device_id_,
+                                                       PinholePose_num_,
+                                                       Point_num_,
+                                                       pose_indices,
+                                                       point_indices,
+                                                       fixed_pose_point_indices,
+                                                       fixed_point_pose_indices,
+                                                       false,
+                                                       -1);
+  rig_schur_scale_aware_ = false;
+}
+
+void GraphSolver::SetFixedRigSchurTopology(
+    const std::vector<unsigned int>& pose_indices,
+    const std::vector<unsigned int>& point_indices,
+    const unsigned int rotation_anchor_pose_index) {
+  if (pose_indices.size() != fixed_rig_pinhole_num_ ||
+      point_indices.size() != fixed_rig_pinhole_num_) {
+    throw std::invalid_argument(
+        "Fixed-rig Schur topology does not match generated factor counts");
+  }
+  rig_schur_solver_ = std::make_unique<RigSchurSolver>(
+      device_id_,
+      PinholePose_num_,
+      Point_num_,
+      pose_indices,
+      point_indices,
+      std::vector<unsigned int>{},
+      std::vector<unsigned int>{},
+      true,
+      static_cast<int>(rotation_anchor_pose_index));
+  rig_schur_scale_aware_ = true;
 }
 
 SolveResult GraphSolver::solve_rig_schur(bool print_progress,
@@ -68,17 +92,36 @@ SolveResult GraphSolver::solve_rig_schur(bool print_progress,
 
     Zero(nodes__PinholeCalib__step_,
          nodes__SimpleRadialPrincipalPoint__step_end__);
+    const float* pose_jac =
+        rig_schur_scale_aware_
+            ? facs__fixed_rig_pinhole__args__pose__jac_
+            : facs__pinhole_split_fixed_focal_fixed_principal_point__args__pose__jac_;
+    const float* scale_jac =
+        rig_schur_scale_aware_
+            ? facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_
+            : nullptr;
+    const float* point_jac =
+        rig_schur_scale_aware_
+            ? facs__fixed_rig_pinhole__args__point__jac_
+            : facs__pinhole_split_fixed_focal_fixed_principal_point__args__point__jac_;
     const bool solved = rig_schur_solver_->SolveStep(
         diag,
-        facs__pinhole_split_fixed_focal_fixed_principal_point__args__pose__jac_,
-        facs__pinhole_split_fixed_focal_fixed_principal_point__args__point__jac_,
+        params_.pcg_iter_max,
+        params_.pcg_rel_error_exit,
+        pose_jac,
+        scale_jac,
+        point_jac,
         nodes__PinholePose__r_0_,
         nodes__PinholePose__precond_diag_,
         nodes__PinholePose__precond_tril_,
+        rig_schur_scale_aware_ ? nodes__SensorFromRigLogScale__r_0_ : nullptr,
+        rig_schur_scale_aware_ ? nodes__SensorFromRigLogScale__precond_diag_
+                               : nullptr,
         nodes__Point__r_0_,
         nodes__Point__precond_diag_,
         nodes__Point__precond_tril_,
         nodes__PinholePose__step_,
+        rig_schur_scale_aware_ ? nodes__SensorFromRigLogScale__step_ : nullptr,
         nodes__Point__step_);
 
     float score_current = score_best;
@@ -113,6 +156,8 @@ SolveResult GraphSolver::solve_rig_schur(bool print_progress,
       std::swap(nodes__PinholePrincipalPoint__storage_current_,
                 nodes__PinholePrincipalPoint__storage_check_);
       std::swap(nodes__Point__storage_current_, nodes__Point__storage_check_);
+      std::swap(nodes__SensorFromRigLogScale__storage_current_,
+                nodes__SensorFromRigLogScale__storage_check_);
       std::swap(nodes__SimpleRadialCalib__storage_current_,
                 nodes__SimpleRadialCalib__storage_check_);
       std::swap(nodes__SimpleRadialFocalAndExtra__storage_current_,

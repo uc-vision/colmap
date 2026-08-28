@@ -183,6 +183,51 @@ def test_reconstruction_track_arrays(synthetic_reconstruction):
         np.testing.assert_allclose(observation_xy[start:end], expected_xy)
 
 
+def test_reconstruction_add_points3d_from_arrays():
+    reconstruction = pycolmap.Reconstruction()
+    camera = pycolmap.Camera(
+        camera_id=1,
+        model="PINHOLE",
+        width=100,
+        height=80,
+        params=[50.0, 50.0, 49.0, 39.0],
+    )
+    reconstruction.add_camera_with_trivial_rig(camera)
+    for image_id, keypoints in (
+        (1, np.array([[10.0, 11.0], [12.0, 13.0]])),
+        (2, np.array([[20.0, 21.0], [22.0, 23.0]])),
+    ):
+        reconstruction.add_image_with_trivial_frame(
+            pycolmap.Image(
+                image_id=image_id,
+                camera_id=1,
+                name=f"camera/{image_id}.jpg",
+                keypoints=keypoints,
+            ),
+            pycolmap.Rigid3d(),
+        )
+
+    point_ids = reconstruction.add_points3D_from_arrays(
+        np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),
+        np.array([[10, 20, 30], [40, 50, 60]], dtype=np.uint8),
+        np.array([0, 2, 4], dtype=np.int64),
+        np.array([1, 2, 1, 2], dtype=np.uint32),
+        np.array([0, 0, 1, 1], dtype=np.uint32),
+    )
+
+    tracks = reconstruction.track_arrays()
+    np.testing.assert_array_equal(tracks["point3D_ids"], point_ids)
+    np.testing.assert_allclose(
+        tracks["point_xyz"], [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    )
+    np.testing.assert_array_equal(
+        tracks["observation_image_ids"], [1, 2, 1, 2]
+    )
+    np.testing.assert_array_equal(
+        tracks["observation_point2D_indices"], [0, 0, 1, 1]
+    )
+
+
 def test_reconstruction_is_valid(synthetic_reconstruction):
     result = synthetic_reconstruction.is_valid()
     assert isinstance(result, bool)

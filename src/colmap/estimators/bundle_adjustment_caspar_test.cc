@@ -34,6 +34,7 @@
 #include "colmap/scene/reconstruction_matchers.h"
 #include "colmap/scene/synthetic.h"
 #include "colmap/sensor/models.h"
+#include "colmap/util/testing.h"
 
 #include <gtest/gtest.h>
 
@@ -104,6 +105,50 @@ constexpr double kConstantPoseVarEps = 1e-9;
 
 namespace colmap {
 namespace {
+
+std::vector<PosePrior> MakeCollinearPosePriors(Reconstruction& reconstruction) {
+  const std::vector<frame_t>& frame_ids = reconstruction.RegFrameIds();
+  for (size_t index = 0; index < frame_ids.size(); ++index) {
+    Rigid3d& rig_from_world =
+        reconstruction.Frame(frame_ids[index]).RigFromWorld();
+    const Eigen::Vector3d center(0.5 * index, 0.0, 0.0);
+    rig_from_world.translation() = -(rig_from_world.rotation() * center);
+  }
+  reconstruction.Transform(Sim3d(
+      1.0,
+      Eigen::Quaterniond(Eigen::AngleAxisd(0.4, Eigen::Vector3d::UnitX())),
+      Eigen::Vector3d::Zero()));
+
+  for (const image_t image_id : reconstruction.RegImageIds()) {
+    Image& image = reconstruction.Image(image_id);
+    const Camera& camera = *image.CameraPtr();
+    for (Point2D& point2D : image.Points2D()) {
+      if (point2D.HasPoint3D()) {
+        const Eigen::Vector3d cam_point =
+            image.CamFromWorld() *
+            reconstruction.Point3D(point2D.point3D_id).xyz;
+        point2D.xy = camera.ImgFromCam(cam_point, false).value();
+      }
+    }
+  }
+  for (const auto& [point3D_id, _] : reconstruction.Points3D()) {
+    reconstruction.Point3D(point3D_id).xyz +=
+        Eigen::Vector3d(0.01, -0.015, 0.02);
+  }
+
+  std::vector<PosePrior> pose_priors;
+  for (const image_t image_id : reconstruction.RegImageIds()) {
+    const Image& image = reconstruction.Image(image_id);
+    if (image.IsRefInFrame()) {
+      PosePrior pose_prior;
+      pose_prior.corr_data_id = image.DataId();
+      pose_prior.position = image.ProjectionCenter();
+      pose_prior.position_covariance = 1e-6 * Eigen::Matrix3d::Identity();
+      pose_priors.push_back(pose_prior);
+    }
+  }
+  return pose_priors;
+}
 
 TEST(DefaultBundleAdjuster, Nominal) {
   Reconstruction gt_reconstruction;
@@ -259,6 +304,156 @@ TEST(DefaultBundleAdjuster, RigSchurConverges) {
   EXPECT_LT(final_mean_reprojection_error,
             initial_mean_reprojection_error * 0.1);
 }
+
+#ifndef CASPAR_USE_DOUBLE
+TEST(FixedRigPosePriorBundleAdjuster, RigSchurRecoversSensorBaselineScale) {
+  Reconstruction ground_truth;
+  SyntheticDatasetOptions synthetic_options;
+  synthetic_options.num_rigs = 1;
+  synthetic_options.num_cameras_per_rig = 2;
+  synthetic_options.num_frames_per_rig = 8;
+  synthetic_options.num_points3D = 200;
+  synthetic_options.camera_model_id = PinholeCameraModel::model_id;
+  synthetic_options.camera_params = {1280, 1280, 512, 384};
+  synthetic_options.sensor_from_rig_translation_stddev = 0.5;
+  synthetic_options.prior_position = true;
+  const auto database_path = CreateTestDir() / "database.db";
+  auto database = Database::Open(database_path);
+  SynthesizeDataset(synthetic_options, &ground_truth, database.get());
+
+  Reconstruction reconstruction = ground_truth;
+  const rig_t rig_id = reconstruction.Rigs().begin()->first;
+  Rig& rig = reconstruction.Rig(rig_id);
+  const sensor_t sensor_id = rig.NonRefSensors().begin()->first;
+  const Rigid3d original_sensor_from_rig = rig.SensorFromRig(sensor_id);
+  constexpr double kInitialBaselineScale = 0.8;
+  rig.SensorFromRig(sensor_id).translation() *= kInitialBaselineScale;
+
+  std::vector<PosePrior> pose_priors = database->ReadAllPosePriors();
+  for (PosePrior& pose_prior : pose_priors) {
+    pose_prior.position_covariance = 1e-6 * Eigen::Matrix3d::Identity();
+    if (!reconstruction.Image(pose_prior.corr_data_id.id).IsRefInFrame()) {
+      pose_prior.position += Eigen::Vector3d(100.0, -50.0, 25.0);
+    }
+  }
+
+  FixedRigPosePriorBundleAdjustmentOptions options;
+  options.backend = BundleAdjustmentBackend::CASPAR_RIG_SCHUR;
+  options.print_summary = false;
+  const auto summary = FixedRigPosePriorBundleAdjustment(
+      reconstruction, std::move(pose_priors), options);
+
+  ASSERT_TRUE(summary->IsSolutionUsable());
+  EXPECT_NEAR(
+      summary->sensor_from_rig_scale, 1.0 / kInitialBaselineScale, 1e-3);
+  EXPECT_THAT(reconstruction.Rig(rig_id).SensorFromRig(sensor_id),
+              Rigid3dNear(original_sensor_from_rig,
+                          /*max_rotation_error_deg=*/1e-12,
+                          /*max_translation_error=*/1e-3));
+  for (const auto& [camera_id, camera] : reconstruction.Cameras()) {
+    EXPECT_EQ(camera.params, ground_truth.Camera(camera_id).params);
+  }
+}
+
+TEST(FixedRigPosePriorBundleAdjuster,
+     MatrixFreeRigSchurRecoversScaleAcross7551Poses) {
+  Reconstruction reconstruction;
+  SyntheticDatasetOptions synthetic_options;
+  synthetic_options.num_rigs = 1;
+  synthetic_options.num_cameras_per_rig = 2;
+  synthetic_options.num_frames_per_rig = 7551;
+  synthetic_options.num_points3D = 16;
+  // Long tracks make the explicit point-induced pose-pair graph quadratic.
+  synthetic_options.track_length = -1;
+  synthetic_options.num_points2D_without_point3D = 0;
+  synthetic_options.camera_model_id = PinholeCameraModel::model_id;
+  synthetic_options.camera_params = {1280, 1280, 512, 384};
+  synthetic_options.sensor_from_rig_translation_stddev = 0.5;
+  SynthesizeDataset(synthetic_options, &reconstruction);
+
+  std::vector<PosePrior> pose_priors;
+  for (const image_t image_id : reconstruction.RegImageIds()) {
+    const Image& image = reconstruction.Image(image_id);
+    if (image.IsRefInFrame()) {
+      PosePrior pose_prior;
+      pose_prior.corr_data_id = image.DataId();
+      pose_prior.position = image.ProjectionCenter();
+      pose_prior.position_covariance = 1e-6 * Eigen::Matrix3d::Identity();
+      pose_priors.push_back(pose_prior);
+    }
+  }
+
+  const rig_t rig_id = reconstruction.Rigs().begin()->first;
+  Rig& rig = reconstruction.Rig(rig_id);
+  const sensor_t sensor_id = rig.NonRefSensors().begin()->first;
+  constexpr double kInitialBaselineScale = 0.99;
+  rig.SensorFromRig(sensor_id).translation() *= kInitialBaselineScale;
+
+  FixedRigPosePriorBundleAdjustmentOptions options;
+  options.backend = BundleAdjustmentBackend::CASPAR_RIG_SCHUR;
+  options.print_summary = false;
+  const auto summary = FixedRigPosePriorBundleAdjustment(
+      reconstruction, std::move(pose_priors), options);
+
+  ASSERT_TRUE(summary->IsSolutionUsable());
+  EXPECT_NEAR(
+      summary->sensor_from_rig_scale, 1.0 / kInitialBaselineScale, 1e-3);
+}
+
+TEST(FixedRigPosePriorBundleAdjuster,
+     CollinearPriorsPreserveInitializedReferenceRoll) {
+  Reconstruction reconstruction;
+  SyntheticDatasetOptions synthetic_options;
+  synthetic_options.num_rigs = 1;
+  synthetic_options.num_cameras_per_rig = 2;
+  synthetic_options.num_frames_per_rig = 8;
+  synthetic_options.num_points3D = 200;
+  synthetic_options.camera_model_id = PinholeCameraModel::model_id;
+  synthetic_options.camera_params = {1280, 1280, 512, 384};
+  SynthesizeDataset(synthetic_options, &reconstruction);
+  const std::vector<PosePrior> pose_priors =
+      MakeCollinearPosePriors(reconstruction);
+
+  std::vector<image_t> image_ids = reconstruction.RegImageIds();
+  std::sort(image_ids.begin(), image_ids.end());
+  const image_t anchor_image_id =
+      *std::find_if(image_ids.begin(), image_ids.end(), [&](image_t image_id) {
+        return reconstruction.Image(image_id).IsRefInFrame();
+      });
+  const Eigen::Quaterniond initialized_anchor_rotation =
+      reconstruction.Image(anchor_image_id)
+          .FramePtr()
+          ->RigFromWorld()
+          .rotation();
+
+  Reconstruction ceres_reconstruction = reconstruction;
+  FixedRigPosePriorBundleAdjustmentOptions ceres_options;
+  ceres_options.print_summary = false;
+  const auto ceres_summary = FixedRigPosePriorBundleAdjustment(
+      ceres_reconstruction, pose_priors, ceres_options);
+  ASSERT_TRUE(ceres_summary->IsSolutionUsable());
+  EXPECT_LT(initialized_anchor_rotation.angularDistance(
+                ceres_reconstruction.Image(anchor_image_id)
+                    .FramePtr()
+                    ->RigFromWorld()
+                    .rotation()),
+            1e-12);
+
+  Reconstruction caspar_reconstruction = reconstruction;
+  FixedRigPosePriorBundleAdjustmentOptions caspar_options;
+  caspar_options.backend = BundleAdjustmentBackend::CASPAR_RIG_SCHUR;
+  caspar_options.print_summary = false;
+  const auto caspar_summary = FixedRigPosePriorBundleAdjustment(
+      caspar_reconstruction, pose_priors, caspar_options);
+  ASSERT_TRUE(caspar_summary->IsSolutionUsable());
+  EXPECT_LT(initialized_anchor_rotation.angularDistance(
+                caspar_reconstruction.Image(anchor_image_id)
+                    .FramePtr()
+                    ->RigFromWorld()
+                    .rotation()),
+            1e-6);
+}
+#endif
 
 TEST(DefaultBundleAdjuster, MultiCameraRigLargeConstantSensorFromRig) {
   // Real-world multi-camera rigs (stereo, surround-view) have large

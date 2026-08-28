@@ -20,6 +20,7 @@ struct CasparSolverSizing {
   size_t num_simple_radial_poses = 0;
   size_t num_pinhole_poses = 0;
   size_t num_points = 0;
+  size_t num_sensor_from_rig_log_scales = 0;
 
   // SimpleRadial: num_calibs is shared by the merged Calib pool and the split
   // FocalAndExtra / PrincipalPoint pools, one entry per camera.
@@ -55,6 +56,8 @@ struct CasparSolverSizing {
   size_t num_pinhole_fixed_pose = 0;
   size_t num_pinhole_fixed_point = 0;
   size_t num_pinhole_fixed_pose_fixed_point = 0;
+  size_t num_fixed_rig_pinhole = 0;
+  size_t num_fixed_rig_position_prior = 0;
   size_t num_pinhole_split_fixed_focal = 0;
   size_t num_pinhole_split_fixed_principal_point = 0;
   size_t num_pinhole_split_fixed_pose_fixed_focal = 0;
@@ -917,7 +920,7 @@ inline std::unique_ptr<ICasparModelAdapter> CreateCasparAdapter(
 // Caspar release. Order:
 //   1. Node type counts, alphabetical by type name
 //   2. Factor counts, in registration order from caspar_generate.py:
-//        simple_radial (4) → pinhole (4) →
+//        simple_radial (4) → pinhole (4) → fixed_rig (2) →
 //        simple_radial_split (11) → pinhole_split (11)
 inline caspar::GraphSolver CreateSolver(
     const caspar::SolverParams<StorageType>& params,
@@ -927,14 +930,15 @@ inline caspar::GraphSolver CreateSolver(
       params,
       // Node type counts (alphabetical):
       //   PinholeCalib, PinholeFocal, PinholePose,
-      //   PinholePrincipalPoint, Point,
+      //   PinholePrincipalPoint, Point, SensorFromRigLogScale,
       //   SimpleRadialCalib, SimpleRadialFocalAndExtra,
       //   SimpleRadialPose, SimpleRadialPrincipalPoint
-      sz.num_pinhole_calibs,        // PinholeCalib        (merged pool)
-      sz.num_pinhole_calibs,        // PinholeFocal         (split pool)
-      sz.num_pinhole_poses,         // PinholePose
-      sz.num_pinhole_calibs,        // PinholePrincipalPoint (split pool)
-      sz.num_points,                // Point
+      sz.num_pinhole_calibs,  // PinholeCalib        (merged pool)
+      sz.num_pinhole_calibs,  // PinholeFocal         (split pool)
+      sz.num_pinhole_poses,   // PinholePose
+      sz.num_pinhole_calibs,  // PinholePrincipalPoint (split pool)
+      sz.num_points,          // Point
+      sz.num_sensor_from_rig_log_scales,
       sz.num_simple_radial_calibs,  // SimpleRadialCalib              (merged
                                     // pool)
       sz.num_simple_radial_calibs,  // SimpleRadialFocalAndExtra  (split
@@ -952,6 +956,8 @@ inline caspar::GraphSolver CreateSolver(
       sz.num_pinhole_fixed_pose,              // {pose}
       sz.num_pinhole_fixed_point,             // {point}
       sz.num_pinhole_fixed_pose_fixed_point,  // {pose, point}
+      sz.num_fixed_rig_pinhole,
+      sz.num_fixed_rig_position_prior,
       // simple_radial_split factor counts (11 variants, must_fix_one_of):
       sz.num_simple_radial_split_fixed_focal_and_extra,             // r=1 {fae}
       sz.num_simple_radial_split_fixed_principal_point,             // r=1 {pp}

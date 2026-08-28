@@ -1,6 +1,7 @@
 #include "colmap/estimators/bundle_adjustment_caspar.h"
 
 #include "colmap/estimators/bundle_adjustment.h"
+#include "colmap/estimators/bundle_adjustment_ceres.h"
 #include "colmap/geometry/rigid3.h"
 #include "colmap/scene/camera.h"
 #include "colmap/scene/image.h"
@@ -11,6 +12,8 @@
 #ifdef CASPAR_ENABLED
 #include "colmap/estimators/caspar/caspar_model_adapter.h"
 #endif
+
+#include <Eigen/Cholesky>
 
 namespace colmap {
 namespace {
@@ -1097,6 +1100,344 @@ class CasparBundleAdjuster : public BundleAdjuster {
   FlatHashSet<point3D_t> gauge_fixed_points_;
   FlatHashMap<point3D_t, size_t> point3D_num_observations_;
 };
+
+BundleAdjustmentOptions CreateFixedRigCasparOptions(
+    const FixedRigPosePriorBundleAdjustmentOptions& options) {
+  BundleAdjustmentOptions bundle_options;
+  bundle_options.ceres = options.ceres;
+  bundle_options.caspar = options.caspar;
+  bundle_options.refine_focal_length = false;
+  bundle_options.refine_principal_point = false;
+  bundle_options.refine_extra_params = false;
+  bundle_options.refine_sensor_from_rig = false;
+  bundle_options.refine_rig_from_world = true;
+  bundle_options.refine_points3D = true;
+  bundle_options.min_track_length = options.min_track_length;
+  bundle_options.constant_rig_from_world_rotation = false;
+  bundle_options.print_summary = options.print_summary;
+  bundle_options.backend = BundleAdjustmentBackend::CASPAR_RIG_SCHUR;
+  return bundle_options;
+}
+
+#ifndef CASPAR_USE_DOUBLE
+class FixedRigPosePriorCasparBundleAdjuster : public BundleAdjuster {
+ public:
+  FixedRigPosePriorCasparBundleAdjuster(
+      const FixedRigPosePriorBundleAdjustmentOptions& options,
+      const BundleAdjustmentConfig& config,
+      std::vector<PosePrior> pose_priors,
+      Reconstruction& reconstruction)
+      : BundleAdjuster(CreateFixedRigCasparOptions(options), config),
+        fixed_options_(options),
+        pose_priors_(std::move(pose_priors)),
+        reconstruction_(reconstruction) {
+    VLOG(2) << "Creating Caspar fixed-rig pose-prior bundle adjuster";
+    THROW_CHECK_EQ(config_.FixedGauge(), BundleAdjustmentGauge::UNSPECIFIED);
+    FilterPosePriors();
+    normalized_from_metric_ = reconstruction_.Normalize(/*fixed_scale=*/true);
+    BuildProblemData();
+  }
+
+  std::shared_ptr<BundleAdjustmentSummary> Solve() override {
+    CasparSolverSizing sizing;
+    sizing.num_pinhole_poses = pose_index_to_frame_.size();
+    sizing.num_points = point3D_index_to_id_.size();
+    sizing.num_sensor_from_rig_log_scales = 1;
+    sizing.num_fixed_rig_pinhole = pose_indices_.size();
+    sizing.num_fixed_rig_position_prior = prior_pose_indices_.size();
+
+    caspar::SolverParams<double> params;
+    int gpu_index = -1;
+    if (fixed_options_.caspar) {
+      const CasparBundleAdjustmentOptions& caspar_options =
+          *fixed_options_.caspar;
+      const std::vector<int> gpu_indices =
+          CSVToVector<int>(caspar_options.gpu_index);
+      THROW_CHECK_GT(gpu_indices.size(), 0);
+      gpu_index = gpu_indices.front();
+      params.solver_iter_max = caspar_options.solver_iter_max;
+      params.pcg_iter_max = caspar_options.pcg_iter_max;
+      params.diag_init = caspar_options.diag_init;
+      params.diag_min = caspar_options.diag_min;
+      params.diag_scaling_up = caspar_options.diag_scaling_up;
+      params.diag_scaling_down = caspar_options.diag_scaling_down;
+      params.diag_exit_value = caspar_options.diag_exit_value;
+      params.score_exit_value = caspar_options.score_exit_value;
+      params.pcg_rel_error_exit = caspar_options.pcg_rel_error_exit;
+      params.pcg_rel_score_exit = caspar_options.pcg_rel_score_exit;
+      params.pcg_rel_decrease_min = caspar_options.pcg_rel_decrease_min;
+      params.solver_rel_decrease_min = caspar_options.solver_rel_decrease_min;
+    }
+
+    const size_t device_id =
+        static_cast<size_t>(gpu_index >= 0 ? gpu_index : FindBestCudaDevice());
+    auto solver = CreateSolver(params, sizing, device_id);
+    SetupSolver(solver);
+    const bool collect_iterations =
+        fixed_options_.caspar && fixed_options_.caspar->collect_iteration_data;
+    const caspar::SolveResult result = solver.solve_rig_schur(
+        /*print_progress=*/VLOG_IS_ON(2),
+        /*verbose_logging=*/collect_iterations);
+    ReadSolver(solver);
+    WriteResultsToReconstruction();
+    reconstruction_.Transform(Inverse(normalized_from_metric_));
+
+    const auto backend_summary = CasparBundleAdjustmentSummary::Create(result);
+    auto summary = std::make_shared<FixedRigPosePriorBundleAdjustmentSummary>();
+    summary->termination_type = backend_summary->termination_type;
+    summary->num_residuals = static_cast<int>(2 * pose_indices_.size() +
+                                              3 * prior_pose_indices_.size());
+    if (summary->IsSolutionUsable()) {
+      summary->sensor_from_rig_scale = std::exp(log_scale_);
+      for (const auto& rig_entry : reconstruction_.Rigs()) {
+        Rig& rig = reconstruction_.Rig(rig_entry.first);
+        for (auto& sensor_entry : rig.NonRefSensors()) {
+          std::optional<Rigid3d>& sensor_from_rig = sensor_entry.second;
+          THROW_CHECK(sensor_from_rig.has_value());
+          sensor_from_rig->translation() *= summary->sensor_from_rig_scale;
+        }
+      }
+    }
+    if (fixed_options_.print_summary || VLOG_IS_ON(1)) {
+      LOG(INFO) << summary->BriefReport();
+    }
+    return summary;
+  }
+
+ private:
+  static void AppendPose(std::vector<StorageType>& output,
+                         const Rigid3d& pose) {
+    output.push_back(pose.rotation().x());
+    output.push_back(pose.rotation().y());
+    output.push_back(pose.rotation().z());
+    output.push_back(pose.rotation().w());
+    output.push_back(pose.translation().x());
+    output.push_back(pose.translation().y());
+    output.push_back(pose.translation().z());
+  }
+
+  void FilterPosePriors() {
+    pose_priors_.erase(
+        std::remove_if(pose_priors_.begin(),
+                       pose_priors_.end(),
+                       [this](const PosePrior& pose_prior) {
+                         if (!pose_prior.HasPosition() ||
+                             pose_prior.corr_data_id.sensor_id.type !=
+                                 SensorType::CAMERA ||
+                             !config_.HasImage(pose_prior.corr_data_id.id)) {
+                           return true;
+                         }
+                         return !reconstruction_
+                                     .Image(pose_prior.corr_data_id.id)
+                                     .IsRefInFrame();
+                       }),
+        pose_priors_.end());
+    THROW_CHECK_GE(pose_priors_.size(), 3)
+        << "Fixed-rig pose-prior BA requires at least three reference-camera "
+           "position priors";
+    FlatHashSet<image_t> image_ids;
+    for (const PosePrior& pose_prior : pose_priors_) {
+      THROW_CHECK(image_ids.insert(pose_prior.corr_data_id.id).second)
+          << "Duplicate pose prior for image " << pose_prior.corr_data_id.id;
+    }
+  }
+
+  size_t GetOrCreatePose(const frame_t frame_id) {
+    auto [it, inserted] =
+        frame_to_pose_index_.try_emplace(frame_id, pose_index_to_frame_.size());
+    if (inserted) {
+      pose_index_to_frame_.push_back(frame_id);
+      AppendPose(pose_data_, reconstruction_.Frame(frame_id).RigFromWorld());
+    }
+    return it->second;
+  }
+
+  size_t GetOrCreatePoint(const point3D_t point3D_id) {
+    auto [it, inserted] = point3D_id_to_index_.try_emplace(
+        point3D_id, point3D_index_to_id_.size());
+    if (inserted) {
+      point3D_index_to_id_.push_back(point3D_id);
+      const Eigen::Vector3d& xyz = reconstruction_.Point3D(point3D_id).xyz;
+      point_data_.push_back(xyz.x());
+      point_data_.push_back(xyz.y());
+      point_data_.push_back(xyz.z());
+    }
+    return it->second;
+  }
+
+  bool HasSufficientTrackLength(const point3D_t point3D_id) const {
+    return fixed_options_.min_track_length == 0 ||
+           reconstruction_.Point3D(point3D_id).track.Length() >=
+               static_cast<size_t>(fixed_options_.min_track_length);
+  }
+
+  void BuildProblemData() {
+    std::vector<image_t> image_ids(config_.Images().begin(),
+                                   config_.Images().end());
+    std::sort(image_ids.begin(), image_ids.end());
+    for (const image_t image_id : image_ids) {
+      const Image& image = reconstruction_.Image(image_id);
+      const Camera& camera = *image.CameraPtr();
+      THROW_CHECK_EQ(camera.model_id, CameraModelId::kPinhole)
+          << "Caspar fixed-rig pose-prior BA only supports PINHOLE cameras";
+      const unsigned int pose_index =
+          static_cast<unsigned int>(GetOrCreatePose(image.FrameId()));
+      const Rigid3d sensor_from_rig =
+          image.IsRefInFrame() ? Rigid3d{}
+                               : image.FramePtr()->RigPtr()->SensorFromRig(
+                                     image.DataId().sensor_id);
+      for (const Point2D& point2D : image.Points2D()) {
+        if (!point2D.HasPoint3D() ||
+            config_.IsIgnoredPoint(point2D.point3D_id) ||
+            !HasSufficientTrackLength(point2D.point3D_id)) {
+          continue;
+        }
+        pose_indices_.push_back(pose_index);
+        point_indices_.push_back(
+            static_cast<unsigned int>(GetOrCreatePoint(point2D.point3D_id)));
+        AppendPose(sensor_from_rig_data_, sensor_from_rig);
+        for (const double parameter : camera.params) {
+          calib_data_.push_back(parameter);
+        }
+        pixels_.push_back(point2D.xy.x());
+        pixels_.push_back(point2D.xy.y());
+      }
+    }
+    THROW_CHECK_GT(pose_indices_.size(), 0);
+    const FlatHashSet<unsigned int> active_pose_indices(pose_indices_.begin(),
+                                                        pose_indices_.end());
+    const auto anchor_image = std::find_if(
+        image_ids.begin(), image_ids.end(), [&](const image_t image_id) {
+          const Image& image = reconstruction_.Image(image_id);
+          return image.IsRefInFrame() &&
+                 active_pose_indices.count(static_cast<unsigned int>(
+                     frame_to_pose_index_.at(image.FrameId()))) > 0;
+        });
+    THROW_CHECK(anchor_image != image_ids.end());
+    const frame_t rotation_anchor_frame_id =
+        reconstruction_.Image(*anchor_image).FrameId();
+    rotation_anchor_pose_index_ = static_cast<unsigned int>(
+        frame_to_pose_index_.at(rotation_anchor_frame_id));
+    BuildPriorData(active_pose_indices);
+  }
+
+  void BuildPriorData(const FlatHashSet<unsigned int>& active_pose_indices) {
+    const Eigen::Matrix3d normalized_from_metric_scaled_rotation =
+        normalized_from_metric_.scale() *
+        normalized_from_metric_.rotation().toRotationMatrix();
+    for (const PosePrior& pose_prior : pose_priors_) {
+      const Image& image = reconstruction_.Image(pose_prior.corr_data_id.id);
+      const unsigned int pose_index =
+          static_cast<unsigned int>(frame_to_pose_index_.at(image.FrameId()));
+      if (active_pose_indices.count(pose_index) == 0) {
+        continue;
+      }
+      prior_pose_indices_.push_back(pose_index);
+      const Eigen::Vector3d position =
+          normalized_from_metric_ * pose_prior.position;
+      prior_positions_.insert(
+          prior_positions_.end(), position.data(), position.data() + 3);
+      const double fallback_stddev =
+          fixed_options_.prior_position_fallback_stddev;
+      const Eigen::Matrix3d position_covariance =
+          pose_prior.HasPositionCov()
+              ? pose_prior.position_covariance
+              : fallback_stddev * fallback_stddev * Eigen::Matrix3d::Identity();
+      const Eigen::Matrix3d normalized_covariance =
+          normalized_from_metric_scaled_rotation * position_covariance *
+          normalized_from_metric_scaled_rotation.transpose();
+      const Eigen::Matrix3d sqrt_information =
+          normalized_covariance.inverse().llt().matrixL().transpose();
+      prior_sqrt_information_.insert(prior_sqrt_information_.end(),
+                                     sqrt_information.data(),
+                                     sqrt_information.data() + 9);
+    }
+    THROW_CHECK_GE(prior_pose_indices_.size(), 3)
+        << "Fixed-rig pose-prior BA requires at least three parameterized "
+           "reference-camera position priors";
+  }
+
+  void SetupSolver(caspar::GraphSolver& solver) {
+    solver.SetPinholePoseNodesFromStackedHost(
+        pose_data_.data(), 0, pose_index_to_frame_.size());
+    solver.SetPointNodesFromStackedHost(
+        point_data_.data(), 0, point3D_index_to_id_.size());
+    solver.SetSensorFromRigLogScaleNodesFromStackedHost(&log_scale_, 0, 1);
+    solver.SetFixedRigPinholeNum(pose_indices_.size());
+    solver.SetFixedRigPinholePoseIndicesFromHost(pose_indices_.data(),
+                                                 pose_indices_.size());
+    solver.SetFixedRigPinholePointIndicesFromHost(point_indices_.data(),
+                                                  point_indices_.size());
+    solver.SetFixedRigPinholeSensorFromRigDataFromStackedHost(
+        sensor_from_rig_data_.data(), 0, pose_indices_.size());
+    solver.SetFixedRigPinholeCalibDataFromStackedHost(
+        calib_data_.data(), 0, pose_indices_.size());
+    solver.SetFixedRigPinholePixelDataFromStackedHost(
+        pixels_.data(), 0, pose_indices_.size());
+    solver.SetFixedRigPositionPriorNum(prior_pose_indices_.size());
+    solver.SetFixedRigPositionPriorPoseIndicesFromHost(
+        prior_pose_indices_.data(), prior_pose_indices_.size());
+    solver.SetFixedRigPositionPriorPositionDataFromStackedHost(
+        prior_positions_.data(), 0, prior_pose_indices_.size());
+    solver.SetFixedRigPositionPriorSqrtInformationDataFromStackedHost(
+        prior_sqrt_information_.data(), 0, prior_pose_indices_.size());
+    solver.SetFixedRigSchurTopology(
+        pose_indices_, point_indices_, rotation_anchor_pose_index_);
+    solver.finish_indices();
+  }
+
+  void ReadSolver(caspar::GraphSolver& solver) {
+    solver.GetPinholePoseNodesToStackedHost(
+        pose_data_.data(), 0, pose_index_to_frame_.size());
+    solver.GetPointNodesToStackedHost(
+        point_data_.data(), 0, point3D_index_to_id_.size());
+    solver.GetSensorFromRigLogScaleNodesToStackedHost(&log_scale_, 0, 1);
+  }
+
+  void WriteResultsToReconstruction() {
+    for (size_t index = 0; index < pose_index_to_frame_.size(); ++index) {
+      Rigid3d& pose =
+          reconstruction_.Frame(pose_index_to_frame_[index]).RigFromWorld();
+      pose.rotation().x() = pose_data_[7 * index];
+      pose.rotation().y() = pose_data_[7 * index + 1];
+      pose.rotation().z() = pose_data_[7 * index + 2];
+      pose.rotation().w() = pose_data_[7 * index + 3];
+      pose.translation().x() = pose_data_[7 * index + 4];
+      pose.translation().y() = pose_data_[7 * index + 5];
+      pose.translation().z() = pose_data_[7 * index + 6];
+      pose.rotation().normalize();
+    }
+    for (size_t index = 0; index < point3D_index_to_id_.size(); ++index) {
+      Eigen::Vector3d& xyz =
+          reconstruction_.Point3D(point3D_index_to_id_[index]).xyz;
+      xyz.x() = point_data_[3 * index];
+      xyz.y() = point_data_[3 * index + 1];
+      xyz.z() = point_data_[3 * index + 2];
+    }
+  }
+
+  FixedRigPosePriorBundleAdjustmentOptions fixed_options_;
+  std::vector<PosePrior> pose_priors_;
+  Reconstruction& reconstruction_;
+  Sim3d normalized_from_metric_;
+  StorageType log_scale_ = 0;
+  FlatHashMap<frame_t, size_t> frame_to_pose_index_;
+  std::vector<frame_t> pose_index_to_frame_;
+  std::vector<StorageType> pose_data_;
+  FlatHashMap<point3D_t, size_t> point3D_id_to_index_;
+  std::vector<point3D_t> point3D_index_to_id_;
+  std::vector<StorageType> point_data_;
+  std::vector<unsigned int> pose_indices_;
+  std::vector<unsigned int> point_indices_;
+  std::vector<StorageType> sensor_from_rig_data_;
+  std::vector<StorageType> calib_data_;
+  std::vector<StorageType> pixels_;
+  std::vector<unsigned int> prior_pose_indices_;
+  std::vector<StorageType> prior_positions_;
+  std::vector<StorageType> prior_sqrt_information_;
+  unsigned int rotation_anchor_pose_index_ = 0;
+};
+#endif
 }  // namespace
 
 std::shared_ptr<CasparBundleAdjustmentSummary>
@@ -1144,6 +1485,21 @@ std::unique_ptr<BundleAdjuster> CreateDefaultCasparRigSchurBundleAdjuster(
     Reconstruction& reconstruction) {
   return std::make_unique<CasparBundleAdjuster>(
       options, config, reconstruction, CasparSolverMode::RIG_SCHUR);
+}
+
+std::unique_ptr<BundleAdjuster>
+CreateFixedRigPosePriorCasparRigSchurBundleAdjuster(
+    const FixedRigPosePriorBundleAdjustmentOptions& options,
+    const BundleAdjustmentConfig& config,
+    std::vector<PosePrior> pose_priors,
+    Reconstruction& reconstruction) {
+#ifdef CASPAR_USE_DOUBLE
+  LOG(FATAL_THROW) << "Caspar fixed-rig pose-prior BA requires float precision";
+  return nullptr;
+#else
+  return std::make_unique<FixedRigPosePriorCasparBundleAdjuster>(
+      options, config, std::move(pose_priors), reconstruction);
+#endif
 }
 
 }  // namespace colmap

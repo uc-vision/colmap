@@ -9,7 +9,6 @@
 
 #include "rig_schur.h"
 #include <cuda_runtime.h>
-#include <cusolverDn.h>
 
 namespace caspar {
 namespace {
@@ -19,32 +18,6 @@ void CheckCuda(cudaError_t status) {
     throw std::runtime_error(cudaGetErrorString(status));
   }
 }
-
-void CheckCusolver(cusolverStatus_t status) {
-  if (status != CUSOLVER_STATUS_SUCCESS) {
-    throw std::runtime_error("cuSOLVER error " +
-                             std::to_string(static_cast<int>(status)));
-  }
-}
-
-class CusolverHandle {
- public:
-  CusolverHandle() = default;
-  CusolverHandle(const CusolverHandle&) = delete;
-  CusolverHandle& operator=(const CusolverHandle&) = delete;
-
-  ~CusolverHandle() {
-    if (handle_ != nullptr) {
-      cusolverDnDestroy(handle_);
-    }
-  }
-
-  void Create() { CheckCusolver(cusolverDnCreate(&handle_)); }
-  cusolverDnHandle_t get() const { return handle_; }
-
- private:
-  cusolverDnHandle_t handle_ = nullptr;
-};
 
 template <typename T>
 class DeviceBuffer {
@@ -91,11 +64,6 @@ class DeviceBuffer {
  private:
   T* data_ = nullptr;
   size_t size_ = 0;
-};
-
-struct PairRecord {
-  size_t row_edge;
-  size_t col_edge;
 };
 
 __device__ float LoadNodeValue(const float* values,
@@ -160,6 +128,12 @@ __device__ float LoadPointJac(const float* jac,
     return jac[4 * factor + 2 * col + row];
   }
   return jac[4 * factor_num + 2 * factor + row];
+}
+
+__device__ float LoadScaleJac(const float* jac,
+                              size_t factor,
+                              unsigned int row) {
+  return jac[2 * factor + row];
 }
 
 __global__ void FactorPointsKernel(const unsigned int* active_points,
@@ -276,14 +250,59 @@ __global__ void TransformEdgesKernel(const unsigned int* edge_points,
   }
 }
 
+__global__ void TransformPointScaleKernel(const unsigned int* active_points,
+                                          size_t active_point_num,
+                                          const size_t* point_edge_offsets,
+                                          const size_t* edge_factor_offsets,
+                                          const size_t* edge_factor_indices,
+                                          size_t factor_num,
+                                          const float* scale_jac,
+                                          const float* point_jac,
+                                          const float* point_chol,
+                                          float* point_scale_transform) {
+  const size_t active_point =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (active_point >= active_point_num) {
+    return;
+  }
+
+  const unsigned int point = active_points[active_point];
+  float cross[3] = {};
+  for (size_t edge = point_edge_offsets[point];
+       edge < point_edge_offsets[point + 1];
+       ++edge) {
+    for (size_t position = edge_factor_offsets[edge];
+         position < edge_factor_offsets[edge + 1];
+         ++position) {
+      const size_t factor = edge_factor_indices[position];
+      for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+        for (unsigned int row = 0; row < 2; ++row) {
+          cross[point_dim] +=
+              LoadPointJac(point_jac, factor_num, factor, row, point_dim) *
+              LoadScaleJac(scale_jac, factor, row);
+        }
+      }
+    }
+  }
+
+  const float* chol = point_chol + 6 * static_cast<size_t>(point);
+  const float q0 = cross[0] / chol[0];
+  const float q1 = (cross[1] - chol[1] * q0) / chol[2];
+  const float q2 = (cross[2] - chol[3] * q0 - chol[4] * q1) / chol[5];
+  point_scale_transform[3 * static_cast<size_t>(point)] = q0;
+  point_scale_transform[3 * static_cast<size_t>(point) + 1] = q1;
+  point_scale_transform[3 * static_cast<size_t>(point) + 2] = q2;
+}
+
 __global__ void InitializePoseSystemKernel(const unsigned int* active_poses,
                                            size_t active_pose_num,
                                            size_t pose_num,
+                                           size_t rotation_anchor_pose,
                                            float lm_diag,
                                            const float* pose_rhs,
                                            const float* pose_diag,
                                            const float* pose_tril,
-                                           float* reduced_matrix,
+                                           float* pose_blocks,
                                            float* reduced_rhs) {
   const size_t compact_pose =
       static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -292,23 +311,39 @@ __global__ void InitializePoseSystemKernel(const unsigned int* active_poses,
   }
 
   const unsigned int pose = active_poses[compact_pose];
-  const size_t dimension = 6 * active_pose_num;
   for (unsigned int row = 0; row < 6; ++row) {
     reduced_rhs[6 * compact_pose + row] =
-        LoadNodeValue(pose_rhs, pose_num, pose, row);
-    for (unsigned int col = 0; col <= row; ++col) {
+        compact_pose == rotation_anchor_pose && row < 3
+            ? 0.0f
+            : LoadNodeValue(pose_rhs, pose_num, pose, row);
+    for (unsigned int col = 0; col < 6; ++col) {
       float value;
       if (row == col) {
         value = fmaf(1.0f + lm_diag,
                      LoadNodeValue(pose_diag, pose_num, pose, row),
                      lm_diag * 1e-6f);
       } else {
-        value = LoadPoseTril(pose_tril, pose_num, pose, PoseTrilSlot(row, col));
+        const unsigned int lower_row = max(row, col);
+        const unsigned int lower_col = min(row, col);
+        value = LoadPoseTril(
+            pose_tril, pose_num, pose, PoseTrilSlot(lower_row, lower_col));
       }
-      reduced_matrix[6 * compact_pose + row +
-                     dimension * (6 * compact_pose + col)] = value;
+      pose_blocks[36 * compact_pose + 6 * row + col] = value;
     }
   }
+}
+
+__global__ void InitializeScaleSystemKernel(float lm_diag,
+                                            const float* scale_rhs,
+                                            const float* scale_diag,
+                                            float* reduced_scale_rhs,
+                                            float* reduced_scale_diagonal) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+  reduced_scale_rhs[0] = scale_rhs[0];
+  reduced_scale_diagonal[0] =
+      fmaf(1.0f + lm_diag, scale_diag[0], lm_diag * 1e-6f);
 }
 
 __global__ void ReducePoseRhsKernel(const size_t* pose_edge_offsets,
@@ -317,6 +352,7 @@ __global__ void ReducePoseRhsKernel(const size_t* pose_edge_offsets,
                                     const unsigned int* edge_points,
                                     const float* point_y,
                                     const float* edge_transform,
+                                    size_t rotation_anchor_pose,
                                     float* reduced_rhs) {
   const size_t pose = blockIdx.x;
   if (pose >= active_pose_num) {
@@ -340,45 +376,350 @@ __global__ void ReducePoseRhsKernel(const size_t* pose_edge_offsets,
     correction += __shfl_down_sync(0xffffffff, correction, offset);
   }
   if (lane == 0) {
-    reduced_rhs[6 * pose + pose_dim] -= correction;
+    reduced_rhs[6 * pose + pose_dim] =
+        pose == rotation_anchor_pose && pose_dim < 3
+            ? 0.0f
+            : reduced_rhs[6 * pose + pose_dim] - correction;
   }
 }
 
-__global__ void ReducePosePairsKernel(const size_t* pair_offsets,
-                                      const PairRecord* pair_records,
-                                      const size_t* pair_row_poses,
-                                      const size_t* pair_col_poses,
-                                      const float* edge_transform,
-                                      size_t active_pose_num,
-                                      float* reduced_matrix) {
-  const size_t pair = blockIdx.x;
+__global__ void FactorPosePreconditionerKernel(const size_t* pose_edge_offsets,
+                                               const size_t* pose_edges,
+                                               size_t active_pose_num,
+                                               size_t rotation_anchor_pose,
+                                               const float* edge_transform,
+                                               const float* pose_blocks,
+                                               float* pose_preconditioner_chol,
+                                               int* info) {
+  const size_t pose = blockIdx.x;
   const unsigned int element = threadIdx.x;
-  if (element >= 36) {
+  if (pose >= active_pose_num || element >= 64) {
     return;
   }
 
-  const size_t row_pose = pair_row_poses[pair];
-  const size_t col_pose = pair_col_poses[pair];
-  const unsigned int row_dim = element / 6;
-  const unsigned int col_dim = element % 6;
-  if (row_pose == col_pose && row_dim < col_dim) {
-    return;
+  __shared__ float block[36];
+  __shared__ int valid;
+  if (element < 36) {
+    const unsigned int row = element / 6;
+    const unsigned int col = element % 6;
+    float value = pose_blocks[36 * pose + element];
+    for (size_t position = pose_edge_offsets[pose];
+         position < pose_edge_offsets[pose + 1];
+         ++position) {
+      const size_t edge = pose_edges[position];
+      for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+        value -= edge_transform[18 * edge + 6 * point_dim + row] *
+                 edge_transform[18 * edge + 6 * point_dim + col];
+      }
+    }
+    block[element] = value;
   }
+  __syncthreads();
 
-  float value = 0.0f;
-  for (size_t position = pair_offsets[pair]; position < pair_offsets[pair + 1];
-       ++position) {
-    const PairRecord record = pair_records[position];
-    for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
-      value += edge_transform[18 * record.row_edge + 6 * point_dim + row_dim] *
-               edge_transform[18 * record.col_edge + 6 * point_dim + col_dim];
+  if (element == 0) {
+    valid = 1;
+    if (pose == rotation_anchor_pose) {
+      for (unsigned int row = 0; row < 6; ++row) {
+        for (unsigned int col = 0; col < 6; ++col) {
+          if (row < 3 || col < 3) {
+            block[6 * row + col] = row == col && row < 3 ? 1.0f : 0.0f;
+          }
+        }
+      }
+    }
+    for (unsigned int col = 0; col < 6; ++col) {
+      float pivot = block[6 * col + col];
+      for (unsigned int inner = 0; inner < col; ++inner) {
+        pivot -= block[6 * col + inner] * block[6 * col + inner];
+      }
+      if (!(pivot > 0.0f)) {
+        valid = 0;
+        atomicExch(info, 1);
+        break;
+      }
+      block[6 * col + col] = sqrtf(pivot);
+      for (unsigned int row = col + 1; row < 6; ++row) {
+        float value = block[6 * row + col];
+        for (unsigned int inner = 0; inner < col; ++inner) {
+          value -= block[6 * row + inner] * block[6 * col + inner];
+        }
+        block[6 * row + col] = value / block[6 * col + col];
+      }
     }
   }
+  __syncthreads();
 
-  const size_t dimension = 6 * active_pose_num;
-  const size_t row = 6 * row_pose + row_dim;
-  const size_t col = 6 * col_pose + col_dim;
-  reduced_matrix[row + dimension * col] -= value;
+  if (valid != 0 && element < 36) {
+    pose_preconditioner_chol[36 * pose + element] = block[element];
+  }
+}
+
+__global__ void ReduceScaleRhsDiagonalKernel(const unsigned int* active_points,
+                                             size_t active_point_num,
+                                             const float* point_y,
+                                             const float* point_scale_transform,
+                                             float* reduced_scale_rhs,
+                                             float* reduced_scale_diagonal) {
+  const size_t active_point =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  float rhs_correction = 0.0f;
+  float diagonal_correction = 0.0f;
+  if (active_point < active_point_num) {
+    const unsigned int point = active_points[active_point];
+    const size_t point_offset = 3 * static_cast<size_t>(point);
+    for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+      const float q = point_scale_transform[point_offset + point_dim];
+      rhs_correction =
+          fmaf(q, point_y[point_offset + point_dim], rhs_correction);
+      diagonal_correction = fmaf(q, q, diagonal_correction);
+    }
+  }
+  __shared__ float rhs_block[256];
+  __shared__ float diagonal_block[256];
+  rhs_block[threadIdx.x] = rhs_correction;
+  diagonal_block[threadIdx.x] = diagonal_correction;
+  __syncthreads();
+  for (unsigned int offset = blockDim.x / 2; offset > 0; offset /= 2) {
+    if (threadIdx.x < offset) {
+      rhs_block[threadIdx.x] += rhs_block[threadIdx.x + offset];
+      diagonal_block[threadIdx.x] += diagonal_block[threadIdx.x + offset];
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    atomicAdd(reduced_scale_rhs, -rhs_block[0]);
+    atomicAdd(reduced_scale_diagonal, -diagonal_block[0]);
+  }
+}
+
+__global__ void ReducePoseScaleKernel(const size_t* pose_edge_offsets,
+                                      const size_t* pose_edges,
+                                      const size_t* edge_factor_offsets,
+                                      const size_t* edge_factor_indices,
+                                      size_t active_pose_num,
+                                      size_t factor_num,
+                                      const unsigned int* edge_points,
+                                      const float* pose_jac,
+                                      const float* scale_jac,
+                                      const float* edge_transform,
+                                      const float* point_scale_transform,
+                                      size_t rotation_anchor_pose,
+                                      float* reduced_pose_scale) {
+  const size_t pose = blockIdx.x;
+  if (pose >= active_pose_num) {
+    return;
+  }
+
+  const unsigned int pose_dim = threadIdx.x / warpSize;
+  const unsigned int lane = threadIdx.x % warpSize;
+  float value = 0.0f;
+  for (size_t position = pose_edge_offsets[pose] + lane;
+       position < pose_edge_offsets[pose + 1];
+       position += warpSize) {
+    const size_t edge = pose_edges[position];
+    for (size_t factor_position = edge_factor_offsets[edge];
+         factor_position < edge_factor_offsets[edge + 1];
+         ++factor_position) {
+      const size_t factor = edge_factor_indices[factor_position];
+      for (unsigned int row = 0; row < 2; ++row) {
+        value += LoadPoseJac(pose_jac, factor_num, factor, row, pose_dim) *
+                 LoadScaleJac(scale_jac, factor, row);
+      }
+    }
+    const size_t point_offset = 3 * static_cast<size_t>(edge_points[edge]);
+    for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+      value -= edge_transform[18 * edge + 6 * point_dim + pose_dim] *
+               point_scale_transform[point_offset + point_dim];
+    }
+  }
+  for (unsigned int offset = warpSize / 2; offset > 0; offset /= 2) {
+    value += __shfl_down_sync(0xffffffff, value, offset);
+  }
+  if (lane == 0) {
+    reduced_pose_scale[6 * pose + pose_dim] =
+        pose == rotation_anchor_pose && pose_dim < 3 ? 0.0f : value;
+  }
+}
+
+__global__ void ProjectPointsKernel(const unsigned int* active_points,
+                                    size_t active_point_num,
+                                    const size_t* point_edge_offsets,
+                                    const size_t* edge_poses,
+                                    const float* edge_transform,
+                                    const float* vector,
+                                    float* point_projection) {
+  const size_t active_point =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (active_point >= active_point_num) {
+    return;
+  }
+
+  const unsigned int point = active_points[active_point];
+  float projection[3] = {};
+  for (size_t edge = point_edge_offsets[point];
+       edge < point_edge_offsets[point + 1];
+       ++edge) {
+    const size_t pose = edge_poses[edge];
+    for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+      for (unsigned int pose_dim = 0; pose_dim < 6; ++pose_dim) {
+        projection[point_dim] +=
+            edge_transform[18 * edge + 6 * point_dim + pose_dim] *
+            vector[6 * pose + pose_dim];
+      }
+    }
+  }
+  for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+    point_projection[3 * static_cast<size_t>(point) + point_dim] =
+        projection[point_dim];
+  }
+}
+
+__global__ void PoseMatVecKernel(const size_t* pose_edge_offsets,
+                                 const size_t* pose_edges,
+                                 size_t active_pose_num,
+                                 size_t rotation_anchor_pose,
+                                 const unsigned int* edge_points,
+                                 const float* edge_transform,
+                                 const float* point_projection,
+                                 const float* pose_blocks,
+                                 const float* vector,
+                                 float* product) {
+  const size_t pose = blockIdx.x;
+  if (pose >= active_pose_num) {
+    return;
+  }
+
+  const unsigned int pose_dim = threadIdx.x / warpSize;
+  const unsigned int lane = threadIdx.x % warpSize;
+  float value = 0.0f;
+  if (lane == 0) {
+    for (unsigned int col = 0; col < 6; ++col) {
+      value +=
+          pose_blocks[36 * pose + 6 * pose_dim + col] * vector[6 * pose + col];
+    }
+  }
+  for (size_t position = pose_edge_offsets[pose] + lane;
+       position < pose_edge_offsets[pose + 1];
+       position += warpSize) {
+    const size_t edge = pose_edges[position];
+    const size_t point_offset = 3 * static_cast<size_t>(edge_points[edge]);
+    for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+      value -= edge_transform[18 * edge + 6 * point_dim + pose_dim] *
+               point_projection[point_offset + point_dim];
+    }
+  }
+  for (unsigned int offset = warpSize / 2; offset > 0; offset /= 2) {
+    value += __shfl_down_sync(0xffffffff, value, offset);
+  }
+  if (lane == 0) {
+    product[6 * pose + pose_dim] = pose == rotation_anchor_pose && pose_dim < 3
+                                       ? vector[6 * pose + pose_dim]
+                                       : value;
+  }
+}
+
+__global__ void ApplyPosePreconditionerKernel(
+    size_t active_pose_num,
+    const float* pose_preconditioner_chol,
+    const float* residual,
+    float* preconditioned) {
+  const size_t pose =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (pose >= active_pose_num) {
+    return;
+  }
+
+  const float* chol = pose_preconditioner_chol + 36 * pose;
+  float value[6];
+  for (unsigned int row = 0; row < 6; ++row) {
+    value[row] = residual[6 * pose + row];
+    for (unsigned int col = 0; col < row; ++col) {
+      value[row] -= chol[6 * row + col] * value[col];
+    }
+    value[row] /= chol[6 * row + row];
+  }
+  for (int row = 5; row >= 0; --row) {
+    for (unsigned int col = row + 1; col < 6; ++col) {
+      value[row] -= chol[6 * col + row] * value[col];
+    }
+    value[row] /= chol[6 * row + row];
+  }
+  for (unsigned int row = 0; row < 6; ++row) {
+    preconditioned[6 * pose + row] = value[row];
+  }
+}
+
+__global__ void UpdatePcgSolutionResidualKernel(size_t dimension,
+                                                float alpha,
+                                                const float* direction,
+                                                const float* product,
+                                                float* solution,
+                                                float* residual) {
+  const size_t index =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < dimension) {
+    solution[index] = fmaf(alpha, direction[index], solution[index]);
+    residual[index] = fmaf(-alpha, product[index], residual[index]);
+  }
+}
+
+__global__ void UpdatePcgDirectionKernel(size_t dimension,
+                                         float beta,
+                                         const float* preconditioned,
+                                         float* direction) {
+  const size_t index =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < dimension) {
+    direction[index] = fmaf(beta, direction[index], preconditioned[index]);
+  }
+}
+
+__global__ void DotKernel(size_t dimension,
+                          const float* lhs,
+                          const float* rhs,
+                          float* result) {
+  float value = 0.0f;
+  for (size_t index =
+           static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < dimension;
+       index += static_cast<size_t>(gridDim.x) * blockDim.x) {
+    value = fmaf(lhs[index], rhs[index], value);
+  }
+  for (unsigned int offset = warpSize / 2; offset > 0; offset /= 2) {
+    value += __shfl_down_sync(0xffffffff, value, offset);
+  }
+  __shared__ float warp_sums[8];
+  const unsigned int lane = threadIdx.x % warpSize;
+  const unsigned int warp = threadIdx.x / warpSize;
+  if (lane == 0) {
+    warp_sums[warp] = value;
+  }
+  __syncthreads();
+  if (warp == 0) {
+    value = lane < blockDim.x / warpSize ? warp_sums[lane] : 0.0f;
+    for (unsigned int offset = warpSize / 2; offset > 0; offset /= 2) {
+      value += __shfl_down_sync(0xffffffff, value, offset);
+    }
+    if (lane == 0) {
+      atomicAdd(result, value);
+    }
+  }
+}
+
+__global__ void CombineArrowheadStepKernel(size_t pose_dimension,
+                                           float scale_step,
+                                           const float* pose_solution,
+                                           const float* scale_response,
+                                           float* reduced_step) {
+  const size_t index =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < pose_dimension) {
+    reduced_step[index] =
+        fmaf(-scale_step, scale_response[index], pose_solution[index]);
+  }
+  if (index == 0) {
+    reduced_step[pose_dimension] = scale_step;
+  }
 }
 
 __global__ void ScatterPoseStepKernel(const unsigned int* active_poses,
@@ -409,7 +750,9 @@ __global__ void BackSubstitutePointsKernel(const unsigned int* active_points,
                                            const float* point_chol,
                                            const float* point_y,
                                            const float* edge_transform,
+                                           const float* point_scale_transform,
                                            const float* reduced_step,
+                                           size_t pose_dimension,
                                            float* point_step) {
   const size_t active_point =
       static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -434,6 +777,12 @@ __global__ void BackSubstitutePointsKernel(const unsigned int* active_points,
       }
     }
   }
+  if (point_scale_transform != nullptr) {
+    for (unsigned int point_dim = 0; point_dim < 3; ++point_dim) {
+      value[point_dim] -= point_scale_transform[point_y_offset + point_dim] *
+                          reduced_step[pose_dimension];
+    }
+  }
 
   const float* chol = point_chol + 6 * static_cast<size_t>(point);
   const float x2 = value[2] / chol[5];
@@ -445,8 +794,6 @@ __global__ void BackSubstitutePointsKernel(const unsigned int* active_points,
   point_step[point_offset + 2] = x2;
 }
 
-size_t PairIndex(size_t row, size_t col) { return row * (row + 1) / 2 + col; }
-
 }  // namespace
 
 class RigSchurSolver::Impl {
@@ -457,11 +804,14 @@ class RigSchurSolver::Impl {
        const std::vector<unsigned int>& pose_indices,
        const std::vector<unsigned int>& point_indices,
        const std::vector<unsigned int>& fixed_pose_point_indices,
-       const std::vector<unsigned int>& fixed_point_pose_indices)
+       const std::vector<unsigned int>& fixed_point_pose_indices,
+       bool scale_aware,
+       int rotation_anchor_pose_index)
       : device_id_(device_id),
         pose_num_(pose_num),
         point_num_(point_num),
-        factor_num_(pose_indices.size()) {
+        factor_num_(pose_indices.size()),
+        scale_aware_(scale_aware) {
     CheckCuda(cudaSetDevice(device_id_));
     cudaDeviceProp device_properties;
     CheckCuda(cudaGetDeviceProperties(&device_properties, device_id_));
@@ -531,6 +881,16 @@ class RigSchurSolver::Impl {
         active_poses.push_back(static_cast<unsigned int>(pose));
       }
     }
+    if (rotation_anchor_pose_index >= 0) {
+      if (static_cast<size_t>(rotation_anchor_pose_index) >= pose_num_ ||
+          pose_to_compact[rotation_anchor_pose_index] ==
+              std::numeric_limits<size_t>::max()) {
+        throw std::invalid_argument(
+            "Rig Schur rotation anchor is not an active pose");
+      }
+      rotation_anchor_compact_pose_ =
+          pose_to_compact[rotation_anchor_pose_index];
+    }
     std::vector<unsigned int> active_points;
     for (size_t point = 0; point < point_num_; ++point) {
       if (active_point_flags[point]) {
@@ -540,11 +900,12 @@ class RigSchurSolver::Impl {
     active_pose_num_ = active_poses.size();
     active_point_num_ = active_points.size();
     if (active_pose_num_ >
-        static_cast<size_t>(std::numeric_limits<int>::max()) / 6) {
+        (static_cast<size_t>(std::numeric_limits<int>::max()) -
+         static_cast<size_t>(scale_aware_)) /
+            6) {
       throw std::invalid_argument("Rig Schur reduced system is too large");
     }
-    const size_t dimension = 6 * active_pose_num_;
-    dimension_ = static_cast<int>(dimension);
+    pose_dimension_ = 6 * active_pose_num_;
 
     std::vector<unsigned int> edge_points;
     std::vector<size_t> edge_poses;
@@ -584,46 +945,6 @@ class RigSchurSolver::Impl {
       pose_edges[pose_edge_cursors[edge_poses[edge]]++] = edge;
     }
 
-    pair_block_num_ = active_pose_num_ * (active_pose_num_ + 1) / 2;
-    std::vector<size_t> pair_offsets(pair_block_num_ + 1, 0);
-    for (size_t point = 0; point < point_num_; ++point) {
-      for (size_t row_edge = point_edge_offsets[point];
-           row_edge < point_edge_offsets[point + 1];
-           ++row_edge) {
-        for (size_t col_edge = point_edge_offsets[point]; col_edge <= row_edge;
-             ++col_edge) {
-          ++pair_offsets[PairIndex(edge_poses[row_edge], edge_poses[col_edge]) +
-                         1];
-        }
-      }
-    }
-    std::partial_sum(
-        pair_offsets.begin(), pair_offsets.end(), pair_offsets.begin());
-    std::vector<PairRecord> pair_records(pair_offsets.back());
-    std::vector<size_t> pair_cursors = pair_offsets;
-    for (size_t point = 0; point < point_num_; ++point) {
-      for (size_t row_edge = point_edge_offsets[point];
-           row_edge < point_edge_offsets[point + 1];
-           ++row_edge) {
-        for (size_t col_edge = point_edge_offsets[point]; col_edge <= row_edge;
-             ++col_edge) {
-          const size_t pair =
-              PairIndex(edge_poses[row_edge], edge_poses[col_edge]);
-          pair_records[pair_cursors[pair]++] = {row_edge, col_edge};
-        }
-      }
-    }
-    std::vector<size_t> pair_row_poses;
-    std::vector<size_t> pair_col_poses;
-    pair_row_poses.reserve(pair_block_num_);
-    pair_col_poses.reserve(pair_block_num_);
-    for (size_t row = 0; row < active_pose_num_; ++row) {
-      for (size_t col = 0; col <= row; ++col) {
-        pair_row_poses.push_back(row);
-        pair_col_poses.push_back(col);
-      }
-    }
-
     active_poses_ = DeviceBuffer<unsigned int>(active_poses);
     active_points_ = DeviceBuffer<unsigned int>(active_points);
     edge_points_ = DeviceBuffer<unsigned int>(edge_points);
@@ -633,26 +954,29 @@ class RigSchurSolver::Impl {
     point_edge_offsets_ = DeviceBuffer<size_t>(point_edge_offsets);
     pose_edge_offsets_ = DeviceBuffer<size_t>(pose_edge_offsets);
     pose_edges_ = DeviceBuffer<size_t>(pose_edges);
-    pair_offsets_ = DeviceBuffer<size_t>(pair_offsets);
-    pair_records_ = DeviceBuffer<PairRecord>(pair_records);
-    pair_row_poses_ = DeviceBuffer<size_t>(pair_row_poses);
-    pair_col_poses_ = DeviceBuffer<size_t>(pair_col_poses);
     point_chol_ = DeviceBuffer<float>(6 * point_num_);
     point_y_ = DeviceBuffer<float>(3 * point_num_);
     edge_transform_ = DeviceBuffer<float>(18 * edge_num_);
-    reduced_matrix_ = DeviceBuffer<float>(dimension * dimension);
-    reduced_rhs_ = DeviceBuffer<float>(dimension);
+    point_scale_transform_ =
+        DeviceBuffer<float>(scale_aware_ ? 3 * point_num_ : 0);
+    point_projection_ = DeviceBuffer<float>(3 * point_num_);
+    pose_blocks_ = DeviceBuffer<float>(36 * active_pose_num_);
+    pose_preconditioner_chol_ = DeviceBuffer<float>(36 * active_pose_num_);
+    reduced_rhs_ = DeviceBuffer<float>(pose_dimension_);
+    reduced_pose_scale_ =
+        DeviceBuffer<float>(scale_aware_ ? pose_dimension_ : 0);
+    reduced_scale_rhs_ = DeviceBuffer<float>(scale_aware_ ? 1 : 0);
+    reduced_scale_diagonal_ = DeviceBuffer<float>(scale_aware_ ? 1 : 0);
+    reduced_step_ = DeviceBuffer<float>(pose_dimension_ +
+                                        static_cast<size_t>(scale_aware_));
+    scale_pose_response_ =
+        DeviceBuffer<float>(scale_aware_ ? pose_dimension_ : 0);
+    pcg_residual_ = DeviceBuffer<float>(pose_dimension_);
+    pcg_preconditioned_ = DeviceBuffer<float>(pose_dimension_);
+    pcg_direction_ = DeviceBuffer<float>(pose_dimension_);
+    pcg_product_ = DeviceBuffer<float>(pose_dimension_);
+    dot_result_ = DeviceBuffer<float>(1);
     info_ = DeviceBuffer<int>(1);
-
-    cusolver_handle_.Create();
-    int workspace_size = 0;
-    CheckCusolver(cusolverDnSpotrf_bufferSize(cusolver_handle_.get(),
-                                              CUBLAS_FILL_MODE_LOWER,
-                                              dimension_,
-                                              reduced_matrix_.data(),
-                                              dimension_,
-                                              &workspace_size));
-    workspace_ = DeviceBuffer<float>(workspace_size);
   }
 
   ~Impl() { cudaSetDevice(device_id_); }
@@ -666,16 +990,135 @@ class RigSchurSolver::Impl {
     return static_cast<unsigned int>(grid_size);
   }
 
+  float Dot(const float* lhs, const float* rhs) {
+    constexpr unsigned int block_size = 256;
+    CheckCuda(cudaMemset(dot_result_.data(), 0, sizeof(float)));
+    DotKernel<<<GridSize(pose_dimension_, block_size), block_size>>>(
+        pose_dimension_, lhs, rhs, dot_result_.data());
+    CheckCuda(cudaGetLastError());
+    float result;
+    CheckCuda(cudaMemcpy(
+        &result, dot_result_.data(), sizeof(float), cudaMemcpyDeviceToHost));
+    return result;
+  }
+
+  void PoseMatVec(const float* vector, float* product) {
+    constexpr unsigned int block_size = 256;
+    ProjectPointsKernel<<<GridSize(active_point_num_, block_size),
+                          block_size>>>(active_points_.data(),
+                                        active_point_num_,
+                                        point_edge_offsets_.data(),
+                                        edge_poses_.data(),
+                                        edge_transform_.data(),
+                                        vector,
+                                        point_projection_.data());
+    CheckCuda(cudaGetLastError());
+    PoseMatVecKernel<<<GridSize(active_pose_num_, 1), 6 * 32>>>(
+        pose_edge_offsets_.data(),
+        pose_edges_.data(),
+        active_pose_num_,
+        rotation_anchor_compact_pose_,
+        edge_points_.data(),
+        edge_transform_.data(),
+        point_projection_.data(),
+        pose_blocks_.data(),
+        vector,
+        product);
+    CheckCuda(cudaGetLastError());
+  }
+
+  bool SolvePoseSystem(const float* rhs,
+                       int iteration_max,
+                       float relative_error_exit,
+                       float* solution) {
+    constexpr unsigned int block_size = 256;
+    const size_t bytes = pose_dimension_ * sizeof(float);
+    CheckCuda(cudaMemset(solution, 0, bytes));
+    CheckCuda(
+        cudaMemcpy(pcg_residual_.data(), rhs, bytes, cudaMemcpyDeviceToDevice));
+    const float initial_residual_norm =
+        Dot(pcg_residual_.data(), pcg_residual_.data());
+    if (initial_residual_norm == 0.0f) {
+      return true;
+    }
+    ApplyPosePreconditionerKernel<<<GridSize(active_pose_num_, block_size),
+                                    block_size>>>(
+        active_pose_num_,
+        pose_preconditioner_chol_.data(),
+        pcg_residual_.data(),
+        pcg_preconditioned_.data());
+    CheckCuda(cudaGetLastError());
+    CheckCuda(cudaMemcpy(pcg_direction_.data(),
+                         pcg_preconditioned_.data(),
+                         bytes,
+                         cudaMemcpyDeviceToDevice));
+    float residual_preconditioned =
+        Dot(pcg_residual_.data(), pcg_preconditioned_.data());
+    if (!(residual_preconditioned > 0.0f)) {
+      return false;
+    }
+
+    for (int iteration = 0; iteration < iteration_max; ++iteration) {
+      PoseMatVec(pcg_direction_.data(), pcg_product_.data());
+      const float direction_product =
+          Dot(pcg_direction_.data(), pcg_product_.data());
+      if (!(direction_product > 0.0f)) {
+        return false;
+      }
+      const float alpha = residual_preconditioned / direction_product;
+      UpdatePcgSolutionResidualKernel<<<GridSize(pose_dimension_, block_size),
+                                        block_size>>>(pose_dimension_,
+                                                      alpha,
+                                                      pcg_direction_.data(),
+                                                      pcg_product_.data(),
+                                                      solution,
+                                                      pcg_residual_.data());
+      CheckCuda(cudaGetLastError());
+      const float residual_norm =
+          Dot(pcg_residual_.data(), pcg_residual_.data());
+      if (residual_norm <= initial_residual_norm * relative_error_exit) {
+        return true;
+      }
+      ApplyPosePreconditionerKernel<<<GridSize(active_pose_num_, block_size),
+                                      block_size>>>(
+          active_pose_num_,
+          pose_preconditioner_chol_.data(),
+          pcg_residual_.data(),
+          pcg_preconditioned_.data());
+      CheckCuda(cudaGetLastError());
+      const float next_residual_preconditioned =
+          Dot(pcg_residual_.data(), pcg_preconditioned_.data());
+      if (!(next_residual_preconditioned > 0.0f)) {
+        return false;
+      }
+      const float beta = next_residual_preconditioned / residual_preconditioned;
+      UpdatePcgDirectionKernel<<<GridSize(pose_dimension_, block_size),
+                                 block_size>>>(pose_dimension_,
+                                               beta,
+                                               pcg_preconditioned_.data(),
+                                               pcg_direction_.data());
+      CheckCuda(cudaGetLastError());
+      residual_preconditioned = next_residual_preconditioned;
+    }
+    return true;
+  }
+
   bool SolveStep(float diag,
+                 int pcg_iteration_max,
+                 float pcg_relative_error_exit,
                  const float* pose_jac,
+                 const float* scale_jac,
                  const float* point_jac,
                  const float* pose_rhs,
                  const float* pose_diag,
                  const float* pose_tril,
+                 const float* scale_rhs,
+                 const float* scale_diag,
                  const float* point_rhs,
                  const float* point_diag,
                  const float* point_tril,
                  float* pose_step,
+                 float* scale_step,
                  float* point_step) {
     CheckCuda(cudaSetDevice(device_id_));
     CheckCuda(cudaMemset(info_.data(), 0, sizeof(int)));
@@ -710,20 +1153,41 @@ class RigSchurSolver::Impl {
         point_chol_.data(),
         edge_transform_.data());
     CheckCuda(cudaGetLastError());
+    if (scale_aware_) {
+      TransformPointScaleKernel<<<GridSize(active_point_num_, block_size),
+                                  block_size>>>(active_points_.data(),
+                                                active_point_num_,
+                                                point_edge_offsets_.data(),
+                                                edge_factor_offsets_.data(),
+                                                edge_factor_indices_.data(),
+                                                factor_num_,
+                                                scale_jac,
+                                                point_jac,
+                                                point_chol_.data(),
+                                                point_scale_transform_.data());
+      CheckCuda(cudaGetLastError());
+    }
 
-    CheckCuda(cudaMemset(
-        reduced_matrix_.data(), 0, reduced_matrix_.size() * sizeof(float)));
     InitializePoseSystemKernel<<<GridSize(active_pose_num_, block_size),
                                  block_size>>>(active_poses_.data(),
                                                active_pose_num_,
                                                pose_num_,
+                                               rotation_anchor_compact_pose_,
                                                diag,
                                                pose_rhs,
                                                pose_diag,
                                                pose_tril,
-                                               reduced_matrix_.data(),
+                                               pose_blocks_.data(),
                                                reduced_rhs_.data());
     CheckCuda(cudaGetLastError());
+    if (scale_aware_) {
+      InitializeScaleSystemKernel<<<1, 1>>>(diag,
+                                            scale_rhs,
+                                            scale_diag,
+                                            reduced_scale_rhs_.data(),
+                                            reduced_scale_diagonal_.data());
+      CheckCuda(cudaGetLastError());
+    }
     ReducePoseRhsKernel<<<GridSize(active_pose_num_, 1), 6 * 32>>>(
         pose_edge_offsets_.data(),
         pose_edges_.data(),
@@ -731,65 +1195,121 @@ class RigSchurSolver::Impl {
         edge_points_.data(),
         point_y_.data(),
         edge_transform_.data(),
+        rotation_anchor_compact_pose_,
         reduced_rhs_.data());
     CheckCuda(cudaGetLastError());
-    ReducePosePairsKernel<<<GridSize(pair_block_num_, 1), 36>>>(
-        pair_offsets_.data(),
-        pair_records_.data(),
-        pair_row_poses_.data(),
-        pair_col_poses_.data(),
-        edge_transform_.data(),
+    FactorPosePreconditionerKernel<<<GridSize(active_pose_num_, 1), 64>>>(
+        pose_edge_offsets_.data(),
+        pose_edges_.data(),
         active_pose_num_,
-        reduced_matrix_.data());
+        rotation_anchor_compact_pose_,
+        edge_transform_.data(),
+        pose_blocks_.data(),
+        pose_preconditioner_chol_.data(),
+        info_.data());
     CheckCuda(cudaGetLastError());
-
-    CheckCuda(cudaMemset(info_.data(), 0, sizeof(int)));
-    CheckCusolver(cusolverDnSpotrf(cusolver_handle_.get(),
-                                   CUBLAS_FILL_MODE_LOWER,
-                                   dimension_,
-                                   reduced_matrix_.data(),
-                                   dimension_,
-                                   workspace_.data(),
-                                   static_cast<int>(workspace_.size()),
-                                   info_.data()));
     CheckCuda(
         cudaMemcpy(&info, info_.data(), sizeof(int), cudaMemcpyDeviceToHost));
     if (info != 0) {
       return false;
     }
-    CheckCusolver(cusolverDnSpotrs(cusolver_handle_.get(),
-                                   CUBLAS_FILL_MODE_LOWER,
-                                   dimension_,
-                                   1,
-                                   reduced_matrix_.data(),
-                                   dimension_,
-                                   reduced_rhs_.data(),
-                                   dimension_,
-                                   info_.data()));
-    CheckCuda(
-        cudaMemcpy(&info, info_.data(), sizeof(int), cudaMemcpyDeviceToHost));
-    if (info != 0) {
-      throw std::runtime_error("cuSOLVER potrs failed");
+    if (scale_aware_) {
+      ReduceScaleRhsDiagonalKernel<<<GridSize(active_point_num_, block_size),
+                                     block_size>>>(
+          active_points_.data(),
+          active_point_num_,
+          point_y_.data(),
+          point_scale_transform_.data(),
+          reduced_scale_rhs_.data(),
+          reduced_scale_diagonal_.data());
+      CheckCuda(cudaGetLastError());
+      ReducePoseScaleKernel<<<GridSize(active_pose_num_, 1), 6 * 32>>>(
+          pose_edge_offsets_.data(),
+          pose_edges_.data(),
+          edge_factor_offsets_.data(),
+          edge_factor_indices_.data(),
+          active_pose_num_,
+          factor_num_,
+          edge_points_.data(),
+          pose_jac,
+          scale_jac,
+          edge_transform_.data(),
+          point_scale_transform_.data(),
+          rotation_anchor_compact_pose_,
+          reduced_pose_scale_.data());
+      CheckCuda(cudaGetLastError());
+    }
+
+    if (!SolvePoseSystem(reduced_rhs_.data(),
+                         pcg_iteration_max,
+                         pcg_relative_error_exit,
+                         reduced_step_.data())) {
+      return false;
+    }
+    if (scale_aware_) {
+      if (!SolvePoseSystem(reduced_pose_scale_.data(),
+                           pcg_iteration_max,
+                           pcg_relative_error_exit,
+                           scale_pose_response_.data())) {
+        return false;
+      }
+      float reduced_scale_rhs;
+      float reduced_scale_diagonal;
+      CheckCuda(cudaMemcpy(&reduced_scale_rhs,
+                           reduced_scale_rhs_.data(),
+                           sizeof(float),
+                           cudaMemcpyDeviceToHost));
+      CheckCuda(cudaMemcpy(&reduced_scale_diagonal,
+                           reduced_scale_diagonal_.data(),
+                           sizeof(float),
+                           cudaMemcpyDeviceToHost));
+      const float pose_scale_solution =
+          Dot(reduced_pose_scale_.data(), reduced_step_.data());
+      const float pose_scale_response =
+          Dot(reduced_pose_scale_.data(), scale_pose_response_.data());
+      const float scale_denominator =
+          reduced_scale_diagonal - pose_scale_response;
+      if (!(scale_denominator > 0.0f)) {
+        return false;
+      }
+      const float solved_scale =
+          (reduced_scale_rhs - pose_scale_solution) / scale_denominator;
+      CombineArrowheadStepKernel<<<GridSize(pose_dimension_, block_size),
+                                   block_size>>>(pose_dimension_,
+                                                 solved_scale,
+                                                 reduced_step_.data(),
+                                                 scale_pose_response_.data(),
+                                                 reduced_step_.data());
+      CheckCuda(cudaGetLastError());
     }
 
     ScatterPoseStepKernel<<<GridSize(active_pose_num_, block_size),
                             block_size>>>(active_poses_.data(),
                                           active_pose_num_,
                                           pose_num_,
-                                          reduced_rhs_.data(),
+                                          reduced_step_.data(),
                                           pose_step);
     CheckCuda(cudaGetLastError());
+    if (scale_aware_) {
+      CheckCuda(cudaMemcpy(scale_step,
+                           reduced_step_.data() + pose_dimension_,
+                           sizeof(float),
+                           cudaMemcpyDeviceToDevice));
+    }
     BackSubstitutePointsKernel<<<GridSize(active_point_num_, block_size),
-                                 block_size>>>(active_points_.data(),
-                                               active_point_num_,
-                                               point_num_,
-                                               point_edge_offsets_.data(),
-                                               edge_poses_.data(),
-                                               point_chol_.data(),
-                                               point_y_.data(),
-                                               edge_transform_.data(),
-                                               reduced_rhs_.data(),
-                                               point_step);
+                                 block_size>>>(
+        active_points_.data(),
+        active_point_num_,
+        point_num_,
+        point_edge_offsets_.data(),
+        edge_poses_.data(),
+        point_chol_.data(),
+        point_y_.data(),
+        edge_transform_.data(),
+        scale_aware_ ? point_scale_transform_.data() : nullptr,
+        reduced_step_.data(),
+        pose_dimension_,
+        point_step);
     CheckCuda(cudaGetLastError());
     return true;
   }
@@ -799,12 +1319,13 @@ class RigSchurSolver::Impl {
   size_t pose_num_;
   size_t point_num_;
   size_t factor_num_;
+  bool scale_aware_;
   size_t active_pose_num_;
   size_t active_point_num_;
   size_t edge_num_;
-  size_t pair_block_num_;
   size_t max_grid_size_;
-  int dimension_;
+  size_t pose_dimension_;
+  size_t rotation_anchor_compact_pose_ = std::numeric_limits<size_t>::max();
   DeviceBuffer<unsigned int> active_poses_;
   DeviceBuffer<unsigned int> active_points_;
   DeviceBuffer<unsigned int> edge_points_;
@@ -814,18 +1335,25 @@ class RigSchurSolver::Impl {
   DeviceBuffer<size_t> point_edge_offsets_;
   DeviceBuffer<size_t> pose_edge_offsets_;
   DeviceBuffer<size_t> pose_edges_;
-  DeviceBuffer<size_t> pair_offsets_;
-  DeviceBuffer<PairRecord> pair_records_;
-  DeviceBuffer<size_t> pair_row_poses_;
-  DeviceBuffer<size_t> pair_col_poses_;
   DeviceBuffer<float> point_chol_;
   DeviceBuffer<float> point_y_;
   DeviceBuffer<float> edge_transform_;
-  DeviceBuffer<float> reduced_matrix_;
+  DeviceBuffer<float> point_scale_transform_;
+  DeviceBuffer<float> point_projection_;
+  DeviceBuffer<float> pose_blocks_;
+  DeviceBuffer<float> pose_preconditioner_chol_;
   DeviceBuffer<float> reduced_rhs_;
-  DeviceBuffer<float> workspace_;
+  DeviceBuffer<float> reduced_pose_scale_;
+  DeviceBuffer<float> reduced_scale_rhs_;
+  DeviceBuffer<float> reduced_scale_diagonal_;
+  DeviceBuffer<float> reduced_step_;
+  DeviceBuffer<float> scale_pose_response_;
+  DeviceBuffer<float> pcg_residual_;
+  DeviceBuffer<float> pcg_preconditioned_;
+  DeviceBuffer<float> pcg_direction_;
+  DeviceBuffer<float> pcg_product_;
+  DeviceBuffer<float> dot_result_;
   DeviceBuffer<int> info_;
-  CusolverHandle cusolver_handle_;
 };
 
 RigSchurSolver::RigSchurSolver(
@@ -835,38 +1363,54 @@ RigSchurSolver::RigSchurSolver(
     const std::vector<unsigned int>& pose_indices,
     const std::vector<unsigned int>& point_indices,
     const std::vector<unsigned int>& fixed_pose_point_indices,
-    const std::vector<unsigned int>& fixed_point_pose_indices)
+    const std::vector<unsigned int>& fixed_point_pose_indices,
+    bool scale_aware,
+    int rotation_anchor_pose_index)
     : impl_(std::make_unique<Impl>(device_id,
                                    pose_num,
                                    point_num,
                                    pose_indices,
                                    point_indices,
                                    fixed_pose_point_indices,
-                                   fixed_point_pose_indices)) {}
+                                   fixed_point_pose_indices,
+                                   scale_aware,
+                                   rotation_anchor_pose_index)) {}
 
 RigSchurSolver::~RigSchurSolver() = default;
 
 bool RigSchurSolver::SolveStep(float diag,
+                               int pcg_iteration_max,
+                               float pcg_relative_error_exit,
                                const float* pose_jac,
+                               const float* scale_jac,
                                const float* point_jac,
                                const float* pose_rhs,
                                const float* pose_diag,
                                const float* pose_tril,
+                               const float* scale_rhs,
+                               const float* scale_diag,
                                const float* point_rhs,
                                const float* point_diag,
                                const float* point_tril,
                                float* pose_step,
+                               float* scale_step,
                                float* point_step) {
   return impl_->SolveStep(diag,
+                          pcg_iteration_max,
+                          pcg_relative_error_exit,
                           pose_jac,
+                          scale_jac,
                           point_jac,
                           pose_rhs,
                           pose_diag,
                           pose_tril,
+                          scale_rhs,
+                          scale_diag,
                           point_rhs,
                           point_diag,
                           point_tril,
                           pose_step,
+                          scale_step,
                           point_step);
 }
 

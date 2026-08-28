@@ -92,6 +92,63 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
       "observation_xy"_a = std::move(observation_xy));
 }
 
+py::array_t<point3D_t> AddPoints3DFromArrays(
+    Reconstruction& reconstruction,
+    const py::array_t<float, py::array::c_style>& point_xyz,
+    const py::array_t<uint8_t, py::array::c_style>& point_rgb,
+    const py::array_t<int64_t, py::array::c_style>& observation_offsets,
+    const py::array_t<image_t, py::array::c_style>& observation_image_ids,
+    const py::array_t<point2D_t, py::array::c_style>&
+        observation_point2D_indices) {
+  THROW_CHECK_EQ(point_xyz.ndim(), 2);
+  THROW_CHECK_EQ(point_xyz.shape(1), 3);
+  const ssize_t num_points = point_xyz.shape(0);
+  THROW_CHECK_EQ(point_rgb.ndim(), 2);
+  THROW_CHECK_EQ(point_rgb.shape(0), num_points);
+  THROW_CHECK_EQ(point_rgb.shape(1), 3);
+  THROW_CHECK_EQ(observation_offsets.ndim(), 1);
+  THROW_CHECK_EQ(observation_offsets.shape(0), num_points + 1);
+  THROW_CHECK_EQ(observation_image_ids.ndim(), 1);
+  THROW_CHECK_EQ(observation_point2D_indices.ndim(), 1);
+  THROW_CHECK_EQ(observation_image_ids.shape(0),
+                 observation_point2D_indices.shape(0));
+
+  const auto xyz = point_xyz.unchecked<2>();
+  const auto rgb = point_rgb.unchecked<2>();
+  const auto offsets = observation_offsets.unchecked<1>();
+  const auto image_ids = observation_image_ids.unchecked<1>();
+  const auto point2D_indices = observation_point2D_indices.unchecked<1>();
+  THROW_CHECK_EQ(offsets(0), 0);
+  THROW_CHECK_EQ(offsets(num_points), observation_image_ids.shape(0));
+
+  py::array_t<point3D_t> point3D_ids(num_points);
+  point3D_t* point3D_ids_ptr = point3D_ids.mutable_data();
+  {
+    py::gil_scoped_release release;
+    for (ssize_t point_index = 0; point_index < num_points; ++point_index) {
+      const int64_t start = offsets(point_index);
+      const int64_t end = offsets(point_index + 1);
+      THROW_CHECK_LE(start, end);
+      Track track;
+      track.Reserve(static_cast<size_t>(end - start));
+      for (int64_t observation_index = start; observation_index < end;
+           ++observation_index) {
+        track.AddElement(image_ids(observation_index),
+                         point2D_indices(observation_index));
+      }
+      point3D_ids_ptr[point_index] = reconstruction.AddPoint3D(
+          Eigen::Vector3d(xyz(point_index, 0),
+                          xyz(point_index, 1),
+                          xyz(point_index, 2)),
+          std::move(track),
+          Eigen::Vector3ub(rgb(point_index, 0),
+                           rgb(point_index, 1),
+                           rgb(point_index, 2)));
+    }
+  }
+  return point3D_ids;
+}
+
 void BindReconstruction(py::module& m) {
   py::classh<Reconstruction>(m, "Reconstruction")
       .def(py::init<>())
@@ -168,6 +225,15 @@ void BindReconstruction(py::module& m) {
            &TrackArrays,
            "Export points and tracks as contiguous NumPy arrays without "
            "creating Python objects per observation.")
+      .def("add_points3D_from_arrays",
+           &AddPoints3DFromArrays,
+           "point_xyz"_a.noconvert(),
+           "point_rgb"_a.noconvert(),
+           "observation_offsets"_a.noconvert(),
+           "observation_image_ids"_a.noconvert(),
+           "observation_point2D_indices"_a.noconvert(),
+           "Add 3D points and packed tracks without creating Python objects "
+           "per observation. Returns the assigned point3D identifiers.")
       .def("exists_rig", &Reconstruction::ExistsRig, "rig_id"_a)
       .def("exists_camera", &Reconstruction::ExistsCamera, "camera_id"_a)
       .def("exists_frame", &Reconstruction::ExistsFrame, "frame_id"_a)

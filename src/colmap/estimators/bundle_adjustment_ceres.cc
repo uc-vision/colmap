@@ -611,8 +611,18 @@ class DefaultBundleAdjuster : public CeresBundleAdjuster {
   DefaultBundleAdjuster(const BundleAdjustmentOptions& options,
                         const BundleAdjustmentConfig& config,
                         Reconstruction& reconstruction)
+      : DefaultBundleAdjuster(options,
+                              config,
+                              reconstruction,
+                              /*sensor_from_rig_log_scale=*/nullptr) {}
+
+  DefaultBundleAdjuster(const BundleAdjustmentOptions& options,
+                        const BundleAdjustmentConfig& config,
+                        Reconstruction& reconstruction,
+                        double* sensor_from_rig_log_scale)
       : CeresBundleAdjuster(options, config),
-        loss_function_(options_.ceres->CreateLossFunction()) {
+        loss_function_(options_.ceres->CreateLossFunction()),
+        sensor_from_rig_log_scale_(sensor_from_rig_log_scale) {
     VLOG(2) << "Creating Ceres bundle adjuster";
 
     ceres::Problem::Options problem_options;
@@ -796,9 +806,20 @@ class DefaultBundleAdjuster : public CeresBundleAdjuster {
       num_observations += 1;
       point3D_num_observations_[point2D.point3D_id] += 1;
 
-      // The !constant_sensor_from_rig && constant_rig_from_world is
-      // rare enough that we do not have a specialized cost function for it.
-      if (constant_sensor_from_rig && constant_rig_from_world) {
+      if (sensor_from_rig_log_scale_ != nullptr) {
+        THROW_CHECK(constant_sensor_from_rig);
+        THROW_CHECK(!constant_rig_from_world);
+        problem_->AddResidualBlock(
+            CreateCameraCostFunction<ScaledRigReprojErrorCostFunctor>(
+                camera.model_id, point2D.xy, sensor_from_rig),
+            loss_function_.get(),
+            point3D.xyz.data(),
+            rig_from_world.params.data(),
+            camera.params.data(),
+            sensor_from_rig_log_scale_);
+        // The !constant_sensor_from_rig && constant_rig_from_world is
+        // rare enough that we do not have a specialized cost function for it.
+      } else if (constant_sensor_from_rig && constant_rig_from_world) {
         problem_->AddResidualBlock(
             CreateCameraCostFunction<ReprojErrorConstantPoseCostFunctor>(
                 camera.model_id, point2D.xy, cam_from_world.value()),
@@ -900,6 +921,7 @@ class DefaultBundleAdjuster : public CeresBundleAdjuster {
   std::set<camera_t> parameterized_camera_ids_;
   std::set<image_t> parameterized_image_ids_;
   FlatHashMap<point3D_t, size_t> point3D_num_observations_;
+  double* sensor_from_rig_log_scale_;
 };
 
 class PosePriorBundleAdjuster : public CeresBundleAdjuster {
@@ -1092,6 +1114,184 @@ class PosePriorBundleAdjuster : public CeresBundleAdjuster {
   Sim3d normalized_from_metric_;
 };
 
+BundleAdjustmentOptions CreateFixedRigBundleAdjustmentOptions(
+    const FixedRigPosePriorBundleAdjustmentOptions& options) {
+  BundleAdjustmentOptions bundle_options;
+  static_cast<BundleAdjustmentBackendOptions&>(bundle_options) = options;
+  bundle_options.refine_focal_length = false;
+  bundle_options.refine_principal_point = false;
+  bundle_options.refine_extra_params = false;
+  bundle_options.refine_sensor_from_rig = false;
+  bundle_options.refine_rig_from_world = true;
+  bundle_options.refine_points3D = true;
+  bundle_options.min_track_length = options.min_track_length;
+  bundle_options.constant_rig_from_world_rotation = false;
+  bundle_options.print_summary = options.print_summary;
+  bundle_options.backend = options.backend;
+  return bundle_options;
+}
+
+class FixedRigPosePriorBundleAdjuster : public CeresBundleAdjuster {
+ public:
+  FixedRigPosePriorBundleAdjuster(
+      const FixedRigPosePriorBundleAdjustmentOptions& options,
+      const BundleAdjustmentConfig& config,
+      std::vector<PosePrior> pose_priors,
+      Reconstruction& reconstruction)
+      : CeresBundleAdjuster(CreateFixedRigBundleAdjustmentOptions(options),
+                            config),
+        fixed_options_(options),
+        pose_priors_(std::move(pose_priors)),
+        reconstruction_(reconstruction) {
+    VLOG(2) << "Creating Ceres fixed-rig pose-prior bundle adjuster";
+    THROW_CHECK_EQ(config_.FixedGauge(), BundleAdjustmentGauge::UNSPECIFIED);
+
+    pose_priors_.erase(
+        std::remove_if(pose_priors_.begin(),
+                       pose_priors_.end(),
+                       [this](const PosePrior& pose_prior) {
+                         if (!pose_prior.HasPosition() ||
+                             pose_prior.corr_data_id.sensor_id.type !=
+                                 SensorType::CAMERA ||
+                             !config_.HasImage(pose_prior.corr_data_id.id)) {
+                           return true;
+                         }
+                         return !reconstruction_
+                                     .Image(pose_prior.corr_data_id.id)
+                                     .IsRefInFrame();
+                       }),
+        pose_priors_.end());
+    THROW_CHECK_GE(pose_priors_.size(), 3)
+        << "Fixed-rig pose-prior BA requires at least three reference-camera "
+           "position priors";
+    FlatHashSet<image_t> image_ids;
+    for (const PosePrior& pose_prior : pose_priors_) {
+      THROW_CHECK(image_ids.insert(pose_prior.corr_data_id.id).second)
+          << "Duplicate pose prior for image " << pose_prior.corr_data_id.id;
+    }
+
+    // Keep the metric scale intact: the sensor baseline correction is the only
+    // scale parameter in this problem.
+    normalized_from_metric_ = reconstruction_.Normalize(/*fixed_scale=*/true);
+
+    // Capture each fixed sensor baseline inside the reprojection factors. The
+    // shared log-scale remains live until Solve writes it back exactly once.
+    default_bundle_adjuster_ = std::make_unique<DefaultBundleAdjuster>(
+        options_, config_, reconstruction_, &sensor_from_rig_log_scale_);
+    FixReferenceRigRotation();
+
+    const std::set<image_t>& parameterized_image_ids =
+        default_bundle_adjuster_->ParameterizedImageIds();
+    size_t num_parameterized_priors = 0;
+    for (const PosePrior& pose_prior : pose_priors_) {
+      if (parameterized_image_ids.count(pose_prior.corr_data_id.id) > 0) {
+        AddReferencePosePrior(pose_prior);
+        ++num_parameterized_priors;
+      }
+    }
+    THROW_CHECK_GE(num_parameterized_priors, 3)
+        << "Fixed-rig pose-prior BA requires at least three parameterized "
+           "reference-camera position priors";
+  }
+
+  std::shared_ptr<BundleAdjustmentSummary> Solve() override {
+    std::shared_ptr<ceres::Problem> problem =
+        default_bundle_adjuster_->Problem();
+    if (problem->NumResiduals() == 0) {
+      auto summary =
+          std::make_shared<FixedRigPosePriorBundleAdjustmentSummary>();
+      summary->termination_type = BundleAdjustmentTerminationType::USER_FAILURE;
+      return summary;
+    }
+
+    ceres::Solver::Summary ceres_summary =
+        SolveWithGpuFallback(options_, config_, problem.get());
+    reconstruction_.Transform(Inverse(normalized_from_metric_));
+
+    if (options_.print_summary || VLOG_IS_ON(1)) {
+      PrintSolverSummary(ceres_summary,
+                         "Fixed-rig pose-prior bundle adjustment report");
+    }
+
+    const auto backend_summary = CreateSummaryAndLogFailure(
+        std::move(ceres_summary), "Fixed-rig pose-prior bundle adjustment");
+    auto summary = std::make_shared<FixedRigPosePriorBundleAdjustmentSummary>();
+    summary->termination_type = backend_summary->termination_type;
+    summary->num_residuals = backend_summary->num_residuals;
+    if (summary->IsSolutionUsable()) {
+      summary->sensor_from_rig_scale = std::exp(sensor_from_rig_log_scale_);
+      for (const auto& rig_entry : reconstruction_.Rigs()) {
+        Rig& rig = reconstruction_.Rig(rig_entry.first);
+        for (auto& sensor_entry : rig.NonRefSensors()) {
+          std::optional<Rigid3d>& sensor_from_rig = sensor_entry.second;
+          THROW_CHECK(sensor_from_rig.has_value());
+          sensor_from_rig->translation() *= summary->sensor_from_rig_scale;
+        }
+      }
+    }
+    return summary;
+  }
+
+  std::shared_ptr<ceres::Problem>& Problem() override {
+    return default_bundle_adjuster_->Problem();
+  }
+
+ private:
+  void AddReferencePosePrior(const PosePrior& pose_prior) {
+    Image& image = reconstruction_.Image(pose_prior.corr_data_id.id);
+    THROW_CHECK(image.IsRefInFrame());
+    Rigid3d& rig_from_world = image.FramePtr()->RigFromWorld();
+
+    const Eigen::Vector3d normalized_position =
+        normalized_from_metric_ * pose_prior.position;
+    const Eigen::Matrix3d normalized_from_metric_scaled_rotation =
+        normalized_from_metric_.scale() *
+        normalized_from_metric_.rotation().toRotationMatrix();
+    const double fallback_stddev =
+        fixed_options_.prior_position_fallback_stddev;
+    const Eigen::Matrix3d position_cov =
+        pose_prior.HasPositionCov()
+            ? pose_prior.position_covariance
+            : fallback_stddev * fallback_stddev * Eigen::Matrix3d::Identity();
+    const Eigen::Matrix3d normalized_position_cov =
+        normalized_from_metric_scaled_rotation * position_cov *
+        normalized_from_metric_scaled_rotation.transpose();
+
+    default_bundle_adjuster_->Problem()->AddResidualBlock(
+        CovarianceWeightedCostFunctor<AbsolutePosePositionPriorCostFunctor>::
+            Create(normalized_position_cov, normalized_position),
+        nullptr,
+        rig_from_world.params.data());
+  }
+
+  void FixReferenceRigRotation() {
+    std::vector<image_t> image_ids(config_.Images().begin(),
+                                   config_.Images().end());
+    std::sort(image_ids.begin(), image_ids.end());
+    ceres::Problem* problem = default_bundle_adjuster_->Problem().get();
+    for (const image_t image_id : image_ids) {
+      Image& image = reconstruction_.Image(image_id);
+      Rigid3d& rig_from_world = image.FramePtr()->RigFromWorld();
+      if (image.IsRefInFrame() &&
+          problem->HasParameterBlock(rig_from_world.params.data())) {
+        SetManifold(problem,
+                    rig_from_world.params.data(),
+                    CreateSubsetManifold(7, {0, 1, 2, 3}));
+        return;
+      }
+    }
+    LOG(FATAL_THROW)
+        << "Fixed-rig pose-prior BA requires a parameterized reference frame";
+  }
+
+  FixedRigPosePriorBundleAdjustmentOptions fixed_options_;
+  std::vector<PosePrior> pose_priors_;
+  Reconstruction& reconstruction_;
+  std::unique_ptr<DefaultBundleAdjuster> default_bundle_adjuster_;
+  Sim3d normalized_from_metric_;
+  double sensor_from_rig_log_scale_ = 0.0;
+};
+
 }  // namespace
 
 std::unique_ptr<CeresBundleAdjuster> CreateDefaultCeresBundleAdjuster(
@@ -1110,6 +1310,15 @@ std::unique_ptr<CeresBundleAdjuster> CreatePosePriorCeresBundleAdjuster(
     Reconstruction& reconstruction) {
   return std::make_unique<PosePriorBundleAdjuster>(
       options, prior_options, config, std::move(pose_priors), reconstruction);
+}
+
+std::unique_ptr<CeresBundleAdjuster> CreateFixedRigPosePriorCeresBundleAdjuster(
+    const FixedRigPosePriorBundleAdjustmentOptions& options,
+    const BundleAdjustmentConfig& config,
+    std::vector<PosePrior> pose_priors,
+    Reconstruction& reconstruction) {
+  return std::make_unique<FixedRigPosePriorBundleAdjuster>(
+      options, config, std::move(pose_priors), reconstruction);
 }
 
 void PrintSolverSummary(const ceres::Solver::Summary& summary,
