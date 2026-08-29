@@ -69,6 +69,14 @@ class ConstPositionSqrtInformation(sf.V9):
     pass
 
 
+class ConstLogScalePriorTarget(sf.V1):
+    pass
+
+
+class ConstLogScalePriorSqrtInformation(sf.V1):
+    pass
+
+
 # Calibration node layout:
 #
 # When both focal_and_extra/focal and principal_point are tunable, they
@@ -356,6 +364,19 @@ def fixed_rig_sensor_position_prior(
     return weight * (sensor_from_world.inverse().t - position)
 
 
+def fixed_rig_log_scale_prior(
+    sensor_from_rig_log_scale: T.Annotated[
+        SensorFromRigLogScale, mem.TunableUnique
+    ],
+    target: T.Annotated[ConstLogScalePriorTarget, mem.ConstantUnique],
+    sqrt_information: T.Annotated[
+        ConstLogScalePriorSqrtInformation, mem.ConstantUnique
+    ],
+) -> sf.V1:
+    """Gaussian prior on the shared live log baseline scale."""
+    return sqrt_information * (sensor_from_rig_log_scale - target)
+
+
 def fixed_camera_pinhole_point(
     point: T.Annotated[Point, mem.TunableShared],
     image_from_world: T.Annotated[ConstImageFromWorld, mem.ConstantShared],
@@ -493,6 +514,7 @@ register_camera_model(
 caslib.add_factor(fixed_rig_pinhole)
 caslib.add_factor(fixed_rig_position_prior)
 caslib.add_factor(fixed_rig_sensor_position_prior)
+caslib.add_factor(fixed_rig_log_scale_prior)
 caslib.add_factor(
     fixed_camera_pinhole_point,
     shared_constant_pools={

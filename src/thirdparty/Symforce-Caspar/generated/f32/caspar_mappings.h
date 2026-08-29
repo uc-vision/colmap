@@ -16,6 +16,34 @@ cudaError_t ConstImageFromWorldCasparToStacked(const float* cas_data,
                                                const unsigned int cas_offset,
                                                const unsigned int num_objects);
 
+cudaError_t ConstLogScalePriorSqrtInformationStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstLogScalePriorSqrtInformationCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstLogScalePriorTargetStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstLogScalePriorTargetCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
 cudaError_t ConstPinholeCalibStackedToCaspar(const float* stacked_data,
                                              float* cas_data,
                                              const unsigned int cas_stride,

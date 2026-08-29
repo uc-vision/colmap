@@ -37,7 +37,7 @@ struct PyRigidBayBundleAdjustmentResult {
   std::vector<Rigid3d> bays_from_world;
   py::array_t<float> points;
   double scale;
-  std::shared_ptr<CasparBundleAdjustmentSummary> summary;
+  std::shared_ptr<RigidBayBundleAdjustmentSummary> summary;
 };
 
 py::array_t<float> PointArray(std::vector<float>&& values,
@@ -118,6 +118,7 @@ PyRigidBayBundleAdjustmentResult RigidBayBundleAdjustment(
     const FloatArray& prior_positions,
     const FloatArray& prior_sqrt_information,
     const double initial_scale,
+    const double scale_prior_sqrt_information,
     const CasparBundleAdjustmentOptions& options) {
   THROW_CHECK_GT(bays_from_world.size(), 0);
   THROW_CHECK_EQ(points.ndim(), 2);
@@ -148,6 +149,7 @@ PyRigidBayBundleAdjustmentResult RigidBayBundleAdjustment(
   THROW_CHECK_EQ(prior_positions.shape(0), num_priors);
   THROW_CHECK_EQ(prior_sqrt_information.shape(0), num_priors);
   THROW_CHECK_GT(initial_scale, 0.0);
+  THROW_CHECK_GT(scale_prior_sqrt_information, 0.0);
 
   const size_t num_points = points.shape(0);
   RigidBayBundleAdjustmentResult result;
@@ -184,6 +186,7 @@ PyRigidBayBundleAdjustmentResult RigidBayBundleAdjustment(
         prior_sqrt_information.data(),
         num_priors,
         initial_scale,
+        scale_prior_sqrt_information,
         options);
   }
   return {std::move(result.bays_from_world),
@@ -292,6 +295,19 @@ void BindBundleAdjuster(py::module& m) {
           .def_readwrite("runtime", &CasparBASummary::runtime)
           .def_readwrite("allocation_size", &CasparBASummary::allocation_size);
   MakeDataclass(PyCasparBundleAdjustmentSummary);
+
+  using RigidBayBASummary = RigidBayBundleAdjustmentSummary;
+  auto PyRigidBayBundleAdjustmentSummary =
+      py::classh<RigidBayBASummary, CasparBASummary>(
+          m, "RigidBayBundleAdjustmentSummary")
+          .def(py::init<>())
+          .def_readwrite("final_reprojection_score",
+                         &RigidBayBASummary::final_reprojection_score)
+          .def_readwrite("final_sensor_position_prior_score",
+                         &RigidBayBASummary::final_sensor_position_prior_score)
+          .def_readwrite("final_scale_prior_score",
+                         &RigidBayBASummary::final_scale_prior_score);
+  MakeDataclass(PyRigidBayBundleAdjustmentSummary);
 
   using CasparPointOpts = CasparPointRefinementOptions;
   auto PyCasparPointRefinementOptions =
@@ -712,9 +728,11 @@ void BindBundleAdjuster(py::module& m) {
         "prior_sensor_indices"_a.noconvert(),
         "prior_positions"_a.noconvert(),
         "prior_sqrt_information"_a.noconvert(),
-        "initial_scale"_a = 1.0,
+        "initial_scale"_a,
+        "scale_prior_sqrt_information"_a,
         "options"_a = CasparBundleAdjustmentOptions(),
         "Jointly optimize rigid bay poses, cross-bay points, and one total "
-        "scale applied to all camera-from-bay translations.");
+        "scale applied to all camera-from-bay translations, with a Gaussian "
+        "prior on live log scale centered at the initial scale.");
 #endif
 }

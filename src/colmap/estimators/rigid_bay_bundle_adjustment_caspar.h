@@ -6,15 +6,27 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace colmap {
+
+struct RigidBayBundleAdjustmentSummary : CasparBundleAdjustmentSummary {
+  RigidBayBundleAdjustmentSummary() = default;
+  explicit RigidBayBundleAdjustmentSummary(
+      CasparBundleAdjustmentSummary&& summary)
+      : CasparBundleAdjustmentSummary(std::move(summary)) {}
+
+  double final_reprojection_score = 0.0;
+  double final_sensor_position_prior_score = 0.0;
+  double final_scale_prior_score = 0.0;
+};
 
 struct RigidBayBundleAdjustmentResult {
   std::vector<Rigid3d> bays_from_world;
   std::vector<float> points;
   double scale = 1.0;
-  std::shared_ptr<CasparBundleAdjustmentSummary> summary;
+  std::shared_ptr<RigidBayBundleAdjustmentSummary> summary;
 };
 
 RigidBayBundleAdjustmentResult RigidBayBundleAdjustmentCaspar(
@@ -33,6 +45,7 @@ RigidBayBundleAdjustmentResult RigidBayBundleAdjustmentCaspar(
     const float* prior_sqrt_information,
     size_t num_priors,
     double initial_scale,
+    double scale_prior_sqrt_information,
     const CasparBundleAdjustmentOptions& options);
 
 }  // namespace colmap
