@@ -1134,7 +1134,7 @@ class FixedRigPosePriorCasparBundleAdjuster : public BundleAdjuster {
     VLOG(2) << "Creating Caspar fixed-rig pose-prior bundle adjuster";
     THROW_CHECK_EQ(config_.FixedGauge(), BundleAdjustmentGauge::UNSPECIFIED);
     FilterPosePriors();
-    normalized_from_metric_ = reconstruction_.Normalize(/*fixed_scale=*/true);
+    normalized_from_metric_ = reconstruction_.Normalize(/*fixed_scale=*/false);
     BuildProblemData();
   }
 

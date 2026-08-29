@@ -36,6 +36,8 @@
 #include "colmap/sensor/models.h"
 #include "colmap/util/testing.h"
 
+#include <array>
+
 #include <gtest/gtest.h>
 
 // Due to pose normalization operations, constant variables may not be perfectly
@@ -148,6 +150,56 @@ std::vector<PosePrior> MakeCollinearPosePriors(Reconstruction& reconstruction) {
     }
   }
   return pose_priors;
+}
+
+void ArrangeAsLongRow(Reconstruction& reconstruction) {
+  constexpr double kFrameSpacing = 7.5;
+  std::vector<frame_t> frame_ids = reconstruction.RegFrameIds();
+  std::sort(frame_ids.begin(), frame_ids.end());
+  FlatHashMap<frame_t, size_t> frame_index;
+  for (size_t index = 0; index < frame_ids.size(); ++index) {
+    frame_index.emplace(frame_ids[index], index);
+    Rigid3d rig_from_world;
+    rig_from_world.translation().x() =
+        -kFrameSpacing * static_cast<double>(index);
+    reconstruction.Frame(frame_ids[index]).SetRigFromWorld(rig_from_world);
+  }
+
+  std::vector<point3D_t> point3D_ids;
+  point3D_ids.reserve(reconstruction.NumPoints3D());
+  for (const auto& [point3D_id, _] : reconstruction.Points3D()) {
+    point3D_ids.push_back(point3D_id);
+  }
+  std::sort(point3D_ids.begin(), point3D_ids.end());
+  constexpr size_t kTrackFrameCount = 3;
+  const size_t window_count = frame_ids.size() - kTrackFrameCount + 1;
+  for (size_t point_index = 0; point_index < point3D_ids.size();
+       ++point_index) {
+    const point3D_t point3D_id = point3D_ids[point_index];
+    Point3D& point3D = reconstruction.Point3D(point3D_id);
+    const size_t first_frame = point_index % window_count;
+    const Eigen::Vector3d direction = point3D.xyz;
+    point3D.xyz = Eigen::Vector3d(
+        kFrameSpacing * (first_frame + 1.0) + 0.2 * direction.x(),
+        0.5 * direction.y(),
+        30.0 + 0.5 * direction.z());
+    const std::vector<TrackElement> elements = point3D.track.Elements();
+    for (const TrackElement& element : elements) {
+      const size_t index =
+          frame_index.at(reconstruction.Image(element.image_id).FrameId());
+      if (index < first_frame || index >= first_frame + kTrackFrameCount) {
+        reconstruction.DeleteObservation(element.image_id, element.point2D_idx);
+      }
+    }
+    for (const TrackElement& element : point3D.track.Elements()) {
+      Image& image = reconstruction.Image(element.image_id);
+      const Eigen::Vector3d point_in_camera =
+          image.CamFromWorld() * point3D.xyz;
+      image.Point2D(element.point2D_idx).xy =
+          image.CameraPtr()->ImgFromCam(point_in_camera, false).value();
+    }
+  }
+  reconstruction.UpdatePoint3DErrors();
 }
 
 TEST(DefaultBundleAdjuster, Nominal) {
@@ -353,6 +405,96 @@ TEST(FixedRigPosePriorBundleAdjuster, RigSchurRecoversSensorBaselineScale) {
   for (const auto& [camera_id, camera] : reconstruction.Cameras()) {
     EXPECT_EQ(camera.params, ground_truth.Camera(camera_id).params);
   }
+}
+
+TEST(FixedRigPosePriorBundleAdjuster, LongRowNormalizationPreservesLiveScale) {
+  Reconstruction ground_truth;
+  SyntheticDatasetOptions synthetic_options;
+  synthetic_options.num_rigs = 1;
+  synthetic_options.num_cameras_per_rig = 2;
+  synthetic_options.num_frames_per_rig = 67;
+  synthetic_options.num_points3D = 1340;
+  synthetic_options.num_points2D_without_point3D = 0;
+  synthetic_options.camera_model_id = PinholeCameraModel::model_id;
+  synthetic_options.camera_params = {1280, 1280, 512, 384};
+  synthetic_options.sensor_from_rig_translation_stddev = 0.5;
+  SynthesizeDataset(synthetic_options, &ground_truth);
+  ArrangeAsLongRow(ground_truth);
+
+  Reconstruction initialized = ground_truth;
+  const rig_t rig_id = initialized.Rigs().begin()->first;
+  const sensor_t sensor_id =
+      initialized.Rig(rig_id).NonRefSensors().begin()->first;
+  constexpr double kInitialBaselineScale = 0.99;
+  initialized.Rig(rig_id).SensorFromRig(sensor_id).translation() *=
+      kInitialBaselineScale;
+  SyntheticNoiseOptions noise_options;
+  noise_options.rig_from_world_rotation_stddev = 0.1;
+  noise_options.rig_from_world_translation_stddev = 0.02;
+  noise_options.point3D_stddev = 0.05;
+  SynthesizeNoise(noise_options, &initialized);
+
+  std::vector<PosePrior> metric_pose_priors;
+  for (const image_t image_id : ground_truth.RegImageIds()) {
+    const Image& image = ground_truth.Image(image_id);
+    if (image.IsRefInFrame()) {
+      PosePrior pose_prior;
+      pose_prior.corr_data_id = image.DataId();
+      pose_prior.position = image.ProjectionCenter();
+      pose_prior.position_covariance = 1e-4 * Eigen::Matrix3d::Identity();
+      metric_pose_priors.push_back(pose_prior);
+    }
+  }
+
+  std::array<Reconstruction, 2> solved_reconstructions;
+  std::array<double, 2> solved_scales;
+  const std::array backends{BundleAdjustmentBackend::CERES,
+                            BundleAdjustmentBackend::CASPAR_RIG_SCHUR};
+  for (size_t index = 0; index < backends.size(); ++index) {
+    SCOPED_TRACE(backends[index]);
+    FixedRigPosePriorBundleAdjustmentOptions options;
+    options.backend = backends[index];
+    options.print_summary = false;
+    solved_reconstructions[index] = initialized;
+    const auto summary = FixedRigPosePriorBundleAdjustment(
+        solved_reconstructions[index], metric_pose_priors, options);
+    ASSERT_TRUE(summary->IsSolutionUsable());
+    solved_scales[index] = summary->sensor_from_rig_scale;
+    EXPECT_NEAR(solved_scales[index], 1.0 / kInitialBaselineScale, 1e-3);
+  }
+
+  EXPECT_NEAR(solved_scales[1], solved_scales[0], 1e-3);
+  for (Reconstruction& reconstruction : solved_reconstructions) {
+    reconstruction.UpdatePoint3DErrors();
+    EXPECT_LT(reconstruction.ComputeMeanReprojectionError(), 0.1);
+  }
+
+  constexpr double kCoordinateScale = 1e12;
+  const Sim3d large_from_metric(kCoordinateScale,
+                                Eigen::Quaterniond::Identity(),
+                                Eigen::Vector3d(1e15, -2e15, 3e15));
+  Reconstruction large_reconstruction = initialized;
+  large_reconstruction.Transform(large_from_metric);
+  std::vector<PosePrior> large_pose_priors = metric_pose_priors;
+  for (PosePrior& pose_prior : large_pose_priors) {
+    pose_prior.position = large_from_metric * pose_prior.position;
+    pose_prior.position_covariance *= kCoordinateScale * kCoordinateScale;
+  }
+  FixedRigPosePriorBundleAdjustmentOptions large_options;
+  large_options.backend = BundleAdjustmentBackend::CASPAR_RIG_SCHUR;
+  large_options.print_summary = false;
+  const auto large_summary = FixedRigPosePriorBundleAdjustment(
+      large_reconstruction, std::move(large_pose_priors), large_options);
+  ASSERT_TRUE(large_summary->IsSolutionUsable());
+  large_reconstruction.Transform(Inverse(large_from_metric));
+  EXPECT_NEAR(large_summary->sensor_from_rig_scale, solved_scales[1], 1e-4);
+  EXPECT_THAT(large_reconstruction,
+              ReconstructionNear(solved_reconstructions[1],
+                                 /*max_rotation_error_deg=*/5e-3,
+                                 /*max_proj_center_error=*/5e-3,
+                                 /*max_scale_error=*/1e-4,
+                                 /*num_obs_tolerance=*/0.0,
+                                 /*align=*/false));
 }
 
 TEST(FixedRigPosePriorBundleAdjuster,

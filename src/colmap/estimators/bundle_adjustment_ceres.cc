@@ -1170,9 +1170,10 @@ class FixedRigPosePriorBundleAdjuster : public CeresBundleAdjuster {
           << "Duplicate pose prior for image " << pose_prior.corr_data_id.id;
     }
 
-    // Keep the metric scale intact: the sensor baseline correction is the only
-    // scale parameter in this problem.
-    normalized_from_metric_ = reconstruction_.Normalize(/*fixed_scale=*/true);
+    // Normalize all world-coordinate units for numerical stability. This also
+    // scales the fixed sensor baseline; the optimized log-scale remains a
+    // dimensionless correction and is therefore unchanged.
+    normalized_from_metric_ = reconstruction_.Normalize(/*fixed_scale=*/false);
 
     // Capture each fixed sensor baseline inside the reprojection factors. The
     // shared log-scale remains live until Solve writes it back exactly once.
