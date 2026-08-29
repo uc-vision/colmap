@@ -2,6 +2,7 @@
 
 #include "colmap/estimators/caspar/caspar_model_adapter.h"
 #include "colmap/util/cuda.h"
+#include "colmap/util/misc.h"
 
 #include <utility>
 
@@ -41,17 +42,16 @@ CasparPointRefinementResult RefineFixedCameraPinholePointsCaspar(
     const float* observation_xy,
     const size_t num_observations,
     const CasparPointRefinementOptions& options) {
-  caspar::SolverParams<StorageType> parameters;
-  parameters.solver_iter_max = options.solver_iter_max;
-  parameters.pcg_iter_max = options.pcg_iter_max;
-
   CasparSolverSizing sizing;
   sizing.num_points = num_points;
   sizing.num_fixed_camera_pinhole_point = num_observations;
   sizing.num_fixed_camera_pinhole_point_images = num_images;
-  const size_t device_id = static_cast<size_t>(
-      options.gpu_index >= 0 ? options.gpu_index : FindBestCudaDevice());
-  auto solver = CreateSolver(parameters, sizing, device_id);
+  const std::vector<int> gpu_indices = CSVToVector<int>(options.gpu_index);
+  const int gpu_index = gpu_indices.front();
+  const size_t device_id =
+      static_cast<size_t>(gpu_index >= 0 ? gpu_index : FindBestCudaDevice());
+  auto solver =
+      CreateSolver(CreateCasparSolverParameters(options), sizing, device_id);
 
   std::vector<StorageType> point_data =
       Convert<StorageType>(initial_points, num_points * 3);
@@ -64,8 +64,6 @@ CasparPointRefinementResult RefineFixedCameraPinholePointsCaspar(
 #else
   const StorageType* pixels = observation_xy;
 #endif
-  const StorageType loss_scale = options.loss_scale;
-
   solver.SetPointNodesFromStackedHost(point_data.data(), 0, num_points);
   solver.SetFixedCameraPinholePointNum(num_observations);
   solver.SetFixedCameraPinholePointPointIndicesFromHost(
@@ -76,13 +74,11 @@ CasparPointRefinementResult RefineFixedCameraPinholePointsCaspar(
       observation_image_indices, num_observations);
   solver.SetFixedCameraPinholePointPixelDataFromStackedHost(
       pixels, 0, num_observations);
-  solver.SetFixedCameraPinholePointReprojectionLossScaleDataFromStackedHost(
-      &loss_scale);
   solver.finish_indices();
 
   const caspar::SolveResult solve_result = solver.solve(
       /*print_progress=*/false,
-      /*verbose_logging=*/false);
+      /*verbose_logging=*/options.collect_iteration_data);
   solver.GetPointNodesToStackedHost(point_data.data(), 0, num_points);
 
   CasparPointRefinementResult result;

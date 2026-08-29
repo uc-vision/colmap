@@ -32,10 +32,16 @@ void BindReconstruction(py::module& m);
 void BindReconstructionManager(py::module& m);
 void BindSynthetic(py::module& m);
 void BindTrack(py::module& m);
+void BindRowPointAccumulation(py::module& m);
+void BindRowTrackJoin(py::module& m);
+void BindRowTrackSelection(py::module& m);
 void BindPoseGraph(py::module& m);
 
 void BindScene(py::module& m) {
   BindTrack(m);
+  BindRowPointAccumulation(m);
+  BindRowTrackJoin(m);
+  BindRowTrackSelection(m);
   BindPoint3D(m);
   BindCorrespondenceGraph(m);
   BindDatabase(m);

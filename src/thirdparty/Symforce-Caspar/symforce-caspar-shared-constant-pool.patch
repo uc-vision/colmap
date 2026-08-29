@@ -366,7 +366,7 @@ index 855a978..6a0223e 100644
 
    ~{{ solver.struct_name }}();
 
-@@ -79,6 +84,23 @@ class {{ solver.struct_name }} {
+@@ -79,6 +84,28 @@ class {{ solver.struct_name }} {
     */
    SolveResult solve(bool print_progress = false, bool verbose_logging = false);
 
@@ -383,6 +383,11 @@ index 855a978..6a0223e 100644
 +      const std::vector<unsigned int>& sensor_position_prior_pose_indices,
 +      unsigned int rotation_anchor_pose_index);
 +
++  void SetRowFixedRigSchurTopology(
++      const std::vector<unsigned int>& pose_indices,
++      const std::vector<unsigned int>& point_indices,
++      unsigned int rotation_anchor_pose_index);
++
 +  SolveResult solve_rig_schur(bool print_progress = false,
 +                              bool verbose_logging = false);
 +#endif
@@ -390,13 +395,14 @@ index 855a978..6a0223e 100644
    /**
     * Finish the indices.
     *
-@@ -251,6 +273,10 @@ class {{ solver.struct_name }} {
+@@ -251,6 +278,11 @@ class {{ solver.struct_name }} {
    {% for name, datadesc in solver.fields.items() %}
    {{ datadesc.dtype }}* {{ name }};
    {% endfor %}
 +#ifndef CASPAR_USE_DOUBLE
++  enum class RigSchurMode { STANDARD, FIXED_RIG, ROW_FIXED_RIG };
 +  std::unique_ptr<RigSchurSolver> rig_schur_solver_;
-+  bool rig_schur_scale_aware_ = false;
++  RigSchurMode rig_schur_mode_ = RigSchurMode::STANDARD;
 +#endif
  };
 

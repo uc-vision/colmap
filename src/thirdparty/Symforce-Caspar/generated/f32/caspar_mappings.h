@@ -94,6 +94,20 @@ cudaError_t ConstPinholePrincipalPointCasparToStacked(
     const unsigned int cas_offset,
     const unsigned int num_objects);
 
+cudaError_t ConstPinholeSensorCalibrationStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstPinholeSensorCalibrationCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
 cudaError_t ConstPinholeSensorFromRigStackedToCaspar(
     const float* stacked_data,
     float* cas_data,

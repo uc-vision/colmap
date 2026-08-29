@@ -66,7 +66,6 @@ TEST(CasparPointRefinement, RecoversKnownPointsFromIndexedFixedCameras) {
   const std::vector<float> original_projection_data = projection_data;
 
   CasparPointRefinementOptions options;
-  options.loss_scale = 100.0;
   options.solver_iter_max = 100;
   const CasparPointRefinementResult result =
       RefineFixedCameraPinholePointsCaspar(initial_points.data(),
@@ -89,61 +88,6 @@ TEST(CasparPointRefinement, RecoversKnownPointsFromIndexedFixedCameras) {
   EXPECT_EQ(projection_data, original_projection_data);
 }
 
-TEST(CasparPointRefinement, SoftL1RejectsASevereOutlier) {
-  const std::vector<Matrix3x4f> projections = {
-      ProjectionMatrix(-2.0f),
-      ProjectionMatrix(-1.0f),
-      ProjectionMatrix(0.0f),
-      ProjectionMatrix(1.0f),
-      ProjectionMatrix(2.0f),
-  };
-  const Eigen::Vector3f expected_point(0.2f, -0.1f, 4.0f);
-  const std::vector<Eigen::Vector3f> expected_points = {expected_point};
-  const std::vector<float> initial_points = {0.5f, 0.1f, 3.5f};
-  const std::vector<uint32_t> point_indices(5, 0);
-  const std::vector<uint32_t> image_indices = {0, 1, 2, 3, 4};
-  const std::vector<float> projection_data = Flatten(projections);
-  std::vector<float> pixels =
-      Observations(projections, expected_points, point_indices, image_indices);
-  pixels[8] += 300.0f;
-  pixels[9] -= 200.0f;
-
-  CasparPointRefinementOptions robust_options;
-  robust_options.loss_scale = 1.0;
-  robust_options.solver_iter_max = 100;
-  const CasparPointRefinementResult robust_result =
-      RefineFixedCameraPinholePointsCaspar(initial_points.data(),
-                                           1,
-                                           projection_data.data(),
-                                           projections.size(),
-                                           point_indices.data(),
-                                           image_indices.data(),
-                                           pixels.data(),
-                                           point_indices.size(),
-                                           robust_options);
-
-  CasparPointRefinementOptions quadratic_options = robust_options;
-  quadratic_options.loss_scale = 1e6;
-  const CasparPointRefinementResult quadratic_result =
-      RefineFixedCameraPinholePointsCaspar(initial_points.data(),
-                                           1,
-                                           projection_data.data(),
-                                           projections.size(),
-                                           point_indices.data(),
-                                           image_indices.data(),
-                                           pixels.data(),
-                                           point_indices.size(),
-                                           quadratic_options);
-
-  const Eigen::Map<const Eigen::Vector3f> robust_point(
-      robust_result.points.data());
-  const Eigen::Map<const Eigen::Vector3f> quadratic_point(
-      quadratic_result.points.data());
-  EXPECT_LT((robust_point - expected_point).norm(), 0.03f);
-  EXPECT_LT((robust_point - expected_point).norm(),
-            0.2f * (quadratic_point - expected_point).norm());
-}
-
 TEST(CasparPointRefinement, SupportsMoreImagesThanObservations) {
   constexpr size_t kNumImages = 4096;
   std::vector<Matrix3x4f> projections(kNumImages, ProjectionMatrix(0.0f));
@@ -160,7 +104,6 @@ TEST(CasparPointRefinement, SupportsMoreImagesThanObservations) {
       Observations(projections, expected_points, point_indices, image_indices);
 
   CasparPointRefinementOptions options;
-  options.loss_scale = 100.0;
   options.solver_iter_max = 100;
   const CasparPointRefinementResult result =
       RefineFixedCameraPinholePointsCaspar(initial_points.data(),

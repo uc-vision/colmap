@@ -63,6 +63,8 @@ class GraphSolver {
    * SimpleRadialPrincipalPoints
    * @param ConstImageFromWorld_num_max the maximum number of
    * ConstImageFromWorlds
+   * @param ConstPinholeSensorCalibration_num_max the maximum number of
+   * ConstPinholeSensorCalibrations
    * @param simple_radial_num_max the maximum number of simple_radials
    * @param simple_radial_fixed_pose_num_max the maximum number of
    * simple_radial_fixed_poses
@@ -83,6 +85,8 @@ class GraphSolver {
    * fixed_rig_sensor_position_priors
    * @param fixed_rig_log_scale_prior_num_max the maximum number of
    * fixed_rig_log_scale_priors
+   * @param row_fixed_rig_pinhole_num_max the maximum number of
+   * row_fixed_rig_pinholes
    * @param fixed_camera_pinhole_point_num_max the maximum number of
    * fixed_camera_pinhole_points
    * @param simple_radial_split_fixed_focal_and_extra_num_max the maximum number
@@ -156,6 +160,7 @@ class GraphSolver {
       size_t SimpleRadialPose_num_max,
       size_t SimpleRadialPrincipalPoint_num_max,
       size_t ConstImageFromWorld_num_max,
+      size_t ConstPinholeSensorCalibration_num_max,
       size_t simple_radial_num_max,
       size_t simple_radial_fixed_pose_num_max,
       size_t simple_radial_fixed_point_num_max,
@@ -168,6 +173,7 @@ class GraphSolver {
       size_t fixed_rig_position_prior_num_max,
       size_t fixed_rig_sensor_position_prior_num_max,
       size_t fixed_rig_log_scale_prior_num_max,
+      size_t row_fixed_rig_pinhole_num_max,
       size_t fixed_camera_pinhole_point_num_max,
       size_t simple_radial_split_fixed_focal_and_extra_num_max,
       size_t simple_radial_split_fixed_principal_point_num_max,
@@ -229,6 +235,11 @@ class GraphSolver {
       const std::vector<unsigned int>& pose_indices,
       const std::vector<unsigned int>& point_indices,
       const std::vector<unsigned int>& sensor_position_prior_pose_indices,
+      unsigned int rotation_anchor_pose_index);
+
+  void SetRowFixedRigSchurTopology(
+      const std::vector<unsigned int>& pose_indices,
+      const std::vector<unsigned int>& point_indices,
       unsigned int rotation_anchor_pose_index);
 
   SolveResult solve_rig_schur(bool print_progress = false,
@@ -1805,6 +1816,99 @@ class GraphSolver {
   void SetFixedRigLogScalePriorNum(size_t num);
 
   /**
+   * Set the indices for the pose argument for the RowFixedRigPinhole factor
+   * from host.
+   */
+  void SetRowFixedRigPinholePoseIndicesFromHost(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the pose argument for the RowFixedRigPinhole factor
+   * from device.
+   */
+  void SetRowFixedRigPinholePoseIndicesFromDevice(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the sensor_from_rig_log_scale argument for the
+   * RowFixedRigPinhole factor from host.
+   */
+  void SetRowFixedRigPinholeSensorFromRigLogScaleIndicesFromHost(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the sensor_from_rig_log_scale argument for the
+   * RowFixedRigPinhole factor from device.
+   */
+  void SetRowFixedRigPinholeSensorFromRigLogScaleIndicesFromDevice(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the point argument for the RowFixedRigPinhole factor
+   * from host.
+   */
+  void SetRowFixedRigPinholePointIndicesFromHost(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the point argument for the RowFixedRigPinhole factor
+   * from device.
+   */
+  void SetRowFixedRigPinholePointIndicesFromDevice(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the values for the sensor_calibration consts RowFixedRigPinhole factor
+   * from stacked host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetRowFixedRigPinholeSensorCalibrationDataFromStackedHost(
+      const double* const data, size_t offset, size_t num);
+
+  /**
+   * Set the values for the sensor_calibration consts RowFixedRigPinhole factor
+   * from stacked device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetRowFixedRigPinholeSensorCalibrationDataFromStackedDevice(
+      const double* const data, size_t offset, size_t num);
+
+  void SetRowFixedRigPinholeSensorCalibrationIndicesFromHost(
+      const unsigned int* const indices, size_t num);
+  void SetRowFixedRigPinholeSensorCalibrationIndicesFromDevice(
+      const unsigned int* const indices, size_t num);
+  /**
+   * Set the values for the pixel consts RowFixedRigPinhole factor from stacked
+   * host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetRowFixedRigPinholePixelDataFromStackedHost(const double* const data,
+                                                     size_t offset,
+                                                     size_t num);
+
+  /**
+   * Set the values for the pixel consts RowFixedRigPinhole factor from stacked
+   * device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetRowFixedRigPinholePixelDataFromStackedDevice(const double* const data,
+                                                       size_t offset,
+                                                       size_t num);
+
+  /**
+   * Set the current number of RowFixedRigPinhole factors.
+   *
+   * The value is set during initialization and this function is only needed if
+   * you want to change the problem between optimization runs. This is work in
+   * progress and can have performance impacts.
+   */
+  void SetRowFixedRigPinholeNum(size_t num);
+
+  /**
    * Set the indices for the point argument for the FixedCameraPinholePoint
    * factor from host.
    */
@@ -1857,24 +1961,6 @@ class GraphSolver {
    */
   void SetFixedCameraPinholePointPixelDataFromStackedDevice(
       const double* const data, size_t offset, size_t num);
-
-  /**
-   * Set the values for the reprojection_loss_scale consts
-   * FixedCameraPinholePoint factor from stacked host data.
-   *
-   * The offset can be used to start writing from a specific index.
-   */
-  void SetFixedCameraPinholePointReprojectionLossScaleDataFromStackedHost(
-      const double* const data);
-
-  /**
-   * Set the values for the reprojection_loss_scale consts
-   * FixedCameraPinholePoint factor from stacked device data.
-   *
-   * The offset can be used to start writing from a specific index.
-   */
-  void SetFixedCameraPinholePointReprojectionLossScaleDataFromStackedDevice(
-      const double* const data);
 
   /**
    * Set the current number of FixedCameraPinholePoint factors.
@@ -4611,6 +4697,8 @@ class GraphSolver {
   size_t SimpleRadialPrincipalPoint_num_max_;
   size_t ConstImageFromWorld_num_;
   size_t ConstImageFromWorld_num_max_;
+  size_t ConstPinholeSensorCalibration_num_;
+  size_t ConstPinholeSensorCalibration_num_max_;
   size_t simple_radial_num_;
   size_t simple_radial_num_max_;
   size_t simple_radial_fixed_pose_num_;
@@ -4635,6 +4723,8 @@ class GraphSolver {
   size_t fixed_rig_sensor_position_prior_num_max_;
   size_t fixed_rig_log_scale_prior_num_;
   size_t fixed_rig_log_scale_prior_num_max_;
+  size_t row_fixed_rig_pinhole_num_;
+  size_t row_fixed_rig_pinhole_num_max_;
   size_t fixed_camera_pinhole_point_num_;
   size_t fixed_camera_pinhole_point_num_max_;
   size_t simple_radial_split_fixed_focal_and_extra_num_;
@@ -4802,13 +4892,19 @@ class GraphSolver {
       facs__fixed_rig_log_scale_prior__args__sensor_from_rig_log_scale__idx_shared_;
   double* facs__fixed_rig_log_scale_prior__args__target__data_;
   double* facs__fixed_rig_log_scale_prior__args__sqrt_information__data_;
+  SharedIndex* facs__row_fixed_rig_pinhole__args__pose__idx_shared_;
+  double* facs__row_fixed_rig_pinhole__args__sensor_calibration__data_;
+  SharedIndex*
+      facs__row_fixed_rig_pinhole__args__sensor_calibration__idx_shared_;
+  SharedIndex*
+      facs__row_fixed_rig_pinhole__args__sensor_from_rig_log_scale__idx_shared_;
+  SharedIndex* facs__row_fixed_rig_pinhole__args__point__idx_shared_;
+  double* facs__row_fixed_rig_pinhole__args__pixel__data_;
   SharedIndex* facs__fixed_camera_pinhole_point__args__point__idx_shared_;
   double* facs__fixed_camera_pinhole_point__args__image_from_world__data_;
   SharedIndex*
       facs__fixed_camera_pinhole_point__args__image_from_world__idx_shared_;
   double* facs__fixed_camera_pinhole_point__args__pixel__data_;
-  double*
-      facs__fixed_camera_pinhole_point__args__reprojection_loss_scale__data_;
   SharedIndex*
       facs__simple_radial_split_fixed_focal_and_extra__args__pose__idx_shared_;
   double*
@@ -5072,6 +5168,7 @@ class GraphSolver {
   double* facs__fixed_rig_position_prior__res_;
   double* facs__fixed_rig_sensor_position_prior__res_;
   double* facs__fixed_rig_log_scale_prior__res_;
+  double* facs__row_fixed_rig_pinhole__res_;
   double* facs__fixed_camera_pinhole_point__res_;
   double* facs__simple_radial_split_fixed_focal_and_extra__res_;
   double* facs__simple_radial_split_fixed_principal_point__res_;
@@ -5128,6 +5225,9 @@ class GraphSolver {
       facs__fixed_rig_sensor_position_prior__args__sensor_from_rig_log_scale__jac_;
   double*
       facs__fixed_rig_log_scale_prior__args__sensor_from_rig_log_scale__jac_;
+  double* facs__row_fixed_rig_pinhole__args__pose__jac_;
+  double* facs__row_fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_;
+  double* facs__row_fixed_rig_pinhole__args__point__jac_;
   double* facs__fixed_camera_pinhole_point__args__point__jac_;
   double* facs__simple_radial_split_fixed_focal_and_extra__args__pose__jac_;
   double*
@@ -5340,6 +5440,7 @@ class GraphSolver {
   double* facs__fixed_rig_position_prior__jp_;
   double* facs__fixed_rig_sensor_position_prior__jp_;
   double* facs__fixed_rig_log_scale_prior__jp_;
+  double* facs__row_fixed_rig_pinhole__jp_;
   double* facs__fixed_camera_pinhole_point__jp_;
   double* facs__simple_radial_split_fixed_focal_and_extra__jp_;
   double* facs__simple_radial_split_fixed_principal_point__jp_;
@@ -5382,8 +5483,9 @@ class GraphSolver {
   double* solver__pred_decrease_tot_;
   double* solver__res_tot_;
 #ifndef CASPAR_USE_DOUBLE
+  enum class RigSchurMode { STANDARD, FIXED_RIG, ROW_FIXED_RIG };
   std::unique_ptr<RigSchurSolver> rig_schur_solver_;
-  bool rig_schur_scale_aware_ = false;
+  RigSchurMode rig_schur_mode_ = RigSchurMode::STANDARD;
 #endif
 };
 

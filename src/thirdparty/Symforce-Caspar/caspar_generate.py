@@ -57,6 +57,12 @@ class ConstImageFromWorld(sf.M34):
     pass
 
 
+class ConstPinholeSensorCalibration(sf.Matrix):
+    """Fixed sensor-from-rig Pose3 storage followed by PINHOLE calibration."""
+
+    SHAPE = (11, 1)
+
+
 class SensorFromRigLogScale(sf.V1):
     pass
 
@@ -329,6 +335,27 @@ def fixed_rig_pinhole(
     return weight * residual
 
 
+def row_fixed_rig_pinhole(
+    pose: T.Annotated[PinholePose, mem.TunableShared],
+    sensor_calibration: T.Annotated[
+        ConstPinholeSensorCalibration, mem.ConstantShared
+    ],
+    sensor_from_rig_log_scale: T.Annotated[
+        SensorFromRigLogScale, mem.TunableUnique
+    ],
+    point: T.Annotated[Point, mem.TunableShared],
+    pixel: T.Annotated[ConstPixel, mem.ConstantSequential],
+) -> sf.V2:
+    """Squared row reprojection with fixed indexed calibration and live scale."""
+    sensor_from_rig = sf.Pose3.from_storage(sensor_calibration[:7])
+    calib = sf.V4(sensor_calibration[7:])
+    scaled_sensor_from_rig = sf.Pose3(
+        sensor_from_rig.R,
+        sf.exp(sensor_from_rig_log_scale[0]) * sensor_from_rig.t,
+    )
+    return pinhole_core(pose, scaled_sensor_from_rig, calib, point, pixel)
+
+
 def fixed_rig_position_prior(
     pose: T.Annotated[PinholePose, mem.TunableShared],
     position: T.Annotated[ConstReferencePosition, mem.ConstantSequential],
@@ -381,23 +408,15 @@ def fixed_camera_pinhole_point(
     point: T.Annotated[Point, mem.TunableShared],
     image_from_world: T.Annotated[ConstImageFromWorld, mem.ConstantShared],
     pixel: T.Annotated[ConstPixel, mem.ConstantSequential],
-    reprojection_loss_scale: T.Annotated[
-        ConstReprojectionLossScale, mem.ConstantUnique
-    ],
 ) -> sf.V2:
-    """Robust point-only reprojection with fixed indexed camera matrices."""
+    """Squared point-only reprojection with fixed indexed camera matrices."""
     point_homogeneous = sf.V4([point[0], point[1], point[2], 1])
     projected = image_from_world * point_homogeneous
     depth = projected[2]
-    residual = (
+    return (
         sf.V2(projected[:2]) / (depth + sf.epsilon() * sf.sign_no_zero(depth))
         - pixel
     )
-    scaled_squared_norm = (
-        residual.squared_norm() / reprojection_loss_scale[0] ** 2
-    )
-    weight = sf.sqrt(2 / (sf.sqrt(1 + scaled_squared_norm) + 1))
-    return weight * residual
 
 
 # Split cores delegate to merged cores to avoid duplicating projection math.
@@ -515,6 +534,12 @@ caslib.add_factor(fixed_rig_pinhole)
 caslib.add_factor(fixed_rig_position_prior)
 caslib.add_factor(fixed_rig_sensor_position_prior)
 caslib.add_factor(fixed_rig_log_scale_prior)
+caslib.add_factor(
+    row_fixed_rig_pinhole,
+    shared_constant_pools={
+        "sensor_calibration": SharedConstantPool(ConstPinholeSensorCalibration)
+    },
+)
 caslib.add_factor(
     fixed_camera_pinhole_point,
     shared_constant_pools={

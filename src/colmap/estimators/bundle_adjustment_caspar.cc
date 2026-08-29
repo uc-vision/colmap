@@ -1018,18 +1018,7 @@ class CasparBundleAdjuster : public BundleAdjuster {
       const std::vector<int> gpu_indices = CSVToVector<int>(co.gpu_index);
       THROW_CHECK_GT(gpu_indices.size(), 0);
       gpu_index = gpu_indices[0];
-      params.solver_iter_max = co.solver_iter_max;
-      params.pcg_iter_max = co.pcg_iter_max;
-      params.diag_init = co.diag_init;
-      params.diag_min = co.diag_min;
-      params.diag_scaling_up = co.diag_scaling_up;
-      params.diag_scaling_down = co.diag_scaling_down;
-      params.diag_exit_value = co.diag_exit_value;
-      params.score_exit_value = co.score_exit_value;
-      params.pcg_rel_error_exit = co.pcg_rel_error_exit;
-      params.pcg_rel_score_exit = co.pcg_rel_score_exit;
-      params.pcg_rel_decrease_min = co.pcg_rel_decrease_min;
-      params.solver_rel_decrease_min = co.solver_rel_decrease_min;
+      params = CreateCasparSolverParameters(co);
     }
 
     const size_t device_id =
@@ -1155,18 +1144,7 @@ class FixedRigPosePriorCasparBundleAdjuster : public BundleAdjuster {
           CSVToVector<int>(caspar_options.gpu_index);
       THROW_CHECK_GT(gpu_indices.size(), 0);
       gpu_index = gpu_indices.front();
-      params.solver_iter_max = caspar_options.solver_iter_max;
-      params.pcg_iter_max = caspar_options.pcg_iter_max;
-      params.diag_init = caspar_options.diag_init;
-      params.diag_min = caspar_options.diag_min;
-      params.diag_scaling_up = caspar_options.diag_scaling_up;
-      params.diag_scaling_down = caspar_options.diag_scaling_down;
-      params.diag_exit_value = caspar_options.diag_exit_value;
-      params.score_exit_value = caspar_options.score_exit_value;
-      params.pcg_rel_error_exit = caspar_options.pcg_rel_error_exit;
-      params.pcg_rel_score_exit = caspar_options.pcg_rel_score_exit;
-      params.pcg_rel_decrease_min = caspar_options.pcg_rel_decrease_min;
-      params.solver_rel_decrease_min = caspar_options.solver_rel_decrease_min;
+      params = CreateCasparSolverParameters(caspar_options);
     }
 
     const size_t device_id =
@@ -1443,6 +1421,24 @@ class FixedRigPosePriorCasparBundleAdjuster : public BundleAdjuster {
 };
 #endif
 }  // namespace
+
+caspar::SolverParams<double> CreateCasparSolverParameters(
+    const CasparSolverOptions& options) {
+  caspar::SolverParams<double> parameters;
+  parameters.solver_iter_max = options.solver_iter_max;
+  parameters.pcg_iter_max = options.pcg_iter_max;
+  parameters.diag_init = options.diag_init;
+  parameters.diag_min = options.diag_min;
+  parameters.diag_scaling_up = options.diag_scaling_up;
+  parameters.diag_scaling_down = options.diag_scaling_down;
+  parameters.diag_exit_value = options.diag_exit_value;
+  parameters.score_exit_value = options.score_exit_value;
+  parameters.pcg_rel_error_exit = options.pcg_rel_error_exit;
+  parameters.pcg_rel_score_exit = options.pcg_rel_score_exit;
+  parameters.pcg_rel_decrease_min = options.pcg_rel_decrease_min;
+  parameters.solver_rel_decrease_min = options.solver_rel_decrease_min;
+  return parameters;
+}
 
 std::shared_ptr<CasparBundleAdjustmentSummary>
 CasparBundleAdjustmentSummary::Create(

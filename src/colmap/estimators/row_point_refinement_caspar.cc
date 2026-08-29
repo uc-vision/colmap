@@ -1,0 +1,266 @@
+#include "colmap/estimators/row_point_refinement_caspar.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+#include <Eigen/Core>
+
+namespace colmap {
+namespace {
+
+using Matrix4dRowMajor = Eigen::Matrix<double, 4, 4, Eigen::RowMajor>;
+using Clock = std::chrono::steady_clock;
+
+double ElapsedSeconds(const Clock::time_point start) {
+  return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+struct PreparedSource {
+  const CasparRowPointRefinementSource* source;
+  std::vector<uint32_t> track_duplicate_offsets;
+};
+
+struct PackedPointChunk {
+  std::vector<float> initial_points;
+  std::vector<uint32_t> observation_point_indices;
+  std::vector<uint32_t> observation_image_indices;
+  std::vector<float> observation_xy;
+};
+
+std::vector<PreparedSource> PrepareSources(
+    const std::vector<CasparRowPointRefinementSource>& sources) {
+  std::vector<PreparedSource> prepared;
+  prepared.reserve(sources.size());
+  for (const CasparRowPointRefinementSource& source : sources) {
+    std::vector<uint32_t> duplicate_offsets(source.num_tracks + 1);
+    size_t duplicate_index = 0;
+    for (size_t track = 0; track < source.num_tracks; ++track) {
+      const int64_t observation_end = source.observation_offsets[track + 1];
+      while (duplicate_index < source.num_duplicate_observations &&
+             source.duplicate_observation_indices[duplicate_index] <
+                 observation_end) {
+        ++duplicate_index;
+      }
+      duplicate_offsets[track + 1] = static_cast<uint32_t>(duplicate_index);
+    }
+    prepared.push_back(PreparedSource{&source, std::move(duplicate_offsets)});
+  }
+  return prepared;
+}
+
+std::vector<uint32_t> SourceTrackOffsets(
+    const std::vector<CasparRowPointRefinementSource>& sources) {
+  std::vector<uint32_t> offsets(sources.size() + 1);
+  for (size_t source_index = 0; source_index < sources.size(); ++source_index) {
+    offsets[source_index + 1] =
+        offsets[source_index] +
+        static_cast<uint32_t>(sources[source_index].num_tracks);
+  }
+  return offsets;
+}
+
+std::vector<uint32_t> TrackSourceIndices(
+    const std::vector<uint32_t>& source_track_offsets) {
+  std::vector<uint32_t> source_indices(source_track_offsets.back());
+  for (uint32_t source_index = 0;
+       source_index + 1 < source_track_offsets.size();
+       ++source_index) {
+    std::fill(source_indices.begin() + source_track_offsets[source_index],
+              source_indices.begin() + source_track_offsets[source_index + 1],
+              source_index);
+  }
+  return source_indices;
+}
+
+PackedPointChunk PackPointChunk(
+    const std::vector<PreparedSource>& sources,
+    const std::vector<uint32_t>& source_track_offsets,
+    const std::vector<uint32_t>& track_source_indices,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const size_t point_start,
+    const size_t point_end,
+    const size_t observation_count,
+    const uint32_t* initialized_row_point_indices,
+    const float* initialized_points,
+    const size_t num_initialized_points,
+    float* row_colors) {
+  PackedPointChunk chunk;
+  chunk.initial_points.resize((point_end - point_start) * 3);
+  chunk.observation_point_indices.resize(observation_count);
+  chunk.observation_image_indices.resize(observation_count);
+  chunk.observation_xy.resize(observation_count * 2);
+
+  size_t initialized_index = 0;
+  if (num_initialized_points > 0) {
+    initialized_index =
+        std::lower_bound(initialized_row_point_indices,
+                         initialized_row_point_indices + num_initialized_points,
+                         point_start) -
+        initialized_row_point_indices;
+  }
+  size_t packed_observation = 0;
+  for (size_t row_point = point_start; row_point < point_end; ++row_point) {
+    Eigen::Vector3f point_sum = Eigen::Vector3f::Zero();
+    Eigen::Vector3f color_sum = Eigen::Vector3f::Zero();
+    const uint32_t track_start = point_track_offsets[row_point];
+    const uint32_t track_end = point_track_offsets[row_point + 1];
+    for (uint32_t point_track = track_start; point_track < track_end;
+         ++point_track) {
+      const uint32_t global_track = point_track_indices[point_track];
+      const uint32_t source_index = track_source_indices[global_track];
+      const PreparedSource& prepared = sources[source_index];
+      const CasparRowPointRefinementSource& source = *prepared.source;
+      const uint32_t track = global_track - source_track_offsets[source_index];
+      const int64_t observation_start = source.observation_offsets[track];
+      const int64_t observation_end = source.observation_offsets[track + 1];
+      const int64_t associated_observation =
+          observation_start + (observation_end - observation_start) / 2;
+      const int32_t associated_image =
+          source.observation_image_indices[associated_observation];
+      const Eigen::Map<const Matrix4dRowMajor> solved_world_from_source_world(
+          source.solved_world_from_source_world + associated_image * 16);
+      const int64_t source_point_index = source.source_point_indices[track];
+      const Eigen::Map<const Eigen::Vector3f> source_point(
+          source.points + source_point_index * 3);
+      Eigen::Vector4d homogeneous_point;
+      homogeneous_point << source_point.cast<double>(), 1.0;
+      point_sum += (solved_world_from_source_world * homogeneous_point)
+                       .head<3>()
+                       .cast<float>();
+      color_sum += Eigen::Map<const Eigen::Vector3f>(source.colors +
+                                                     source_point_index * 3);
+
+      uint32_t duplicate = prepared.track_duplicate_offsets[track];
+      const uint32_t duplicate_end =
+          prepared.track_duplicate_offsets[track + 1];
+      for (int64_t observation = observation_start;
+           observation < observation_end;
+           ++observation) {
+        if (duplicate < duplicate_end &&
+            source.duplicate_observation_indices[duplicate] == observation) {
+          ++duplicate;
+          continue;
+        }
+        chunk.observation_point_indices[packed_observation] =
+            static_cast<uint32_t>(row_point - point_start);
+        chunk.observation_image_indices[packed_observation] =
+            source.solved_image_rows
+                [source.observation_image_indices[observation]];
+        Eigen::Map<Eigen::Vector2f>(chunk.observation_xy.data() +
+                                    packed_observation * 2) =
+            Eigen::Map<const Eigen::Vector2f>(source.observation_xy +
+                                              observation * 2);
+        ++packed_observation;
+      }
+    }
+
+    const float source_count = static_cast<float>(track_end - track_start);
+    Eigen::Map<Eigen::Vector3f> initial_point(chunk.initial_points.data() +
+                                              (row_point - point_start) * 3);
+    initial_point = point_sum / source_count;
+    Eigen::Map<Eigen::Vector3f>(row_colors + row_point * 3) =
+        color_sum / source_count;
+    if (initialized_index < num_initialized_points &&
+        initialized_row_point_indices[initialized_index] == row_point) {
+      initial_point = Eigen::Map<const Eigen::Vector3f>(initialized_points +
+                                                        initialized_index * 3);
+      ++initialized_index;
+    }
+  }
+  return chunk;
+}
+
+}  // namespace
+
+CasparRowPointRefinementResult RefineRowPointsCaspar(
+    const std::vector<CasparRowPointRefinementSource>& sources,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const uint32_t* point_observation_counts,
+    const size_t num_points,
+    const float* image_from_world,
+    const size_t num_images,
+    const uint32_t* initialized_row_point_indices,
+    const float* initialized_points,
+    const size_t num_initialized_points,
+    const size_t maximum_chunk_points,
+    const size_t maximum_chunk_observations,
+    const CasparPointRefinementOptions& options) {
+  CasparRowPointRefinementResult output;
+  const Clock::time_point preparation_start = Clock::now();
+  const std::vector<PreparedSource> prepared = PrepareSources(sources);
+  const std::vector<uint32_t> source_track_offsets =
+      SourceTrackOffsets(sources);
+  const std::vector<uint32_t> track_source_indices =
+      TrackSourceIndices(source_track_offsets);
+  output.points.resize(num_points * 3);
+  output.colors.resize(num_points * 3);
+  output.preparation_seconds = ElapsedSeconds(preparation_start);
+
+  size_t point_start = 0;
+  while (point_start < num_points) {
+    const Clock::time_point packing_start = Clock::now();
+    size_t point_end = point_start;
+    size_t observation_count = 0;
+    while (point_end < num_points &&
+           point_end - point_start < maximum_chunk_points) {
+      const size_t next_observation_count = point_observation_counts[point_end];
+      if (point_end > point_start &&
+          observation_count + next_observation_count >
+              maximum_chunk_observations) {
+        break;
+      }
+      observation_count += next_observation_count;
+      ++point_end;
+    }
+
+    const PackedPointChunk chunk = PackPointChunk(prepared,
+                                                  source_track_offsets,
+                                                  track_source_indices,
+                                                  point_track_offsets,
+                                                  point_track_indices,
+                                                  point_start,
+                                                  point_end,
+                                                  observation_count,
+                                                  initialized_row_point_indices,
+                                                  initialized_points,
+                                                  num_initialized_points,
+                                                  output.colors.data());
+    output.packing_seconds += ElapsedSeconds(packing_start);
+    const Clock::time_point optimization_start = Clock::now();
+    CasparPointRefinementResult refined = RefineFixedCameraPinholePointsCaspar(
+        chunk.initial_points.data(),
+        point_end - point_start,
+        image_from_world,
+        num_images,
+        chunk.observation_point_indices.data(),
+        chunk.observation_image_indices.data(),
+        chunk.observation_xy.data(),
+        observation_count,
+        options);
+    output.optimization_seconds += ElapsedSeconds(optimization_start);
+    if (!refined.summary->IsSolutionUsable()) {
+      throw std::runtime_error(refined.summary->BriefReport());
+    }
+    std::copy(refined.points.begin(),
+              refined.points.end(),
+              output.points.begin() + point_start * 3);
+    ++output.chunk_count;
+    output.iteration_count += refined.summary->iteration_count;
+    output.maximum_iterations_run = std::max(output.maximum_iterations_run,
+                                             refined.summary->iteration_count);
+    output.runtime_seconds += refined.summary->runtime;
+    output.initial_score += refined.summary->initial_score;
+    output.final_score += refined.summary->final_score;
+    point_start = point_end;
+  }
+  return output;
+}
+
+}  // namespace colmap

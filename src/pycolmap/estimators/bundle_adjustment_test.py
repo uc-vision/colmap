@@ -301,7 +301,6 @@ def test_caspar_refines_points_against_exact_fixed_cameras():
     )
 
     options = pycolmap.CasparPointRefinementOptions()
-    options.loss_scale = 100.0
     options.solver_iter_max = 100
     result = pycolmap.caspar_refine_pinhole_points(
         initial,
@@ -318,39 +317,117 @@ def test_caspar_refines_points_against_exact_fixed_cameras():
 
 
 @caspar_only
-def test_caspar_point_refinement_soft_l1_rejects_outlier():
-    projections = pinhole_projections([-2.0, -1.0, 0.0, 1.0, 2.0])
-    expected = np.array([[0.2, -0.1, 4.0]], dtype=np.float32)
-    initial = np.array([[0.5, 0.1, 3.5]], dtype=np.float32)
-    point_indices = np.zeros(5, dtype=np.uint32)
-    image_indices = np.arange(5, dtype=np.uint32)
-    pixels = project_observations(
-        projections, expected, point_indices, image_indices
+def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
+    rng = np.random.default_rng(7)
+    expected_scale = 1.008
+    baseline = 0.4
+    rig_centers = np.array(
+        [[100.0, 250.0, 3.0], [101.1, 250.03, 3.0], [102.2, 249.98, 3.0]],
+        dtype=np.float64,
     )
-    pixels[-1] += np.array([300.0, -200.0], dtype=np.float32)
+    expected_points = np.column_stack(
+        [
+            rng.uniform(99.7, 102.5, 24),
+            rng.uniform(249.4, 250.6, 24),
+            rng.uniform(7.0, 10.0, 24),
+        ]
+    ).astype(np.float32)
+    sensors_from_rig = [
+        pycolmap.Rigid3d(),
+        pycolmap.Rigid3d(
+            np.column_stack([np.eye(3), np.array([-baseline, 0.0, 0.0])])
+        ),
+    ]
+    sensor_calibrations = np.array(
+        [[800.0, 805.0, 640.0, 480.0], [800.0, 805.0, 640.0, 480.0]],
+        dtype=np.float32,
+    )
+    cameras = [
+        pycolmap.Camera(
+            model="PINHOLE",
+            width=1280,
+            height=960,
+            params=calibration,
+        )
+        for calibration in sensor_calibrations
+    ]
+    rigs_from_world = [
+        pycolmap.Rigid3d(np.column_stack([np.eye(3), -center]))
+        for center in rig_centers
+    ]
+    image_frame_indices = np.repeat(np.arange(3, dtype=np.uint32), 2)
+    image_sensor_indices = np.tile(np.arange(2, dtype=np.uint32), 3)
+    observation_image_indices = np.repeat(
+        np.arange(6, dtype=np.uint32), len(expected_points)
+    )
+    observation_point_indices = np.tile(
+        np.arange(len(expected_points), dtype=np.uint32), 6
+    )
+    observation_xy = np.empty((len(observation_point_indices), 2), np.float32)
+    for image_index, (frame_index, sensor_index) in enumerate(
+        zip(image_frame_indices, image_sensor_indices, strict=True)
+    ):
+        start = image_index * len(expected_points)
+        end = start + len(expected_points)
+        sensor_center = rig_centers[frame_index].copy()
+        sensor_center[0] += sensor_index * baseline * expected_scale
+        point_camera = expected_points - sensor_center
+        observation_xy[start:end] = cameras[sensor_index].img_from_cam(
+            point_camera
+        )
 
-    options = pycolmap.CasparPointRefinementOptions()
-    options.loss_scale = 1.0
+    initial_points = expected_points + rng.normal(
+        0.0, 0.02, expected_points.shape
+    ).astype(np.float32)
+    prior_frame_indices = np.arange(3, dtype=np.uint32)
+    prior_sqrt_information = np.repeat(
+        (1000.0 * np.eye(3, dtype=np.float32))[None], 3, axis=0
+    )
+    options = pycolmap.CasparSolverOptions()
+    options.gpu_index = "0"
     options.solver_iter_max = 100
-    robust = pycolmap.caspar_refine_pinhole_points(
-        initial,
-        projections,
-        point_indices,
-        image_indices,
-        pixels,
+    result = pycolmap.fixed_rig_pose_prior_bundle_adjustment_arrays(
+        rigs_from_world,
+        np.ascontiguousarray(initial_points),
+        image_frame_indices,
+        image_sensor_indices,
+        sensors_from_rig,
+        sensor_calibrations,
+        observation_image_indices,
+        observation_point_indices,
+        observation_xy,
+        prior_frame_indices,
+        rig_centers.astype(np.float32),
+        prior_sqrt_information,
         options,
-    ).points[0]
-    options.loss_scale = 1e6
-    quadratic = pycolmap.caspar_refine_pinhole_points(
-        initial,
-        projections,
-        point_indices,
-        image_indices,
-        pixels,
-        options,
-    ).points[0]
+    )
 
-    robust_error = np.linalg.norm(robust - expected[0])
-    quadratic_error = np.linalg.norm(quadratic - expected[0])
-    assert robust_error < 0.03
-    assert robust_error < 0.2 * quadratic_error
+    def reprojection_rmse(sensor_scale):
+        squared_error = 0.0
+        for image_index, (frame_index, sensor_index) in enumerate(
+            zip(image_frame_indices, image_sensor_indices, strict=True)
+        ):
+            sensor = sensors_from_rig[sensor_index]
+            scaled_sensor = pycolmap.Rigid3d(
+                sensor.rotation,
+                np.asarray(sensor.translation) * sensor_scale,
+            )
+            sensor_from_world = (
+                scaled_sensor * result.rigs_from_world[frame_index]
+            )
+            predicted = cameras[sensor_index].img_from_cam(
+                sensor_from_world * result.points
+            )
+            start = image_index * len(expected_points)
+            end = start + len(expected_points)
+            squared_error += np.square(
+                predicted - observation_xy[start:end]
+            ).sum()
+        return np.sqrt(squared_error / len(observation_point_indices))
+
+    assert result.summary.is_solution_usable()
+    assert result.sensor_from_rig_scale == pytest.approx(
+        expected_scale, abs=5e-4
+    )
+    assert reprojection_rmse(result.sensor_from_rig_scale) < 1e-2
+    assert reprojection_rmse(1.0) > 0.1

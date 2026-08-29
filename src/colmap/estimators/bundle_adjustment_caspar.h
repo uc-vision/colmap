@@ -104,7 +104,7 @@ namespace colmap {
 // Solver parameters mirroring caspar::SolverParams, stored as double to
 // round-trip through OptionManager regardless of the float/double build.
 // Also includes GPU index selection option
-struct CasparBundleAdjustmentOptions {
+struct CasparSolverOptions {
   int solver_iter_max = 200;
   int pcg_iter_max = 20;
   double diag_init = 1.0;
@@ -118,10 +118,18 @@ struct CasparBundleAdjustmentOptions {
   double pcg_rel_score_exit = -1.0;
   double pcg_rel_decrease_min = -1.0;
   double solver_rel_decrease_min = 1.0;
-  double fixed_rig_reprojection_loss_scale = 5.0;
   std::string gpu_index = "-1";
   bool collect_iteration_data = false;
 };
+
+struct CasparBundleAdjustmentOptions : CasparSolverOptions {
+  double fixed_rig_reprojection_loss_scale = 5.0;
+};
+
+#ifdef CASPAR_ENABLED
+caspar::SolverParams<double> CreateCasparSolverParameters(
+    const CasparSolverOptions& options);
+#endif
 
 std::unique_ptr<BundleAdjuster> CreateDefaultCasparBundleAdjuster(
     const BundleAdjustmentOptions& options,

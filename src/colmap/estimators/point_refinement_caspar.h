@@ -9,11 +9,8 @@
 
 namespace colmap {
 
-struct CasparPointRefinementOptions {
-  int solver_iter_max = 50;
-  int pcg_iter_max = 20;
-  int gpu_index = -1;
-  double loss_scale = 5.0;
+struct CasparPointRefinementOptions : CasparSolverOptions {
+  CasparPointRefinementOptions() { solver_iter_max = 50; }
 };
 
 struct CasparPointRefinementResult {

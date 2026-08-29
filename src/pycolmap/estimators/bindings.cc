@@ -19,6 +19,7 @@ void BindTriangulationEstimator(py::module& m);
 void BindTwoViewGeometryEstimator(py::module& m);
 void BindMotionAveraging(py::module& m);
 void BindRigCalibration(py::module& m);
+void BindRowPointRefinement(py::module& m);
 
 void BindEstimators(py::module& m) {
   BindCeres(m);
@@ -38,4 +39,5 @@ void BindEstimators(py::module& m) {
   BindFixedRigTwoViewGeometryEstimator(m);
   BindMotionAveraging(m);
   BindRigCalibration(m);
+  BindRowPointRefinement(m);
 }

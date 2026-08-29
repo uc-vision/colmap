@@ -13,7 +13,6 @@ void FixedCameraPinholePointScore(float* point,
                                   SharedIndex* image_from_world_indices,
                                   float* pixel,
                                   unsigned int pixel_num_alloc,
-                                  const float* const reprojection_loss_scale,
                                   float* const out_rTr,
                                   size_t problem_size);
 

@@ -26,17 +26,18 @@ void GraphSolver::SetRigSchurTopology(
     throw std::invalid_argument(
         "Rig Schur topology does not match generated factor counts");
   }
-  rig_schur_solver_ = std::make_unique<RigSchurSolver>(device_id_,
-                                                       PinholePose_num_,
-                                                       Point_num_,
-                                                       pose_indices,
-                                                       point_indices,
-                                                       fixed_pose_point_indices,
-                                                       fixed_point_pose_indices,
-                                                       std::vector<unsigned int>{},
-                                                       false,
-                                                       -1);
-  rig_schur_scale_aware_ = false;
+  rig_schur_solver_ =
+      std::make_unique<RigSchurSolver>(device_id_,
+                                       PinholePose_num_,
+                                       Point_num_,
+                                       pose_indices,
+                                       point_indices,
+                                       fixed_pose_point_indices,
+                                       fixed_point_pose_indices,
+                                       std::vector<unsigned int>{},
+                                       false,
+                                       -1);
+  rig_schur_mode_ = RigSchurMode::STANDARD;
 }
 
 void GraphSolver::SetFixedRigSchurTopology(
@@ -62,7 +63,30 @@ void GraphSolver::SetFixedRigSchurTopology(
       sensor_position_prior_pose_indices,
       true,
       static_cast<int>(rotation_anchor_pose_index));
-  rig_schur_scale_aware_ = true;
+  rig_schur_mode_ = RigSchurMode::FIXED_RIG;
+}
+
+void GraphSolver::SetRowFixedRigSchurTopology(
+    const std::vector<unsigned int>& pose_indices,
+    const std::vector<unsigned int>& point_indices,
+    const unsigned int rotation_anchor_pose_index) {
+  if (pose_indices.size() != row_fixed_rig_pinhole_num_ ||
+      point_indices.size() != row_fixed_rig_pinhole_num_) {
+    throw std::invalid_argument(
+        "Row fixed-rig Schur topology does not match generated factor counts");
+  }
+  rig_schur_solver_ = std::make_unique<RigSchurSolver>(
+      device_id_,
+      PinholePose_num_,
+      Point_num_,
+      pose_indices,
+      point_indices,
+      std::vector<unsigned int>{},
+      std::vector<unsigned int>{},
+      std::vector<unsigned int>{},
+      true,
+      static_cast<int>(rotation_anchor_pose_index));
+  rig_schur_mode_ = RigSchurMode::ROW_FIXED_RIG;
 }
 
 SolveResult GraphSolver::solve_rig_schur(bool print_progress,
@@ -85,6 +109,9 @@ SolveResult GraphSolver::solve_rig_schur(bool print_progress,
   float score_best = DoResJacFirst();
   result.initial_score = score_best;
   bool needs_linearization = false;
+  const bool scale_aware = rig_schur_mode_ != RigSchurMode::STANDARD;
+  const bool row_factor = rig_schur_mode_ == RigSchurMode::ROW_FIXED_RIG;
+  const bool fixed_rig_factor = rig_schur_mode_ == RigSchurMode::FIXED_RIG;
   if (print_progress) {
     printf("                                 score_init: % .6e\n", score_best);
   }
@@ -99,15 +126,19 @@ SolveResult GraphSolver::solve_rig_schur(bool print_progress,
     Zero(nodes__PinholeCalib__step_,
          nodes__SimpleRadialPrincipalPoint__step_end__);
     const float* pose_jac =
-        rig_schur_scale_aware_
+        row_factor ? facs__row_fixed_rig_pinhole__args__pose__jac_
+        : fixed_rig_factor
             ? facs__fixed_rig_pinhole__args__pose__jac_
             : facs__pinhole_split_fixed_focal_fixed_principal_point__args__pose__jac_;
     const float* scale_jac =
-        rig_schur_scale_aware_
+        row_factor
+            ? facs__row_fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_
+        : fixed_rig_factor
             ? facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_
             : nullptr;
     const float* point_jac =
-        rig_schur_scale_aware_
+        row_factor ? facs__row_fixed_rig_pinhole__args__point__jac_
+        : fixed_rig_factor
             ? facs__fixed_rig_pinhole__args__point__jac_
             : facs__pinhole_split_fixed_focal_fixed_principal_point__args__point__jac_;
     const bool solved = rig_schur_solver_->SolveStep(
@@ -117,23 +148,22 @@ SolveResult GraphSolver::solve_rig_schur(bool print_progress,
         pose_jac,
         scale_jac,
         point_jac,
-        rig_schur_scale_aware_
+        fixed_rig_factor
             ? facs__fixed_rig_sensor_position_prior__args__pose__jac_
             : nullptr,
-        rig_schur_scale_aware_
+        fixed_rig_factor
             ? facs__fixed_rig_sensor_position_prior__args__sensor_from_rig_log_scale__jac_
             : nullptr,
         nodes__PinholePose__r_0_,
         nodes__PinholePose__precond_diag_,
         nodes__PinholePose__precond_tril_,
-        rig_schur_scale_aware_ ? nodes__SensorFromRigLogScale__r_0_ : nullptr,
-        rig_schur_scale_aware_ ? nodes__SensorFromRigLogScale__precond_diag_
-                               : nullptr,
+        scale_aware ? nodes__SensorFromRigLogScale__r_0_ : nullptr,
+        scale_aware ? nodes__SensorFromRigLogScale__precond_diag_ : nullptr,
         nodes__Point__r_0_,
         nodes__Point__precond_diag_,
         nodes__Point__precond_tril_,
         nodes__PinholePose__step_,
-        rig_schur_scale_aware_ ? nodes__SensorFromRigLogScale__step_ : nullptr,
+        scale_aware ? nodes__SensorFromRigLogScale__step_ : nullptr,
         nodes__Point__step_);
 
     float score_current = score_best;

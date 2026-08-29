@@ -2,9 +2,11 @@
 
 #include "colmap/estimators/bundle_adjustment_caspar.h"
 #include "colmap/estimators/bundle_adjustment_ceres.h"
+#include "colmap/geometry/normalization.h"
+#include "colmap/geometry/sim3.h"
 #ifdef CASPAR_ENABLED
+#include "colmap/estimators/fixed_rig_pose_prior_bundle_adjustment_arrays_caspar.h"
 #include "colmap/estimators/point_refinement_caspar.h"
-#include "colmap/estimators/rigid_bay_bundle_adjustment_caspar.h"
 #endif
 
 #include "pycolmap/helpers.h"
@@ -12,6 +14,7 @@
 #include "pycolmap/utils.h"
 
 #include <algorithm>
+#include <utility>
 
 #include <pybind11/eigen.h>
 #include <pybind11/numpy.h>
@@ -28,16 +31,54 @@ namespace {
 using FloatArray = py::array_t<float, py::array::c_style>;
 using Uint32Array = py::array_t<uint32_t, py::array::c_style>;
 
+constexpr double kRowNormalizationExtent = 10.0;
+constexpr double kRowNormalizationMinPercentile = 0.1;
+constexpr double kRowNormalizationMaxPercentile = 0.9;
+
+Sim3d ComputeRowBundleNormalization(
+    const std::vector<Rigid3d>& rigs_from_world,
+    const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const size_t num_images,
+    const std::vector<Rigid3d>& sensors_from_rig) {
+  std::vector<double> centers_x;
+  std::vector<double> centers_y;
+  std::vector<double> centers_z;
+  centers_x.reserve(num_images);
+  centers_y.reserve(num_images);
+  centers_z.reserve(num_images);
+  for (size_t image = 0; image < num_images; ++image) {
+    const Rigid3d sensor_from_world =
+        sensors_from_rig[image_sensor_indices[image]] *
+        rigs_from_world[image_frame_indices[image]];
+    const Eigen::Vector3d center = sensor_from_world.TgtOriginInSrc();
+    centers_x.push_back(center.x());
+    centers_y.push_back(center.y());
+    centers_z.push_back(center.z());
+  }
+  const auto [bounding_box, centroid] =
+      ComputeBoundingBoxAndCentroid(kRowNormalizationMinPercentile,
+                                    kRowNormalizationMaxPercentile,
+                                    std::move(centers_x),
+                                    std::move(centers_y),
+                                    std::move(centers_z));
+  const double extent = bounding_box.diagonal().norm();
+  THROW_CHECK_GT(extent, 0.0)
+      << "Row bundle adjustment requires non-degenerate camera positions";
+  const double scale = kRowNormalizationExtent / extent;
+  return Sim3d(scale, Eigen::Quaterniond::Identity(), -scale * centroid);
+}
+
 struct PyCasparPointRefinementResult {
   py::array_t<float> points;
   std::shared_ptr<CasparBundleAdjustmentSummary> summary;
 };
 
-struct PyRigidBayBundleAdjustmentResult {
-  std::vector<Rigid3d> bays_from_world;
+struct PyFixedRigPosePriorBundleAdjustmentArraysResult {
+  std::vector<Rigid3d> rigs_from_world;
   py::array_t<float> points;
-  double scale;
-  std::shared_ptr<RigidBayBundleAdjustmentSummary> summary;
+  double sensor_from_rig_scale;
+  std::shared_ptr<CasparBundleAdjustmentSummary> summary;
 };
 
 py::array_t<float> PointArray(std::vector<float>&& values,
@@ -105,93 +146,104 @@ PyCasparPointRefinementResult RefineFixedCameraPinholePoints(
           std::move(result.summary)};
 }
 
-PyRigidBayBundleAdjustmentResult RigidBayBundleAdjustment(
-    const std::vector<Rigid3d>& bays_from_world,
+PyFixedRigPosePriorBundleAdjustmentArraysResult
+FixedRigPosePriorBundleAdjustmentArrays(
+    const std::vector<Rigid3d>& rigs_from_world,
     const FloatArray& points,
-    const Uint32Array& sensor_bay_indices,
-    const std::vector<Rigid3d>& cameras_from_bay,
+    const Uint32Array& image_frame_indices,
+    const Uint32Array& image_sensor_indices,
+    const std::vector<Rigid3d>& sensors_from_rig,
     const FloatArray& sensor_calibrations,
-    const Uint32Array& observation_sensor_indices,
+    const Uint32Array& observation_image_indices,
     const Uint32Array& observation_point_indices,
     const FloatArray& observation_xy,
-    const Uint32Array& prior_sensor_indices,
+    const Uint32Array& prior_frame_indices,
     const FloatArray& prior_positions,
     const FloatArray& prior_sqrt_information,
-    const double initial_scale,
-    const double scale_prior_sqrt_information,
-    const CasparBundleAdjustmentOptions& options) {
-  THROW_CHECK_GT(bays_from_world.size(), 0);
+    const CasparSolverOptions& options) {
+  THROW_CHECK_GE(rigs_from_world.size(), 2)
+      << "Row bundle adjustment requires at least two rig frames";
   THROW_CHECK_EQ(points.ndim(), 2);
   THROW_CHECK_EQ(points.shape(1), 3);
   THROW_CHECK_GT(points.shape(0), 0);
-  THROW_CHECK_EQ(sensor_bay_indices.ndim(), 1);
-  THROW_CHECK_EQ(sensor_bay_indices.shape(0), cameras_from_bay.size());
-  THROW_CHECK_GT(cameras_from_bay.size(), 0);
+  THROW_CHECK_EQ(image_frame_indices.ndim(), 1);
+  THROW_CHECK_EQ(image_sensor_indices.ndim(), 1);
+  const size_t num_images = image_frame_indices.shape(0);
+  THROW_CHECK_GT(num_images, 0);
+  THROW_CHECK_EQ(image_sensor_indices.shape(0), num_images);
+  THROW_CHECK_GT(sensors_from_rig.size(), 0);
   THROW_CHECK_EQ(sensor_calibrations.ndim(), 2);
-  THROW_CHECK_EQ(sensor_calibrations.shape(0), cameras_from_bay.size());
+  THROW_CHECK_EQ(sensor_calibrations.shape(0), sensors_from_rig.size());
   THROW_CHECK_EQ(sensor_calibrations.shape(1), 4);
-  THROW_CHECK_EQ(observation_sensor_indices.ndim(), 1);
+  THROW_CHECK_EQ(observation_image_indices.ndim(), 1);
   THROW_CHECK_EQ(observation_point_indices.ndim(), 1);
   THROW_CHECK_EQ(observation_xy.ndim(), 2);
   THROW_CHECK_EQ(observation_xy.shape(1), 2);
-  const size_t num_observations = observation_sensor_indices.shape(0);
+  const size_t num_observations = observation_image_indices.shape(0);
   THROW_CHECK_GT(num_observations, 0);
   THROW_CHECK_EQ(observation_point_indices.shape(0), num_observations);
   THROW_CHECK_EQ(observation_xy.shape(0), num_observations);
-  THROW_CHECK_EQ(prior_sensor_indices.ndim(), 1);
+  THROW_CHECK_EQ(prior_frame_indices.ndim(), 1);
   THROW_CHECK_EQ(prior_positions.ndim(), 2);
   THROW_CHECK_EQ(prior_positions.shape(1), 3);
   THROW_CHECK_EQ(prior_sqrt_information.ndim(), 3);
   THROW_CHECK_EQ(prior_sqrt_information.shape(1), 3);
   THROW_CHECK_EQ(prior_sqrt_information.shape(2), 3);
-  const size_t num_priors = prior_sensor_indices.shape(0);
-  THROW_CHECK_GT(num_priors, 0);
+  const size_t num_priors = prior_frame_indices.shape(0);
+  THROW_CHECK_GE(num_priors, 3);
   THROW_CHECK_EQ(prior_positions.shape(0), num_priors);
   THROW_CHECK_EQ(prior_sqrt_information.shape(0), num_priors);
-  THROW_CHECK_GT(initial_scale, 0.0);
-  THROW_CHECK_GT(scale_prior_sqrt_information, 0.0);
 
   const size_t num_points = points.shape(0);
-  RigidBayBundleAdjustmentResult result;
+  FixedRigPosePriorBundleAdjustmentArraysResult result;
   {
     py::gil_scoped_release release;
-    THROW_CHECK_LT(*std::max_element(sensor_bay_indices.data(),
-                                     sensor_bay_indices.data() +
-                                         cameras_from_bay.size()),
-                   bays_from_world.size());
-    THROW_CHECK_LT(*std::max_element(observation_sensor_indices.data(),
-                                     observation_sensor_indices.data() +
-                                         num_observations),
-                   cameras_from_bay.size());
-    THROW_CHECK_LT(*std::max_element(observation_point_indices.data(),
-                                     observation_point_indices.data() +
-                                         num_observations),
-                   num_points);
-    THROW_CHECK_LT(*std::max_element(prior_sensor_indices.data(),
-                                     prior_sensor_indices.data() + num_priors),
-                   cameras_from_bay.size());
-    result = RigidBayBundleAdjustmentCaspar(
-        bays_from_world,
+    THROW_CHECK_LT(*std::max_element(image_frame_indices.data(),
+                                     image_frame_indices.data() + num_images),
+                   rigs_from_world.size());
+    THROW_CHECK_LT(*std::max_element(image_sensor_indices.data(),
+                                     image_sensor_indices.data() + num_images),
+                   sensors_from_rig.size());
+    THROW_CHECK_LT(
+        *std::max_element(observation_image_indices.data(),
+                          observation_image_indices.data() + num_observations),
+        num_images);
+    THROW_CHECK_LT(
+        *std::max_element(observation_point_indices.data(),
+                          observation_point_indices.data() + num_observations),
+        num_points);
+    THROW_CHECK_LT(*std::max_element(prior_frame_indices.data(),
+                                     prior_frame_indices.data() + num_priors),
+                   rigs_from_world.size());
+    const Sim3d normalized_from_metric =
+        ComputeRowBundleNormalization(rigs_from_world,
+                                      image_frame_indices.data(),
+                                      image_sensor_indices.data(),
+                                      num_images,
+                                      sensors_from_rig);
+    result = FixedRigPosePriorBundleAdjustmentArraysCaspar(
+        rigs_from_world,
         points.data(),
         num_points,
-        sensor_bay_indices.data(),
-        cameras_from_bay,
+        image_frame_indices.data(),
+        image_sensor_indices.data(),
+        num_images,
+        sensors_from_rig,
+        normalized_from_metric,
         sensor_calibrations.data(),
-        observation_sensor_indices.data(),
+        observation_image_indices.data(),
         observation_point_indices.data(),
         observation_xy.data(),
         num_observations,
-        prior_sensor_indices.data(),
+        prior_frame_indices.data(),
         prior_positions.data(),
         prior_sqrt_information.data(),
         num_priors,
-        initial_scale,
-        scale_prior_sqrt_information,
         options);
   }
-  return {std::move(result.bays_from_world),
+  return {std::move(result.rigs_from_world),
           PointArray(std::move(result.points), num_points),
-          result.scale,
+          result.sensor_from_rig_scale,
           std::move(result.summary)};
 }
 #endif
@@ -284,6 +336,51 @@ void BindBundleAdjuster(py::module& m) {
                          "sensor-from-rig translations.");
   MakeDataclass(PyFixedRigPosePriorBundleAdjustmentSummary);
 
+  using CasparSolverOpts = CasparSolverOptions;
+  auto PyCasparSolverOptions =
+      py::classh<CasparSolverOpts>(m, "CasparSolverOptions")
+          .def(py::init<>())
+          .def_readwrite("solver_iter_max",
+                         &CasparSolverOpts::solver_iter_max,
+                         "Maximum number of Caspar solver iterations.")
+          .def_readwrite("pcg_iter_max",
+                         &CasparSolverOpts::pcg_iter_max,
+                         "Maximum number of PCG iterations per solver step.")
+          .def_readwrite("diag_init",
+                         &CasparSolverOpts::diag_init,
+                         "Initial diagonal damping value.")
+          .def_readwrite("diag_min",
+                         &CasparSolverOpts::diag_min,
+                         "Minimum diagonal damping value.")
+          .def_readwrite("diag_scaling_up",
+                         &CasparSolverOpts::diag_scaling_up,
+                         "Diagonal damping increase factor.")
+          .def_readwrite("diag_scaling_down",
+                         &CasparSolverOpts::diag_scaling_down,
+                         "Diagonal damping decrease factor.")
+          .def_readwrite("diag_exit_value",
+                         &CasparSolverOpts::diag_exit_value,
+                         "Diagonal damping value that triggers termination.")
+          .def_readwrite("score_exit_value",
+                         &CasparSolverOpts::score_exit_value,
+                         "Score threshold that triggers termination.")
+          .def_readwrite("pcg_rel_error_exit",
+                         &CasparSolverOpts::pcg_rel_error_exit,
+                         "Relative PCG error threshold that triggers exit.")
+          .def_readwrite("pcg_rel_score_exit",
+                         &CasparSolverOpts::pcg_rel_score_exit,
+                         "Relative PCG score threshold that triggers exit.")
+          .def_readwrite("pcg_rel_decrease_min",
+                         &CasparSolverOpts::pcg_rel_decrease_min,
+                         "Minimum relative PCG decrease.")
+          .def_readwrite("solver_rel_decrease_min",
+                         &CasparSolverOpts::solver_rel_decrease_min,
+                         "Minimum relative solver decrease.")
+          .def_readwrite("gpu_index",
+                         &CasparSolverOpts::gpu_index,
+                         "Which GPU to use for solving the problem.");
+  MakeDataclass(PyCasparSolverOptions);
+
 #ifdef CASPAR_ENABLED
   using CasparBASummary = CasparBundleAdjustmentSummary;
   auto PyCasparBundleAdjustmentSummary =
@@ -296,40 +393,29 @@ void BindBundleAdjuster(py::module& m) {
           .def_readwrite("allocation_size", &CasparBASummary::allocation_size);
   MakeDataclass(PyCasparBundleAdjustmentSummary);
 
-  using RigidBayBASummary = RigidBayBundleAdjustmentSummary;
-  auto PyRigidBayBundleAdjustmentSummary =
-      py::classh<RigidBayBASummary, CasparBASummary>(
-          m, "RigidBayBundleAdjustmentSummary")
-          .def(py::init<>())
-          .def_readwrite("final_reprojection_score",
-                         &RigidBayBASummary::final_reprojection_score)
-          .def_readwrite("final_sensor_position_prior_score",
-                         &RigidBayBASummary::final_sensor_position_prior_score)
-          .def_readwrite("final_scale_prior_score",
-                         &RigidBayBASummary::final_scale_prior_score);
-  MakeDataclass(PyRigidBayBundleAdjustmentSummary);
-
   using CasparPointOpts = CasparPointRefinementOptions;
   auto PyCasparPointRefinementOptions =
-      py::classh<CasparPointOpts>(m, "CasparPointRefinementOptions")
-          .def(py::init<>())
-          .def_readwrite("solver_iter_max", &CasparPointOpts::solver_iter_max)
-          .def_readwrite("pcg_iter_max", &CasparPointOpts::pcg_iter_max)
-          .def_readwrite("gpu_index", &CasparPointOpts::gpu_index)
-          .def_readwrite("loss_scale", &CasparPointOpts::loss_scale);
+      py::classh<CasparPointOpts, CasparSolverOpts>(
+          m, "CasparPointRefinementOptions")
+          .def(py::init<>());
   MakeDataclass(PyCasparPointRefinementOptions);
 
   py::classh<PyCasparPointRefinementResult>(m, "CasparPointRefinementResult")
       .def_readonly("points", &PyCasparPointRefinementResult::points)
       .def_readonly("summary", &PyCasparPointRefinementResult::summary);
 
-  py::classh<PyRigidBayBundleAdjustmentResult>(
-      m, "RigidBayBundleAdjustmentResult")
-      .def_readonly("bays_from_world",
-                    &PyRigidBayBundleAdjustmentResult::bays_from_world)
-      .def_readonly("points", &PyRigidBayBundleAdjustmentResult::points)
-      .def_readonly("scale", &PyRigidBayBundleAdjustmentResult::scale)
-      .def_readonly("summary", &PyRigidBayBundleAdjustmentResult::summary);
+  py::classh<PyFixedRigPosePriorBundleAdjustmentArraysResult>(
+      m, "FixedRigPosePriorBundleAdjustmentArraysResult")
+      .def_readonly(
+          "rigs_from_world",
+          &PyFixedRigPosePriorBundleAdjustmentArraysResult::rigs_from_world)
+      .def_readonly("points",
+                    &PyFixedRigPosePriorBundleAdjustmentArraysResult::points)
+      .def_readonly("sensor_from_rig_scale",
+                    &PyFixedRigPosePriorBundleAdjustmentArraysResult::
+                        sensor_from_rig_scale)
+      .def_readonly("summary",
+                    &PyFixedRigPosePriorBundleAdjustmentArraysResult::summary);
 #endif
 
   auto PyBundleAdjustmentGauge =
@@ -488,51 +574,13 @@ void BindBundleAdjuster(py::module& m) {
   // Caspar-specific bundle adjustment options
   using CasparBAOpts = CasparBundleAdjustmentOptions;
   auto PyCasparBundleAdjustmentOptions =
-      py::classh<CasparBAOpts>(m, "CasparBundleAdjustmentOptions")
+      py::classh<CasparBAOpts, CasparSolverOpts>(
+          m, "CasparBundleAdjustmentOptions")
           .def(py::init<>())
-          .def_readwrite("solver_iter_max",
-                         &CasparBAOpts::solver_iter_max,
-                         "Maximum number of Caspar solver iterations.")
-          .def_readwrite("pcg_iter_max",
-                         &CasparBAOpts::pcg_iter_max,
-                         "Maximum number of PCG iterations per solver step.")
-          .def_readwrite("diag_init",
-                         &CasparBAOpts::diag_init,
-                         "Initial diagonal damping value.")
-          .def_readwrite("diag_min",
-                         &CasparBAOpts::diag_min,
-                         "Minimum diagonal damping value.")
-          .def_readwrite("diag_scaling_up",
-                         &CasparBAOpts::diag_scaling_up,
-                         "Diagonal damping increase factor.")
-          .def_readwrite("diag_scaling_down",
-                         &CasparBAOpts::diag_scaling_down,
-                         "Diagonal damping decrease factor.")
-          .def_readwrite("diag_exit_value",
-                         &CasparBAOpts::diag_exit_value,
-                         "Diagonal damping value that triggers termination.")
-          .def_readwrite("score_exit_value",
-                         &CasparBAOpts::score_exit_value,
-                         "Score threshold that triggers termination.")
-          .def_readwrite("pcg_rel_error_exit",
-                         &CasparBAOpts::pcg_rel_error_exit,
-                         "Relative PCG error threshold that triggers exit.")
-          .def_readwrite("pcg_rel_score_exit",
-                         &CasparBAOpts::pcg_rel_score_exit,
-                         "Relative PCG score threshold that triggers exit.")
-          .def_readwrite("pcg_rel_decrease_min",
-                         &CasparBAOpts::pcg_rel_decrease_min,
-                         "Minimum relative PCG decrease.")
-          .def_readwrite("solver_rel_decrease_min",
-                         &CasparBAOpts::solver_rel_decrease_min,
-                         "Minimum relative solver decrease.")
           .def_readwrite("fixed_rig_reprojection_loss_scale",
                          &CasparBAOpts::fixed_rig_reprojection_loss_scale,
                          "Pseudo-Huber loss scale in pixels for fixed-rig "
-                         "reprojection residuals.")
-          .def_readwrite("gpu_index",
-                         &CasparBAOpts::gpu_index,
-                         "Which GPU to use for solving the problem.");
+                         "reprojection residuals.");
   MakeDataclass(PyCasparBundleAdjustmentOptions);
 
   // Solver-agnostic bundle adjustment options
@@ -715,24 +763,24 @@ void BindBundleAdjuster(py::module& m) {
         "options"_a = CasparPointRefinementOptions(),
         "Refine 3D points against fixed distortion-free 3x4 projection "
         "matrices with CASPAR.");
-  m.def("rigid_bay_bundle_adjustment",
-        RigidBayBundleAdjustment,
-        "bays_from_world"_a,
+  m.def("fixed_rig_pose_prior_bundle_adjustment_arrays",
+        FixedRigPosePriorBundleAdjustmentArrays,
+        "rigs_from_world"_a,
         "points"_a.noconvert(),
-        "sensor_bay_indices"_a.noconvert(),
-        "cameras_from_bay"_a,
+        "image_frame_indices"_a.noconvert(),
+        "image_sensor_indices"_a.noconvert(),
+        "sensors_from_rig"_a,
         "sensor_calibrations"_a.noconvert(),
-        "observation_sensor_indices"_a.noconvert(),
+        "observation_image_indices"_a.noconvert(),
         "observation_point_indices"_a.noconvert(),
         "observation_xy"_a.noconvert(),
-        "prior_sensor_indices"_a.noconvert(),
+        "prior_frame_indices"_a.noconvert(),
         "prior_positions"_a.noconvert(),
         "prior_sqrt_information"_a.noconvert(),
-        "initial_scale"_a,
-        "scale_prior_sqrt_information"_a,
-        "options"_a = CasparBundleAdjustmentOptions(),
-        "Jointly optimize rigid bay poses, cross-bay points, and one total "
-        "scale applied to all camera-from-bay translations, with a Gaussian "
-        "prior on live log scale centered at the initial scale.");
+        "options"_a = CasparSolverOptions(),
+        "Jointly optimize rig-frame poses, points, and one multiplicative "
+        "sensor-from-rig translation scale from flat pinhole observation "
+        "arrays and direct rig-frame position priors. Reprojection uses "
+        "ordinary squared error; intrinsics and sensor rotations are fixed.");
 #endif
 }
