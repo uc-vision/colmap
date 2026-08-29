@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <stdexcept>
 
+#include "rig_schur.h"
 #include "solver.h"
 #include "solver_tools.h"
 #include <cuda_runtime.h>
@@ -32,6 +33,7 @@ void GraphSolver::SetRigSchurTopology(
                                                        point_indices,
                                                        fixed_pose_point_indices,
                                                        fixed_point_pose_indices,
+                                                       std::vector<unsigned int>{},
                                                        false,
                                                        -1);
   rig_schur_scale_aware_ = false;
@@ -40,9 +42,12 @@ void GraphSolver::SetRigSchurTopology(
 void GraphSolver::SetFixedRigSchurTopology(
     const std::vector<unsigned int>& pose_indices,
     const std::vector<unsigned int>& point_indices,
+    const std::vector<unsigned int>& sensor_position_prior_pose_indices,
     const unsigned int rotation_anchor_pose_index) {
   if (pose_indices.size() != fixed_rig_pinhole_num_ ||
-      point_indices.size() != fixed_rig_pinhole_num_) {
+      point_indices.size() != fixed_rig_pinhole_num_ ||
+      sensor_position_prior_pose_indices.size() !=
+          fixed_rig_sensor_position_prior_num_) {
     throw std::invalid_argument(
         "Fixed-rig Schur topology does not match generated factor counts");
   }
@@ -54,6 +59,7 @@ void GraphSolver::SetFixedRigSchurTopology(
       point_indices,
       std::vector<unsigned int>{},
       std::vector<unsigned int>{},
+      sensor_position_prior_pose_indices,
       true,
       static_cast<int>(rotation_anchor_pose_index));
   rig_schur_scale_aware_ = true;
@@ -111,6 +117,12 @@ SolveResult GraphSolver::solve_rig_schur(bool print_progress,
         pose_jac,
         scale_jac,
         point_jac,
+        rig_schur_scale_aware_
+            ? facs__fixed_rig_sensor_position_prior__args__pose__jac_
+            : nullptr,
+        rig_schur_scale_aware_
+            ? facs__fixed_rig_sensor_position_prior__args__sensor_from_rig_log_scale__jac_
+            : nullptr,
         nodes__PinholePose__r_0_,
         nodes__PinholePose__precond_diag_,
         nodes__PinholePose__precond_tril_,

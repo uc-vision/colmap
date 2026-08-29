@@ -219,11 +219,62 @@ index 41e553f..a4928b6 100644
      return f"std::max({{{inner}}})"
 
 
+diff --git a/symforce/caspar/source/templates/buildfiles/CMakeLists.txt.jinja b/symforce/caspar/source/templates/buildfiles/CMakeLists.txt.jinja
+index 1f89d62..56be04b 100644
+--- a/symforce/caspar/source/templates/buildfiles/CMakeLists.txt.jinja
++++ b/symforce/caspar/source/templates/buildfiles/CMakeLists.txt.jinja
+@@ -10,11 +10,9 @@ endif()
+
+ project(caspar_library LANGUAGES CXX CUDA)
+
+-set(CASPAR_MIN_ARCH 75 CACHE INTERNAL "Minimum CUDA arch required by Caspar")
+-
+ # SASS for Turing/Ampere/Ada (sm_75–89) + PTX fallback for forward JIT-compatibility. sm_75 minimum required by cooperative_groups::reduce.
+ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+-  set(CMAKE_CUDA_ARCHITECTURES ${CASPAR_MIN_ARCH} 80-real 86-real 89-real)
++  set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 75-virtual)
+ endif()
+
+ find_package(CUDAToolkit REQUIRED)
+@@ -47,7 +45,7 @@ list(FILTER CUDA_HEADERS EXCLUDE REGEX "pybind.*")
+
+ add_library({{caslib.name}}_core STATIC ${CUDA_SOURCES} ${CUDA_HEADERS})
+ target_include_directories({{caslib.name}}_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+-target_link_libraries({{caslib.name}}_core PUBLIC CUDA::cudart)
++target_link_libraries({{caslib.name}}_core PUBLIC CUDA::cudart $<$<PLATFORM_ID:Linux>:m>)
+ target_compile_options({{caslib.name}}_core PRIVATE
+   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
+ )
+@@ -55,7 +53,7 @@ set_target_properties({{caslib.name}}_core PROPERTIES
+   POSITION_INDEPENDENT_CODE ON
+ )
+
+-{% if python_bindings %}
++{%- if python_bindings %}
+ if(CASPAR_BUILD_PYTHON_BINDINGS)
+   file(GLOB CPP_SOURCES "pybind*.cc")
+
+@@ -67,4 +65,4 @@ if(CASPAR_BUILD_PYTHON_BINDINGS)
+     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+   )
+ endif()
+-{% endif %}
++{% endif -%}
 diff --git a/symforce/caspar/source/templates/solver.cc.jinja b/symforce/caspar/source/templates/solver.cc.jinja
-index 4379d6e..ae0b001 100644
+index 4379d6e..f2c31fa 100644
 --- a/symforce/caspar/source/templates/solver.cc.jinja
 +++ b/symforce/caspar/source/templates/solver.cc.jinja
-@@ -293,7 +293,7 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
+@@ -9,6 +9,9 @@
+ #include <chrono>
+
+ #include "caspar_mappings.h"
++#ifndef CASPAR_USE_DOUBLE
++#include "rig_schur.h"
++#endif
+ #include "shared_indices.h"
+ #include "solver_tools.h"
+ #include "sort_indices.h"
+@@ -293,7 +296,7 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
                  {{arg_key(fac, arg, "data")}},
                  {{num_max_key(fac)}},
              {% elif fac.isconstshared[arg] %}
@@ -232,7 +283,7 @@ index 4379d6e..ae0b001 100644
              {% elif fac.isconstindexed[arg] %}
                  {{arg_key(fac, arg, "data")}}, {{num_max_key(fac)}}, {{arg_key(fac, arg, "idx")}},
              {% elif fac.isconstuniq[arg] %}
-@@ -579,7 +579,7 @@ void {{ solver.struct_name }}::DoUpdateR() {
+@@ -579,7 +582,7 @@ void {{ solver.struct_name }}::DoUpdateR() {
                  {{arg_key(fac, arg, "data")}},
                  {{num_max_key(fac)}},
              {% elif fac.isconstshared[arg] %}
@@ -241,7 +292,7 @@ index 4379d6e..ae0b001 100644
              {% elif fac.isconstindexed[arg] %}
                  {{arg_key(fac, arg, "data")}}, {{num_max_key(fac)}}, {{arg_key(fac, arg, "idx")}},
              {% elif fac.isconstuniq[arg] %}
-@@ -768,8 +768,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+@@ -768,8 +771,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
        const size_t offset = 0;
        const size_t num = 1;
        {% endif %}
@@ -252,7 +303,7 @@ index 4379d6e..ae0b001 100644
        }
        cudaMemcpy(marker__scratch_inout_, data, {{Ops.storage_dim(argtype)}} * num * sizeof({{solver.storage_t}}),
                  cudaMemcpyHostToDevice);
-@@ -779,7 +779,7 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+@@ -779,7 +782,7 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
                                              {% elif fac.isconstuniq[arg] %}
                                              1,
                                              {% elif fac.isconstshared[arg] %}
@@ -261,7 +312,7 @@ index 4379d6e..ae0b001 100644
                                              {% elif fac.isconstindexed[arg] %}
                                              {{num_max_key(fac)}},
                                              {% endif %}
-@@ -801,8 +801,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+@@ -801,8 +804,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
        const size_t offset = 0;
        const size_t num = 1;
        {% endif %}
@@ -272,7 +323,7 @@ index 4379d6e..ae0b001 100644
        }
        {{argtype.__name__}}StackedToCaspar(data, {{arg_key(fac, arg, "data")}},
                                              {% if fac.isconstseq[arg] %}
-@@ -810,7 +810,7 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+@@ -810,7 +813,7 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
                                              {% elif fac.isconstuniq[arg] %}
                                              1,
                                              {% elif fac.isconstshared[arg] %}
@@ -281,3 +332,72 @@ index 4379d6e..ae0b001 100644
                                              {% elif fac.isconstindexed[arg] %}
                                              {{num_max_key(fac)}},
                                              {% endif %}
+diff --git a/symforce/caspar/source/templates/solver.h.jinja b/symforce/caspar/source/templates/solver.h.jinja
+index 855a978..6a0223e 100644
+--- a/symforce/caspar/source/templates/solver.h.jinja
++++ b/symforce/caspar/source/templates/solver.h.jinja
+@@ -5,6 +5,7 @@
+ #pragma once
+
+ #include <cstdint>
++#include <memory>
+
+ #include <cuda_runtime.h>
+
+@@ -15,6 +16,10 @@
+
+ namespace caspar {
+
++#ifndef CASPAR_USE_DOUBLE
++class RigSchurSolver;
++#endif
++
+ enum class ExitReason {
+   MAX_ITERATIONS,
+   CONVERGED_SCORE_THRESHOLD,
+@@ -64,8 +69,8 @@ class {{ solver.struct_name }} {
+   {{ solver.struct_name }}( const {{ solver.struct_name }}&) = delete;
+   {{ solver.struct_name }}& operator=( const {{ solver.struct_name }}&) = delete;
+
+-  {{ solver.struct_name }}( {{ solver.struct_name }}&&) = default;
+-  {{ solver.struct_name }}& operator=( {{ solver.struct_name }}&&) = default;
++  {{ solver.struct_name }}( {{ solver.struct_name }}&&) = delete;
++  {{ solver.struct_name }}& operator=( {{ solver.struct_name }}&&) = delete;
+
+   ~{{ solver.struct_name }}();
+
+@@ -79,6 +84,23 @@ class {{ solver.struct_name }} {
+    */
+   SolveResult solve(bool print_progress = false, bool verbose_logging = false);
+
++#ifndef CASPAR_USE_DOUBLE
++  void SetRigSchurTopology(
++      const std::vector<unsigned int>& pose_indices,
++      const std::vector<unsigned int>& point_indices,
++      const std::vector<unsigned int>& fixed_pose_point_indices,
++      const std::vector<unsigned int>& fixed_point_pose_indices);
++
++  void SetFixedRigSchurTopology(
++      const std::vector<unsigned int>& pose_indices,
++      const std::vector<unsigned int>& point_indices,
++      const std::vector<unsigned int>& sensor_position_prior_pose_indices,
++      unsigned int rotation_anchor_pose_index);
++
++  SolveResult solve_rig_schur(bool print_progress = false,
++                              bool verbose_logging = false);
++#endif
++
+   /**
+    * Finish the indices.
+    *
+@@ -251,6 +273,10 @@ class {{ solver.struct_name }} {
+   {% for name, datadesc in solver.fields.items() %}
+   {{ datadesc.dtype }}* {{ name }};
+   {% endfor %}
++#ifndef CASPAR_USE_DOUBLE
++  std::unique_ptr<RigSchurSolver> rig_schur_solver_;
++  bool rig_schur_scale_aware_ = false;
++#endif
+ };
+
+ } // namespace caspar

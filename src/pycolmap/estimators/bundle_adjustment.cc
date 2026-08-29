@@ -4,6 +4,7 @@
 #include "colmap/estimators/bundle_adjustment_ceres.h"
 #ifdef CASPAR_ENABLED
 #include "colmap/estimators/point_refinement_caspar.h"
+#include "colmap/estimators/rigid_bay_bundle_adjustment_caspar.h"
 #endif
 
 #include "pycolmap/helpers.h"
@@ -29,6 +30,13 @@ using Uint32Array = py::array_t<uint32_t, py::array::c_style>;
 
 struct PyCasparPointRefinementResult {
   py::array_t<float> points;
+  std::shared_ptr<CasparBundleAdjustmentSummary> summary;
+};
+
+struct PyRigidBayBundleAdjustmentResult {
+  std::vector<Rigid3d> bays_from_world;
+  py::array_t<float> points;
+  double scale;
   std::shared_ptr<CasparBundleAdjustmentSummary> summary;
 };
 
@@ -94,6 +102,93 @@ PyCasparPointRefinementResult RefineFixedCameraPinholePoints(
                                              options);
   }
   return {PointArray(std::move(result.points), num_points),
+          std::move(result.summary)};
+}
+
+PyRigidBayBundleAdjustmentResult RigidBayBundleAdjustment(
+    const std::vector<Rigid3d>& bays_from_world,
+    const FloatArray& points,
+    const Uint32Array& sensor_bay_indices,
+    const std::vector<Rigid3d>& cameras_from_bay,
+    const FloatArray& sensor_calibrations,
+    const Uint32Array& observation_sensor_indices,
+    const Uint32Array& observation_point_indices,
+    const FloatArray& observation_xy,
+    const Uint32Array& prior_sensor_indices,
+    const FloatArray& prior_positions,
+    const FloatArray& prior_sqrt_information,
+    const double initial_scale,
+    const CasparBundleAdjustmentOptions& options) {
+  THROW_CHECK_GT(bays_from_world.size(), 0);
+  THROW_CHECK_EQ(points.ndim(), 2);
+  THROW_CHECK_EQ(points.shape(1), 3);
+  THROW_CHECK_GT(points.shape(0), 0);
+  THROW_CHECK_EQ(sensor_bay_indices.ndim(), 1);
+  THROW_CHECK_EQ(sensor_bay_indices.shape(0), cameras_from_bay.size());
+  THROW_CHECK_GT(cameras_from_bay.size(), 0);
+  THROW_CHECK_EQ(sensor_calibrations.ndim(), 2);
+  THROW_CHECK_EQ(sensor_calibrations.shape(0), cameras_from_bay.size());
+  THROW_CHECK_EQ(sensor_calibrations.shape(1), 4);
+  THROW_CHECK_EQ(observation_sensor_indices.ndim(), 1);
+  THROW_CHECK_EQ(observation_point_indices.ndim(), 1);
+  THROW_CHECK_EQ(observation_xy.ndim(), 2);
+  THROW_CHECK_EQ(observation_xy.shape(1), 2);
+  const size_t num_observations = observation_sensor_indices.shape(0);
+  THROW_CHECK_GT(num_observations, 0);
+  THROW_CHECK_EQ(observation_point_indices.shape(0), num_observations);
+  THROW_CHECK_EQ(observation_xy.shape(0), num_observations);
+  THROW_CHECK_EQ(prior_sensor_indices.ndim(), 1);
+  THROW_CHECK_EQ(prior_positions.ndim(), 2);
+  THROW_CHECK_EQ(prior_positions.shape(1), 3);
+  THROW_CHECK_EQ(prior_sqrt_information.ndim(), 3);
+  THROW_CHECK_EQ(prior_sqrt_information.shape(1), 3);
+  THROW_CHECK_EQ(prior_sqrt_information.shape(2), 3);
+  const size_t num_priors = prior_sensor_indices.shape(0);
+  THROW_CHECK_GT(num_priors, 0);
+  THROW_CHECK_EQ(prior_positions.shape(0), num_priors);
+  THROW_CHECK_EQ(prior_sqrt_information.shape(0), num_priors);
+  THROW_CHECK_GT(initial_scale, 0.0);
+
+  const size_t num_points = points.shape(0);
+  RigidBayBundleAdjustmentResult result;
+  {
+    py::gil_scoped_release release;
+    THROW_CHECK_LT(*std::max_element(sensor_bay_indices.data(),
+                                     sensor_bay_indices.data() +
+                                         cameras_from_bay.size()),
+                   bays_from_world.size());
+    THROW_CHECK_LT(*std::max_element(observation_sensor_indices.data(),
+                                     observation_sensor_indices.data() +
+                                         num_observations),
+                   cameras_from_bay.size());
+    THROW_CHECK_LT(*std::max_element(observation_point_indices.data(),
+                                     observation_point_indices.data() +
+                                         num_observations),
+                   num_points);
+    THROW_CHECK_LT(*std::max_element(prior_sensor_indices.data(),
+                                     prior_sensor_indices.data() + num_priors),
+                   cameras_from_bay.size());
+    result = RigidBayBundleAdjustmentCaspar(
+        bays_from_world,
+        points.data(),
+        num_points,
+        sensor_bay_indices.data(),
+        cameras_from_bay,
+        sensor_calibrations.data(),
+        observation_sensor_indices.data(),
+        observation_point_indices.data(),
+        observation_xy.data(),
+        num_observations,
+        prior_sensor_indices.data(),
+        prior_positions.data(),
+        prior_sqrt_information.data(),
+        num_priors,
+        initial_scale,
+        options);
+  }
+  return {std::move(result.bays_from_world),
+          PointArray(std::move(result.points), num_points),
+          result.scale,
           std::move(result.summary)};
 }
 #endif
@@ -211,6 +306,14 @@ void BindBundleAdjuster(py::module& m) {
   py::classh<PyCasparPointRefinementResult>(m, "CasparPointRefinementResult")
       .def_readonly("points", &PyCasparPointRefinementResult::points)
       .def_readonly("summary", &PyCasparPointRefinementResult::summary);
+
+  py::classh<PyRigidBayBundleAdjustmentResult>(
+      m, "RigidBayBundleAdjustmentResult")
+      .def_readonly("bays_from_world",
+                    &PyRigidBayBundleAdjustmentResult::bays_from_world)
+      .def_readonly("points", &PyRigidBayBundleAdjustmentResult::points)
+      .def_readonly("scale", &PyRigidBayBundleAdjustmentResult::scale)
+      .def_readonly("summary", &PyRigidBayBundleAdjustmentResult::summary);
 #endif
 
   auto PyBundleAdjustmentGauge =
@@ -596,5 +699,22 @@ void BindBundleAdjuster(py::module& m) {
         "options"_a = CasparPointRefinementOptions(),
         "Refine 3D points against fixed distortion-free 3x4 projection "
         "matrices with CASPAR.");
+  m.def("rigid_bay_bundle_adjustment",
+        RigidBayBundleAdjustment,
+        "bays_from_world"_a,
+        "points"_a.noconvert(),
+        "sensor_bay_indices"_a.noconvert(),
+        "cameras_from_bay"_a,
+        "sensor_calibrations"_a.noconvert(),
+        "observation_sensor_indices"_a.noconvert(),
+        "observation_point_indices"_a.noconvert(),
+        "observation_xy"_a.noconvert(),
+        "prior_sensor_indices"_a.noconvert(),
+        "prior_positions"_a.noconvert(),
+        "prior_sqrt_information"_a.noconvert(),
+        "initial_scale"_a = 1.0,
+        "options"_a = CasparBundleAdjustmentOptions(),
+        "Jointly optimize rigid bay poses, cross-bay points, and one total "
+        "scale applied to all camera-from-bay translations.");
 #endif
 }

@@ -61,6 +61,8 @@ if(CASPAR_ENABLED)
         bundle_adjustment_caspar.cc
         point_refinement_caspar.h
         point_refinement_caspar.cc
+        rigid_bay_bundle_adjustment_caspar.h
+        rigid_bay_bundle_adjustment_caspar.cc
     )
 endif()
 

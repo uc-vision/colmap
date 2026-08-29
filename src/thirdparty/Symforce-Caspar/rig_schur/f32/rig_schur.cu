@@ -136,6 +136,24 @@ __device__ float LoadScaleJac(const float* jac,
   return jac[2 * factor + row];
 }
 
+__device__ float LoadSensorPositionPriorPoseJac(const float* jac,
+                                                size_t factor_num,
+                                                size_t factor,
+                                                unsigned int row,
+                                                unsigned int col) {
+  const unsigned int element = 3 * col + row;
+  if (element >= 16) {
+    return jac[16 * factor_num + 2 * factor + element - 16];
+  }
+  return jac[4 * factor_num * (element / 4) + 4 * factor + element % 4];
+}
+
+__device__ float LoadSensorPositionPriorScaleJac(const float* jac,
+                                                 size_t factor,
+                                                 unsigned int row) {
+  return jac[4 * factor + row];
+}
+
 __global__ void FactorPointsKernel(const unsigned int* active_points,
                                    size_t active_point_num,
                                    size_t point_num,
@@ -541,6 +559,36 @@ __global__ void ReducePoseScaleKernel(const size_t* pose_edge_offsets,
   }
 }
 
+__global__ void AccumulateSensorPositionPriorPoseScaleKernel(
+    const unsigned int* prior_poses,
+    size_t prior_num,
+    const float* pose_jac,
+    const float* scale_jac,
+    size_t rotation_anchor_pose,
+    float* reduced_pose_scale) {
+  const size_t element =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (element >= 6 * prior_num) {
+    return;
+  }
+
+  const size_t factor = element / 6;
+  const unsigned int pose_dim = element % 6;
+  const unsigned int pose = prior_poses[factor];
+  if (pose == rotation_anchor_pose && pose_dim < 3) {
+    return;
+  }
+
+  float value = 0.0f;
+  for (unsigned int row = 0; row < 3; ++row) {
+    value = fmaf(LoadSensorPositionPriorPoseJac(
+                     pose_jac, prior_num, factor, row, pose_dim),
+                 LoadSensorPositionPriorScaleJac(scale_jac, factor, row),
+                 value);
+  }
+  atomicAdd(reduced_pose_scale + 6 * pose + pose_dim, value);
+}
+
 __global__ void ProjectPointsKernel(const unsigned int* active_points,
                                     size_t active_point_num,
                                     const size_t* point_edge_offsets,
@@ -805,12 +853,14 @@ class RigSchurSolver::Impl {
        const std::vector<unsigned int>& point_indices,
        const std::vector<unsigned int>& fixed_pose_point_indices,
        const std::vector<unsigned int>& fixed_point_pose_indices,
+       const std::vector<unsigned int>& sensor_position_prior_pose_indices,
        bool scale_aware,
        int rotation_anchor_pose_index)
       : device_id_(device_id),
         pose_num_(pose_num),
         point_num_(point_num),
         factor_num_(pose_indices.size()),
+        sensor_position_prior_num_(sensor_position_prior_pose_indices.size()),
         scale_aware_(scale_aware) {
     CheckCuda(cudaSetDevice(device_id_));
     cudaDeviceProp device_properties;
@@ -855,6 +905,13 @@ class RigSchurSolver::Impl {
       }
       active_pose_flags[pose] = true;
     }
+    for (const unsigned int pose : sensor_position_prior_pose_indices) {
+      if (pose >= pose_num) {
+        throw std::out_of_range(
+            "Rig Schur sensor-position-prior pose index out of range");
+      }
+      active_pose_flags[pose] = true;
+    }
     std::partial_sum(point_factor_offsets.begin(),
                      point_factor_offsets.end(),
                      point_factor_offsets.begin());
@@ -890,6 +947,12 @@ class RigSchurSolver::Impl {
       }
       rotation_anchor_compact_pose_ =
           pose_to_compact[rotation_anchor_pose_index];
+    }
+    std::vector<unsigned int> sensor_position_prior_compact_poses;
+    sensor_position_prior_compact_poses.reserve(sensor_position_prior_num_);
+    for (const unsigned int pose : sensor_position_prior_pose_indices) {
+      sensor_position_prior_compact_poses.push_back(
+          static_cast<unsigned int>(pose_to_compact[pose]));
     }
     std::vector<unsigned int> active_points;
     for (size_t point = 0; point < point_num_; ++point) {
@@ -954,6 +1017,8 @@ class RigSchurSolver::Impl {
     point_edge_offsets_ = DeviceBuffer<size_t>(point_edge_offsets);
     pose_edge_offsets_ = DeviceBuffer<size_t>(pose_edge_offsets);
     pose_edges_ = DeviceBuffer<size_t>(pose_edges);
+    sensor_position_prior_poses_ =
+        DeviceBuffer<unsigned int>(sensor_position_prior_compact_poses);
     point_chol_ = DeviceBuffer<float>(6 * point_num_);
     point_y_ = DeviceBuffer<float>(3 * point_num_);
     edge_transform_ = DeviceBuffer<float>(18 * edge_num_);
@@ -1109,6 +1174,8 @@ class RigSchurSolver::Impl {
                  const float* pose_jac,
                  const float* scale_jac,
                  const float* point_jac,
+                 const float* sensor_position_prior_pose_jac,
+                 const float* sensor_position_prior_scale_jac,
                  const float* pose_rhs,
                  const float* pose_diag,
                  const float* pose_tril,
@@ -1238,6 +1305,17 @@ class RigSchurSolver::Impl {
           rotation_anchor_compact_pose_,
           reduced_pose_scale_.data());
       CheckCuda(cudaGetLastError());
+      if (sensor_position_prior_num_ > 0) {
+        AccumulateSensorPositionPriorPoseScaleKernel<<<
+            GridSize(6 * sensor_position_prior_num_, block_size), block_size>>>(
+            sensor_position_prior_poses_.data(),
+            sensor_position_prior_num_,
+            sensor_position_prior_pose_jac,
+            sensor_position_prior_scale_jac,
+            rotation_anchor_compact_pose_,
+            reduced_pose_scale_.data());
+        CheckCuda(cudaGetLastError());
+      }
     }
 
     if (!SolvePoseSystem(reduced_rhs_.data(),
@@ -1319,6 +1397,7 @@ class RigSchurSolver::Impl {
   size_t pose_num_;
   size_t point_num_;
   size_t factor_num_;
+  size_t sensor_position_prior_num_;
   bool scale_aware_;
   size_t active_pose_num_;
   size_t active_point_num_;
@@ -1335,6 +1414,7 @@ class RigSchurSolver::Impl {
   DeviceBuffer<size_t> point_edge_offsets_;
   DeviceBuffer<size_t> pose_edge_offsets_;
   DeviceBuffer<size_t> pose_edges_;
+  DeviceBuffer<unsigned int> sensor_position_prior_poses_;
   DeviceBuffer<float> point_chol_;
   DeviceBuffer<float> point_y_;
   DeviceBuffer<float> edge_transform_;
@@ -1364,6 +1444,7 @@ RigSchurSolver::RigSchurSolver(
     const std::vector<unsigned int>& point_indices,
     const std::vector<unsigned int>& fixed_pose_point_indices,
     const std::vector<unsigned int>& fixed_point_pose_indices,
+    const std::vector<unsigned int>& sensor_position_prior_pose_indices,
     bool scale_aware,
     int rotation_anchor_pose_index)
     : impl_(std::make_unique<Impl>(device_id,
@@ -1373,6 +1454,7 @@ RigSchurSolver::RigSchurSolver(
                                    point_indices,
                                    fixed_pose_point_indices,
                                    fixed_point_pose_indices,
+                                   sensor_position_prior_pose_indices,
                                    scale_aware,
                                    rotation_anchor_pose_index)) {}
 
@@ -1384,6 +1466,8 @@ bool RigSchurSolver::SolveStep(float diag,
                                const float* pose_jac,
                                const float* scale_jac,
                                const float* point_jac,
+                               const float* sensor_position_prior_pose_jac,
+                               const float* sensor_position_prior_scale_jac,
                                const float* pose_rhs,
                                const float* pose_diag,
                                const float* pose_tril,
@@ -1401,6 +1485,8 @@ bool RigSchurSolver::SolveStep(float diag,
                           pose_jac,
                           scale_jac,
                           point_jac,
+                          sensor_position_prior_pose_jac,
+                          sensor_position_prior_scale_jac,
                           pose_rhs,
                           pose_diag,
                           pose_tril,

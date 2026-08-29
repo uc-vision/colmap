@@ -120,6 +120,15 @@ if(CASPAR_ENABLED AND CUDA_ENABLED)
     )
     message(STATUS "Configuring Caspar...")
     FetchContent_MakeAvailable(caspar)
+    if(NOT CASPAR_USE_DOUBLE)
+        set(CASPAR_RIG_SCHUR_DIR
+            "${CMAKE_SOURCE_DIR}/src/thirdparty/Symforce-Caspar/rig_schur/f32")
+        target_sources(caspar_lib_core PRIVATE
+            "${CASPAR_RIG_SCHUR_DIR}/rig_schur.cu"
+            "${CASPAR_RIG_SCHUR_DIR}/rig_schur_driver.cc")
+        target_include_directories(caspar_lib_core PRIVATE
+            "${CASPAR_RIG_SCHUR_DIR}")
+    endif()
     # Wrap the source-tree include path in BUILD_INTERFACE so caspar_lib_core
     # can be part of install(EXPORT). Caspar's generated CMakeLists.txt uses a
     # raw ${CMAKE_CURRENT_SOURCE_DIR} which CMake rejects on exported targets.

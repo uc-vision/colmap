@@ -11,20 +11,48 @@ script_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 output_directory=$(realpath -m "$1")
 precision=$2
 python_executable=${3:-python3}
-required_symforce_version=0.12.0
 symforce_repository=https://github.com/symforce-org/symforce.git
 symforce_commit=658293082085486f564ca2c7244a778d6db8278f
 temporary_directory=$(mktemp -d)
 trap 'rm -rf -- "$temporary_directory"' EXIT
 
-installed_symforce_version=$(
-  "$python_executable" -c \
-    'from importlib.metadata import version; print(version("symforce"))' \
-  2>/dev/null || true
-)
-if [[ "$installed_symforce_version" != "$required_symforce_version" ]]; then
-  echo "The generator Python environment must contain symforce==$required_symforce_version and its dependencies." >&2
-  echo "Pass that environment's Python executable as the third argument." >&2
+if ! "$python_executable" - <<'PY'
+import platform
+import shutil
+import subprocess
+import sys
+from importlib.metadata import version
+
+required_packages = {
+  "clang-format": "21.1.2",
+  "Jinja2": "3.1.6",
+  "skymarshal": "0.12.0",
+  "symforce": "0.12.0",
+  "symforce-sym": "0.12.0",
+  "sympy": "1.14.0",
+}
+actual_packages = {name: version(name) for name in required_packages}
+expected_python = (3, 12)
+actual_python = sys.version_info[:2]
+clang_format = shutil.which("clang-format")
+clang_format_version = subprocess.check_output(
+  [clang_format, "--version"], text=True
+).strip()
+
+if actual_python != expected_python or actual_packages != required_packages \
+    or clang_format_version != "clang-format version 21.1.2":
+  print("CASPAR generation requires the pinned Python 3.12 toolchain:", file=sys.stderr)
+  print(f"  Python: 3.12 (found {platform.python_version()})", file=sys.stderr)
+  for name, required in required_packages.items():
+    print(f"  {name}: {required} (found {actual_packages[name]})", file=sys.stderr)
+  print(
+    f"  clang-format executable: 21.1.2 (found {clang_format_version})",
+    file=sys.stderr,
+  )
+  raise SystemExit(2)
+PY
+then
+  echo "Pass the pinned generator environment's Python executable as the third argument." >&2
   exit 2
 fi
 

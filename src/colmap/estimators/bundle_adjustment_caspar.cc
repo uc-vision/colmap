@@ -1386,7 +1386,7 @@ class FixedRigPosePriorCasparBundleAdjuster : public BundleAdjuster {
     solver.SetFixedRigPositionPriorSqrtInformationDataFromStackedHost(
         prior_sqrt_information_.data(), 0, prior_pose_indices_.size());
     solver.SetFixedRigSchurTopology(
-        pose_indices_, point_indices_, rotation_anchor_pose_index_);
+        pose_indices_, point_indices_, {}, rotation_anchor_pose_index_);
     solver.finish_indices();
   }
 

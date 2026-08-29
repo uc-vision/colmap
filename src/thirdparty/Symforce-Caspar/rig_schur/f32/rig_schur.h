@@ -15,6 +15,8 @@ class RigSchurSolver {
                  const std::vector<unsigned int>& point_indices,
                  const std::vector<unsigned int>& fixed_pose_point_indices,
                  const std::vector<unsigned int>& fixed_point_pose_indices,
+                 const std::vector<unsigned int>&
+                     sensor_position_prior_pose_indices,
                  bool scale_aware,
                  int rotation_anchor_pose_index);
   ~RigSchurSolver();
@@ -28,6 +30,8 @@ class RigSchurSolver {
                  const float* pose_jac,
                  const float* scale_jac,
                  const float* point_jac,
+                 const float* sensor_position_prior_pose_jac,
+                 const float* sensor_position_prior_scale_jac,
                  const float* pose_rhs,
                  const float* pose_diag,
                  const float* pose_tril,

@@ -58,6 +58,7 @@ struct CasparSolverSizing {
   size_t num_pinhole_fixed_pose_fixed_point = 0;
   size_t num_fixed_rig_pinhole = 0;
   size_t num_fixed_rig_position_prior = 0;
+  size_t num_fixed_rig_sensor_position_prior = 0;
   size_t num_fixed_camera_pinhole_point = 0;
   size_t num_fixed_camera_pinhole_point_images = 0;
   size_t num_pinhole_split_fixed_focal = 0;
@@ -923,7 +924,7 @@ inline std::unique_ptr<ICasparModelAdapter> CreateCasparAdapter(
 //   1. Node type counts, alphabetical by type name
 //   2. Typed constant-pool capacities
 //   3. Factor counts, in registration order from caspar_generate.py:
-//        simple_radial (4) → pinhole (4) → fixed_rig (2) →
+//        simple_radial (4) → pinhole (4) → fixed_rig (3) →
 //        fixed_camera_pinhole_point (1) →
 //        simple_radial_split (11) → pinhole_split (11)
 inline caspar::GraphSolver CreateSolver(
@@ -963,6 +964,7 @@ inline caspar::GraphSolver CreateSolver(
       sz.num_pinhole_fixed_pose_fixed_point,  // {pose, point}
       sz.num_fixed_rig_pinhole,
       sz.num_fixed_rig_position_prior,
+      sz.num_fixed_rig_sensor_position_prior,
       sz.num_fixed_camera_pinhole_point,
       // simple_radial_split factor counts (11 variants, must_fix_one_of):
       sz.num_simple_radial_split_fixed_focal_and_extra,             // r=1 {fae}

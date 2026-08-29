@@ -333,6 +333,29 @@ def fixed_rig_position_prior(
     return weight * (pose.inverse().t - position)
 
 
+def fixed_rig_sensor_position_prior(
+    pose: T.Annotated[PinholePose, mem.TunableShared],
+    sensor_from_rig: T.Annotated[
+        ConstPinholeSensorFromRig, mem.ConstantSequential
+    ],
+    sensor_from_rig_log_scale: T.Annotated[
+        SensorFromRigLogScale, mem.TunableUnique
+    ],
+    position: T.Annotated[ConstReferencePosition, mem.ConstantSequential],
+    sqrt_information: T.Annotated[
+        ConstPositionSqrtInformation, mem.ConstantSequential
+    ],
+) -> sf.V3:
+    """Prior on a virtual rig sensor position with live baseline scale."""
+    scaled_sensor_from_rig = sf.Pose3(
+        sensor_from_rig.R,
+        sf.exp(sensor_from_rig_log_scale[0]) * sensor_from_rig.t,
+    )
+    sensor_from_world = scaled_sensor_from_rig * pose
+    weight = sf.Matrix33.from_storage(sqrt_information.to_storage())
+    return weight * (sensor_from_world.inverse().t - position)
+
+
 def fixed_camera_pinhole_point(
     point: T.Annotated[Point, mem.TunableShared],
     image_from_world: T.Annotated[ConstImageFromWorld, mem.ConstantShared],
@@ -469,6 +492,7 @@ register_camera_model(
 )
 caslib.add_factor(fixed_rig_pinhole)
 caslib.add_factor(fixed_rig_position_prior)
+caslib.add_factor(fixed_rig_sensor_position_prior)
 caslib.add_factor(
     fixed_camera_pinhole_point,
     shared_constant_pools={
