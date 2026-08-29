@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <vector>
 
+#include <Eigen/Core>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -17,26 +19,33 @@ namespace py = pybind11;
 
 namespace {
 
+using FloatArray = py::array_t<float, py::array::c_style>;
 using Int32Array = py::array_t<int32_t, py::array::c_style>;
 using Int64Array = py::array_t<int64_t, py::array::c_style>;
 
-struct RowTrackIdentitySource {
-  RowTrackIdentitySource(Int64Array observation_offsets,
-                         Int32Array observation_image_indices,
-                         Int64Array observation_feature_indices,
-                         Int32Array image_to_shared_index)
+constexpr float kFeatureTolerancePixels = 0.125f;
+constexpr float kFeatureToleranceSquared =
+    kFeatureTolerancePixels * kFeatureTolerancePixels;
+constexpr float kFeatureCellScale = 1.0f / kFeatureTolerancePixels;
+constexpr uint32_t kInvalidIndex = std::numeric_limits<uint32_t>::max();
+
+struct RowTrackSource {
+  RowTrackSource(Int64Array observation_offsets,
+                 Int32Array observation_image_indices,
+                 FloatArray observation_feature_xy,
+                 Int32Array image_to_shared_index)
       : observation_offsets(std::move(observation_offsets)),
         observation_image_indices(std::move(observation_image_indices)),
-        observation_feature_indices(std::move(observation_feature_indices)),
+        observation_feature_xy(std::move(observation_feature_xy)),
         image_to_shared_index(std::move(image_to_shared_index)) {}
 
   Int64Array observation_offsets;
   Int32Array observation_image_indices;
-  Int64Array observation_feature_indices;
+  FloatArray observation_feature_xy;
   Int32Array image_to_shared_index;
 };
 
-struct RowTrackIdentityJoin {
+struct RowTrackJoin {
   py::array_t<uint32_t> row_point_index;
   uint32_t point_count;
   py::array_t<uint32_t> point_track_offsets;
@@ -44,6 +53,23 @@ struct RowTrackIdentityJoin {
   py::array_t<uint32_t> point_observation_counts;
   py::array_t<int64_t> duplicate_observation_offsets;
   py::array_t<uint32_t> duplicate_observation_indices;
+};
+
+struct CanonicalFeature {
+  Eigen::Vector2f xy;
+  uint32_t track;
+  uint32_t next_in_cell;
+};
+
+struct SharedImageFeatures {
+  std::vector<CanonicalFeature> features;
+  FlatHashMap<uint64_t, uint32_t> cell_heads;
+};
+
+struct PendingFeature {
+  uint32_t shared_image;
+  Eigen::Vector2f xy;
+  uint32_t track;
 };
 
 uint32_t FindRoot(uint32_t* parent, uint32_t node) {
@@ -62,10 +88,80 @@ void UnionRoots(uint32_t* parent, uint32_t first, uint32_t second) {
   }
 }
 
-RowTrackIdentityJoin JoinRowTrackIdentities(
-    const std::vector<const RowTrackIdentitySource*>& sources) {
+Eigen::Map<const Eigen::Vector2f> FeatureXY(const RowTrackSource& source,
+                                            uint32_t observation) {
+  return Eigen::Map<const Eigen::Vector2f>(
+      source.observation_feature_xy.data() + 2 * observation);
+}
+
+Eigen::Vector2i FeatureCell(const Eigen::Vector2f& xy) {
+  return (xy * kFeatureCellScale).array().floor().cast<int>().matrix();
+}
+
+uint64_t CellKey(const Eigen::Vector2i& cell) {
+  return (static_cast<uint64_t>(static_cast<uint32_t>(cell.x())) << 32) |
+         static_cast<uint32_t>(cell.y());
+}
+
+void AddCanonicalFeature(const Eigen::Vector2f& xy,
+                         uint32_t track,
+                         SharedImageFeatures* image) {
+  const uint64_t cell_key = CellKey(FeatureCell(xy));
+  const auto [cell_it, inserted] =
+      image->cell_heads.try_emplace(cell_key, kInvalidIndex);
+  const uint32_t feature = static_cast<uint32_t>(image->features.size());
+  image->features.push_back(
+      CanonicalFeature{xy, track, inserted ? kInvalidIndex : cell_it->second});
+  cell_it->second = feature;
+}
+
+uint32_t FindCanonicalFeature(const SharedImageFeatures& image,
+                              const Eigen::Vector2f& xy) {
+  const Eigen::Vector2i cell = FeatureCell(xy);
+  uint32_t nearest_feature = kInvalidIndex;
+  float nearest_distance = std::numeric_limits<float>::infinity();
+  for (int cell_y = -1; cell_y <= 1; ++cell_y) {
+    for (int cell_x = -1; cell_x <= 1; ++cell_x) {
+      const auto cell_it = image.cell_heads.find(
+          CellKey(cell + Eigen::Vector2i(cell_x, cell_y)));
+      if (cell_it == image.cell_heads.end()) {
+        continue;
+      }
+      for (uint32_t feature = cell_it->second; feature != kInvalidIndex;
+           feature = image.features[feature].next_in_cell) {
+        const float squared_distance =
+            (image.features[feature].xy - xy).squaredNorm();
+        if (squared_distance <= kFeatureToleranceSquared &&
+            (squared_distance < nearest_distance ||
+             (squared_distance == nearest_distance &&
+              feature < nearest_feature))) {
+          nearest_feature = feature;
+          nearest_distance = squared_distance;
+        }
+      }
+    }
+  }
+  return nearest_feature;
+}
+
+size_t NumSharedImages(const std::vector<const RowTrackSource*>& sources) {
+  size_t num_shared_images = 0;
+  for (const RowTrackSource* source : sources) {
+    for (ssize_t image = 0; image < source->image_to_shared_index.shape(0);
+         ++image) {
+      const int32_t shared_image = source->image_to_shared_index.data()[image];
+      if (shared_image >= 0) {
+        num_shared_images =
+            std::max(num_shared_images, static_cast<size_t>(shared_image + 1));
+      }
+    }
+  }
+  return num_shared_images;
+}
+
+RowTrackJoin JoinRowTracks(const std::vector<const RowTrackSource*>& sources) {
   size_t num_tracks = 0;
-  for (const RowTrackIdentitySource* source : sources) {
+  for (const RowTrackSource* source : sources) {
     num_tracks += source->observation_offsets.shape(0) - 1;
   }
 
@@ -82,19 +178,18 @@ RowTrackIdentityJoin JoinRowTrackIdentities(
     py::gil_scoped_release release;
     std::iota(parent, parent + num_tracks, uint32_t{0});
 
-    FlatHashMap<uint64_t, uint32_t> track_by_identity;
-    track_by_identity.reserve(num_tracks);
+    std::vector<SharedImageFeatures> shared_images(NumSharedImages(sources));
     uint32_t track_base = 0;
-    for (const RowTrackIdentitySource* source : sources) {
-      const int64_t* observation_offsets = source->observation_offsets.data();
+    for (const RowTrackSource* source_pointer : sources) {
+      const RowTrackSource& source = *source_pointer;
+      const int64_t* observation_offsets = source.observation_offsets.data();
       const int32_t* observation_image_indices =
-          source->observation_image_indices.data();
-      const int64_t* observation_feature_indices =
-          source->observation_feature_indices.data();
+          source.observation_image_indices.data();
       const int32_t* image_to_shared_index =
-          source->image_to_shared_index.data();
+          source.image_to_shared_index.data();
       const uint32_t source_track_count =
-          source->observation_offsets.shape(0) - 1;
+          source.observation_offsets.shape(0) - 1;
+      std::vector<PendingFeature> pending_features;
       for (uint32_t track = 0; track < source_track_count; ++track) {
         const uint32_t global_track = track_base + track;
         track_observation_counts[global_track] = static_cast<uint32_t>(
@@ -104,21 +199,26 @@ RowTrackIdentityJoin JoinRowTrackIdentities(
              ++observation) {
           const int32_t shared_image =
               image_to_shared_index[observation_image_indices[observation]];
-          if (shared_image < 0) {
-            continue;
-          }
-          const uint64_t identity =
-              (static_cast<uint64_t>(shared_image) << 32) |
-              static_cast<uint32_t>(observation_feature_indices[observation]);
-          const auto [identity_it, inserted] =
-              track_by_identity.try_emplace(identity, global_track);
-          if (!inserted) {
-            duplicate_observation_indices.push_back(
-                static_cast<uint32_t>(observation));
-            --track_observation_counts[global_track];
-            UnionRoots(parent, global_track, identity_it->second);
+          if (shared_image >= 0) {
+            const Eigen::Vector2f xy =
+                FeatureXY(source, static_cast<uint32_t>(observation));
+            SharedImageFeatures& image = shared_images[shared_image];
+            const uint32_t feature = FindCanonicalFeature(image, xy);
+            if (feature == kInvalidIndex) {
+              pending_features.push_back(PendingFeature{
+                  static_cast<uint32_t>(shared_image), xy, global_track});
+            } else {
+              duplicate_observation_indices.push_back(
+                  static_cast<uint32_t>(observation));
+              --track_observation_counts[global_track];
+              UnionRoots(parent, global_track, image.features[feature].track);
+            }
           }
         }
+      }
+      for (const PendingFeature& feature : pending_features) {
+        AddCanonicalFeature(
+            feature.xy, feature.track, &shared_images[feature.shared_image]);
       }
       track_base += source_track_count;
       duplicate_observation_offsets.push_back(
@@ -171,49 +271,46 @@ RowTrackIdentityJoin JoinRowTrackIdentities(
   std::copy(duplicate_observation_indices.begin(),
             duplicate_observation_indices.end(),
             duplicate_indices.mutable_data());
-  return RowTrackIdentityJoin{std::move(row_point_index),
-                              point_count,
-                              std::move(point_track_offset_array),
-                              std::move(point_track_index_array),
-                              std::move(point_observation_count_array),
-                              std::move(duplicate_offsets),
-                              std::move(duplicate_indices)};
+  return RowTrackJoin{std::move(row_point_index),
+                      point_count,
+                      std::move(point_track_offset_array),
+                      std::move(point_track_index_array),
+                      std::move(point_observation_count_array),
+                      std::move(duplicate_offsets),
+                      std::move(duplicate_indices)};
 }
 
 }  // namespace
 
 void BindRowTrackJoin(py::module& m) {
-  py::classh<RowTrackIdentitySource>(m, "RowTrackIdentitySource")
-      .def(py::init<Int64Array, Int32Array, Int64Array, Int32Array>(),
+  py::classh<RowTrackSource>(m, "RowTrackSource")
+      .def(py::init<Int64Array, Int32Array, FloatArray, Int32Array>(),
            "observation_offsets"_a,
            "observation_image_indices"_a,
-           "observation_feature_indices"_a,
+           "observation_feature_xy"_a,
            "image_to_shared_index"_a)
-      .def_readonly("observation_offsets",
-                    &RowTrackIdentitySource::observation_offsets)
+      .def_readonly("observation_offsets", &RowTrackSource::observation_offsets)
       .def_readonly("observation_image_indices",
-                    &RowTrackIdentitySource::observation_image_indices)
-      .def_readonly("observation_feature_indices",
-                    &RowTrackIdentitySource::observation_feature_indices)
+                    &RowTrackSource::observation_image_indices)
+      .def_readonly("observation_feature_xy",
+                    &RowTrackSource::observation_feature_xy)
       .def_readonly("image_to_shared_index",
-                    &RowTrackIdentitySource::image_to_shared_index);
+                    &RowTrackSource::image_to_shared_index);
 
-  py::classh<RowTrackIdentityJoin>(m, "RowTrackIdentityJoin")
-      .def_readonly("row_point_index", &RowTrackIdentityJoin::row_point_index)
-      .def_readonly("point_count", &RowTrackIdentityJoin::point_count)
-      .def_readonly("point_track_offsets",
-                    &RowTrackIdentityJoin::point_track_offsets)
-      .def_readonly("point_track_indices",
-                    &RowTrackIdentityJoin::point_track_indices)
+  py::classh<RowTrackJoin>(m, "RowTrackJoin")
+      .def_readonly("row_point_index", &RowTrackJoin::row_point_index)
+      .def_readonly("point_count", &RowTrackJoin::point_count)
+      .def_readonly("point_track_offsets", &RowTrackJoin::point_track_offsets)
+      .def_readonly("point_track_indices", &RowTrackJoin::point_track_indices)
       .def_readonly("point_observation_counts",
-                    &RowTrackIdentityJoin::point_observation_counts)
+                    &RowTrackJoin::point_observation_counts)
       .def_readonly("duplicate_observation_offsets",
-                    &RowTrackIdentityJoin::duplicate_observation_offsets)
+                    &RowTrackJoin::duplicate_observation_offsets)
       .def_readonly("duplicate_observation_indices",
-                    &RowTrackIdentityJoin::duplicate_observation_indices);
+                    &RowTrackJoin::duplicate_observation_indices);
 
-  m.def("join_row_track_identities",
-        &JoinRowTrackIdentities,
+  m.def("join_row_tracks",
+        &JoinRowTracks,
         "sources"_a,
-        "Join exact image-feature track identities into row point indices.");
+        "Join row tracks by shared-image feature coordinates.");
 }

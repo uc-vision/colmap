@@ -19,7 +19,7 @@ def project(projection: np.ndarray, point: np.ndarray) -> np.ndarray:
     return projected[:2] / projected[2]
 
 
-def test_row_point_refinement_uses_exact_join_and_complete_chunks():
+def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
     expected = np.array(((0.2, -0.1, 4.0), (-0.3, 0.25, 5.0)), np.float32)
     projections = np.stack(
         tuple(
@@ -30,19 +30,32 @@ def test_row_point_refinement_uses_exact_join_and_complete_chunks():
             )
         )
     )
-    first_join = pycolmap.RowTrackIdentitySource(
+    first_join = pycolmap.RowTrackSource(
         np.array((0, 2, 4), np.int64),
         np.array((0, 1, 0, 2), np.int32),
-        np.array((10, 11, 20, 21), np.int64),
+        np.array(
+            ((10.0, 10.0), (20.0, 20.0), (30.0, 30.0), (40.0, 40.0)),
+            np.float32,
+        ),
         np.array((0, 1, 2), np.int32),
     )
-    second_join = pycolmap.RowTrackIdentitySource(
-        np.array((0, 2), np.int64),
-        np.array((1, 2), np.int32),
-        np.array((11, 12), np.int64),
+    second_join = pycolmap.RowTrackSource(
+        np.array((0, 2, 4), np.int64),
+        np.array((2, 1, 2, 1), np.int32),
+        np.array(
+            ((40.05, 40.0), (60.0, 60.0), (50.0, 50.0), (20.0, 20.05)),
+            np.float32,
+        ),
         np.array((0, 1, 2), np.int32),
     )
-    joined = pycolmap.join_row_track_identities((first_join, second_join))
+    joined = pycolmap.join_row_tracks((first_join, second_join))
+
+    np.testing.assert_array_equal(joined.duplicate_observation_indices, (0, 3))
+    second_duplicate_indices = joined.duplicate_observation_indices[
+        joined.duplicate_observation_offsets[
+            1
+        ] : joined.duplicate_observation_offsets[2]
+    ]
 
     first_xy = np.stack(
         (
@@ -54,8 +67,10 @@ def test_row_point_refinement_uses_exact_join_and_complete_chunks():
     ).astype(np.float32)
     second_xy = np.stack(
         (
-            project(projections[1], expected[0]),
+            project(projections[2], expected[1]),
+            project(projections[1], expected[1]),
             project(projections[2], expected[0]),
+            project(projections[1], expected[0]),
         )
     ).astype(np.float32)
     identity_transforms = np.tile(np.eye(4), (3, 1, 1))
@@ -73,16 +88,13 @@ def test_row_point_refinement_uses_exact_join_and_complete_chunks():
     source_translation = np.eye(4)
     source_translation[:3, 3] = np.array((0.4, -0.2, 0.1))
     second = pycolmap.CasparRowPointRefinementSource(
-        (expected[0] - source_translation[:3, 3])[None].astype(np.float32),
-        np.array(((0.0, 0.0, 1.0),), np.float32),
-        np.array((0,), np.int64),
-        np.array((0, 2), np.int64),
-        np.array((1, 2), np.int32),
+        (expected[::-1] - source_translation[:3, 3]).astype(np.float32),
+        np.array(((0.0, 0.0, 1.0), (1.0, 1.0, 0.0)), np.float32),
+        np.array((0, 1), np.int64),
+        np.array((0, 2, 4), np.int64),
+        np.array((2, 1, 2, 1), np.int32),
         second_xy,
-        joined.duplicate_observation_indices[
-            joined.duplicate_observation_offsets[1] :
-            joined.duplicate_observation_offsets[2]
-        ],
+        second_duplicate_indices,
         np.array((0, 1, 2), np.uint32),
         np.tile(source_translation, (3, 1, 1)),
     )
@@ -101,10 +113,10 @@ def test_row_point_refinement_uses_exact_join_and_complete_chunks():
         options,
     )
 
-    np.testing.assert_array_equal(joined.point_observation_counts, (3, 2))
+    np.testing.assert_array_equal(joined.point_observation_counts, (3, 3))
     np.testing.assert_allclose(result.points, expected, atol=2e-4)
     np.testing.assert_allclose(
         result.colors,
-        ((0.5, 0.0, 0.5), (0.0, 1.0, 0.0)),
+        ((1.0, 0.5, 0.0), (0.0, 0.5, 0.5)),
     )
     assert result.chunk_count == 2
