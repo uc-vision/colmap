@@ -24,6 +24,7 @@ __global__ void __launch_bounds__(1024, 1)
                                SharedIndex* point_indices,
                                float* pixel,
                                unsigned int pixel_num_alloc,
+                               const float* const reprojection_loss_scale,
                                float* const out_rTr,
                                size_t problem_size) {
   const int global_thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -193,6 +194,16 @@ __global__ void __launch_bounds__(1024, 1)
     r45 = fmaf(r40, r45, r33);
     r45 = 1.0 / r45;
     r5 = fmaf(r45, r44, r5);
+    r5 = r5 * r5;
+  };
+  LoadUnique<1, float, float>(reprojection_loss_scale, 0, (float*)inout_shared);
+  if (global_thread_idx < problem_size) {
+    ReadShared1<float>((float*)inout_shared, 0, r44);
+  };
+  __syncthreads();
+  if (global_thread_idx < problem_size) {
+    r44 = r44 * r44;
+    r44 = 1.0 / r44;
     r6 = fmaf(r4, r6, r2);
     r43 = r31 + r43;
     r43 = r43 + r38;
@@ -211,13 +222,20 @@ __global__ void __launch_bounds__(1024, 1)
     r12 = fmaf(r39, r42, r12);
     r42 = r0 * r12;
     r6 = fmaf(r45, r42, r6);
-    r6 = fmaf(r6, r6, r5 * r5);
+    r6 = r6 * r6;
+    r42 = r5 + r6;
+    r44 = fmaf(r42, r44, r31);
+    r44 = sqrtf(r44);
+    r44 = r31 + r44;
+    r44 = 1.0 / r44;
+    r44 = r18 * r44;
+    r44 = fmaf(r6, r44, r5 * r44);
   };
   SumStore<float>(out_rTr_local,
                   (float*)inout_shared,
                   0,
                   global_thread_idx < problem_size,
-                  r6);
+                  r44);
   SumFlushFinal<float>(out_rTr_local, out_rTr, 1);
 }
 
@@ -234,6 +252,7 @@ void FixedRigPinholeScore(float* pose,
                           SharedIndex* point_indices,
                           float* pixel,
                           unsigned int pixel_num_alloc,
+                          const float* const reprojection_loss_scale,
                           float* const out_rTr,
                           size_t problem_size) {
   if (problem_size == 0) {
@@ -254,6 +273,7 @@ void FixedRigPinholeScore(float* pose,
                                                  point_indices,
                                                  pixel,
                                                  pixel_num_alloc,
+                                                 reprojection_loss_scale,
                                                  out_rTr,
                                                  problem_size);
 }

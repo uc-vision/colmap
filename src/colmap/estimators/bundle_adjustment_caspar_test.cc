@@ -407,6 +407,102 @@ TEST(FixedRigPosePriorBundleAdjuster, RigSchurRecoversSensorBaselineScale) {
   }
 }
 
+TEST(FixedRigPosePriorBundleAdjuster,
+     RobustReprojectionRecoversScaleAndPosesWithOutliers) {
+  Reconstruction ground_truth;
+  SyntheticDatasetOptions synthetic_options;
+  synthetic_options.num_rigs = 1;
+  synthetic_options.num_cameras_per_rig = 2;
+  synthetic_options.num_frames_per_rig = 12;
+  synthetic_options.num_points3D = 300;
+  synthetic_options.num_points2D_without_point3D = 0;
+  synthetic_options.camera_model_id = PinholeCameraModel::model_id;
+  synthetic_options.camera_params = {1280, 1280, 512, 384};
+  synthetic_options.sensor_from_rig_translation_stddev = 0.5;
+  SynthesizeDataset(synthetic_options, &ground_truth);
+
+  Reconstruction initialized = ground_truth;
+  const rig_t rig_id = initialized.Rigs().begin()->first;
+  const sensor_t sensor_id =
+      initialized.Rig(rig_id).NonRefSensors().begin()->first;
+  constexpr double kInitialBaselineScale = 0.98;
+  initialized.Rig(rig_id).SensorFromRig(sensor_id).translation() *=
+      kInitialBaselineScale;
+
+  for (const image_t image_id : initialized.RegImageIds()) {
+    Image& image = initialized.Image(image_id);
+    if (image.IsRefInFrame()) {
+      continue;
+    }
+    for (point2D_t point2D_index = 0; point2D_index < image.NumPoints2D();
+         point2D_index += 10) {
+      image.Point2D(point2D_index).xy += Eigen::Vector2d(120.0, -80.0);
+    }
+  }
+
+  std::vector<PosePrior> pose_priors;
+  for (const image_t image_id : ground_truth.RegImageIds()) {
+    const Image& image = ground_truth.Image(image_id);
+    if (image.IsRefInFrame()) {
+      PosePrior pose_prior;
+      pose_prior.corr_data_id = image.DataId();
+      pose_prior.position = image.ProjectionCenter();
+      pose_prior.position_covariance = 1e-4 * Eigen::Matrix3d::Identity();
+      pose_priors.push_back(pose_prior);
+    }
+  }
+
+  struct RecoveryError {
+    double scale;
+    double mean_position;
+    double mean_rotation;
+  };
+  std::array<RecoveryError, 2> recovery_errors;
+  const std::array loss_scales{5.0, 1e6};
+  for (size_t index = 0; index < loss_scales.size(); ++index) {
+    Reconstruction reconstruction = initialized;
+    FixedRigPosePriorBundleAdjustmentOptions options;
+    options.backend = BundleAdjustmentBackend::CASPAR_RIG_SCHUR;
+    options.caspar->fixed_rig_reprojection_loss_scale = loss_scales[index];
+    options.print_summary = false;
+    const auto summary =
+        FixedRigPosePriorBundleAdjustment(reconstruction, pose_priors, options);
+    ASSERT_TRUE(summary->IsSolutionUsable());
+
+    const double live_baseline_scale =
+        reconstruction.Rig(rig_id)
+            .SensorFromRig(sensor_id)
+            .translation()
+            .norm() /
+        ground_truth.Rig(rig_id).SensorFromRig(sensor_id).translation().norm();
+    RecoveryError& error = recovery_errors[index];
+    error.scale = std::abs(live_baseline_scale - 1.0);
+    error.mean_position = 0.0;
+    error.mean_rotation = 0.0;
+    for (const frame_t frame_id : ground_truth.RegFrameIds()) {
+      const Rigid3d& solved_pose =
+          reconstruction.Frame(frame_id).RigFromWorld();
+      const Rigid3d& true_pose = ground_truth.Frame(frame_id).RigFromWorld();
+      error.mean_position += (Inverse(solved_pose).translation() -
+                              Inverse(true_pose).translation())
+                                 .norm();
+      error.mean_rotation +=
+          solved_pose.rotation().angularDistance(true_pose.rotation());
+    }
+    error.mean_position /= ground_truth.NumRegFrames();
+    error.mean_rotation /= ground_truth.NumRegFrames();
+  }
+
+  const RecoveryError& robust = recovery_errors[0];
+  const RecoveryError& unrobust = recovery_errors[1];
+  EXPECT_LT(robust.scale, 3e-3);
+  EXPECT_LT(robust.mean_position, 3e-3);
+  EXPECT_LT(robust.mean_rotation, 7e-4);
+  EXPECT_LT(robust.scale, 0.1 * unrobust.scale);
+  EXPECT_LT(robust.mean_position, 0.1 * unrobust.mean_position);
+  EXPECT_LT(robust.mean_rotation, 0.1 * unrobust.mean_rotation);
+}
+
 TEST(FixedRigPosePriorBundleAdjuster, LongRowNormalizationPreservesLiveScale) {
   Reconstruction ground_truth;
   SyntheticDatasetOptions synthetic_options;

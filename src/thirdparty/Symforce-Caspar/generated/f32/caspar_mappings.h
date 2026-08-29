@@ -120,6 +120,20 @@ cudaError_t ConstReferencePositionCasparToStacked(
     const unsigned int cas_offset,
     const unsigned int num_objects);
 
+cudaError_t ConstReprojectionLossScaleStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
+cudaError_t ConstReprojectionLossScaleCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects);
+
 cudaError_t ConstSimpleRadialFocalAndExtraStackedToCaspar(
     const float* stacked_data,
     float* cas_data,

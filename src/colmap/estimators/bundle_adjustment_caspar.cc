@@ -1374,6 +1374,10 @@ class FixedRigPosePriorCasparBundleAdjuster : public BundleAdjuster {
         calib_data_.data(), 0, pose_indices_.size());
     solver.SetFixedRigPinholePixelDataFromStackedHost(
         pixels_.data(), 0, pose_indices_.size());
+    const StorageType reprojection_loss_scale =
+        fixed_options_.caspar->fixed_rig_reprojection_loss_scale;
+    solver.SetFixedRigPinholeReprojectionLossScaleDataFromStackedHost(
+        &reprojection_loss_scale);
     solver.SetFixedRigPositionPriorNum(prior_pose_indices_.size());
     solver.SetFixedRigPositionPriorPoseIndicesFromHost(
         prior_pose_indices_.data(), prior_pose_indices_.size());

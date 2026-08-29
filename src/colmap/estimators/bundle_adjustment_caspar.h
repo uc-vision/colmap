@@ -118,6 +118,7 @@ struct CasparBundleAdjustmentOptions {
   double pcg_rel_score_exit = -1.0;
   double pcg_rel_decrease_min = -1.0;
   double solver_rel_decrease_min = 1.0;
+  double fixed_rig_reprojection_loss_scale = 5.0;
   std::string gpu_index = "-1";
   bool collect_iteration_data = false;
 };

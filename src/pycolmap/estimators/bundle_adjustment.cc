@@ -307,6 +307,10 @@ void BindBundleAdjuster(py::module& m) {
           .def_readwrite("solver_rel_decrease_min",
                          &CasparBAOpts::solver_rel_decrease_min,
                          "Minimum relative solver decrease.")
+          .def_readwrite("fixed_rig_reprojection_loss_scale",
+                         &CasparBAOpts::fixed_rig_reprojection_loss_scale,
+                         "Pseudo-Huber loss scale in pixels for fixed-rig "
+                         "reprojection residuals.")
           .def_readwrite("gpu_index",
                          &CasparBAOpts::gpu_index,
                          "Which GPU to use for solving the problem.");

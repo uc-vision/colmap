@@ -49,6 +49,10 @@ class ConstPixel(sf.V2):
     pass
 
 
+class ConstReprojectionLossScale(sf.V1):
+    pass
+
+
 class SensorFromRigLogScale(sf.V1):
     pass
 
@@ -296,13 +300,21 @@ def fixed_rig_pinhole(
     calib: T.Annotated[ConstPinholeCalib, mem.ConstantSequential],
     point: T.Annotated[Point, mem.TunableShared],
     pixel: T.Annotated[ConstPixel, mem.ConstantSequential],
+    reprojection_loss_scale: T.Annotated[
+        ConstReprojectionLossScale, mem.ConstantUnique
+    ],
 ) -> sf.V2:
-    """Fixed-calibration rig reprojection with one shared baseline scale."""
+    """Robust fixed-calibration reprojection with one shared baseline scale."""
     scaled_sensor_from_rig = sf.Pose3(
         sensor_from_rig.R,
         sf.exp(sensor_from_rig_log_scale[0]) * sensor_from_rig.t,
     )
-    return pinhole_core(pose, scaled_sensor_from_rig, calib, point, pixel)
+    residual = pinhole_core(pose, scaled_sensor_from_rig, calib, point, pixel)
+    scaled_squared_norm = (
+        residual.squared_norm() / reprojection_loss_scale[0] ** 2
+    )
+    weight = sf.sqrt(2 / (sf.sqrt(1 + scaled_squared_norm) + 1))
+    return weight * residual
 
 
 def fixed_rig_position_prior(

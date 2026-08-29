@@ -715,6 +715,8 @@ GraphSolver::GraphSolver(
           origin_ptr_, offset, 1 * fixed_rig_pinhole_num_, 4);
   facs__fixed_rig_pinhole__args__pixel__data_ = assign_and_increment<double>(
       origin_ptr_, offset, 2 * fixed_rig_pinhole_num_, 4);
+  facs__fixed_rig_pinhole__args__reprojection_loss_scale__data_ =
+      assign_and_increment<double>(origin_ptr_, offset, 1 * 1, 4);
   facs__fixed_rig_position_prior__args__pose__idx_shared_ =
       assign_and_increment<SharedIndex>(
           origin_ptr_, offset, 1 * fixed_rig_position_prior_num_, 4);
@@ -2843,6 +2845,7 @@ double GraphSolver::DoResJacFirst() {
       facs__fixed_rig_pinhole__args__point__idx_shared_,
       facs__fixed_rig_pinhole__args__pixel__data_,
       fixed_rig_pinhole_num_max_,
+      facs__fixed_rig_pinhole__args__reprojection_loss_scale__data_,
 
       facs__fixed_rig_pinhole__res_,
       fixed_rig_pinhole_num_,
@@ -3946,6 +3949,7 @@ void GraphSolver::DoResJac() {
       facs__fixed_rig_pinhole__args__point__idx_shared_,
       facs__fixed_rig_pinhole__args__pixel__data_,
       fixed_rig_pinhole_num_max_,
+      facs__fixed_rig_pinhole__args__reprojection_loss_scale__data_,
 
       facs__fixed_rig_pinhole__res_,
       fixed_rig_pinhole_num_,
@@ -6098,21 +6102,23 @@ double GraphSolver::DoRetractScore() {
       pinhole_fixed_pose_fixed_point_num_max_,
       solver__res_tot_,
       pinhole_fixed_pose_fixed_point_num_);
-  FixedRigPinholeScore(nodes__PinholePose__storage_check_,
-                       PinholePose_num_max_,
-                       facs__fixed_rig_pinhole__args__pose__idx_shared_,
-                       facs__fixed_rig_pinhole__args__sensor_from_rig__data_,
-                       fixed_rig_pinhole_num_max_,
-                       nodes__SensorFromRigLogScale__storage_check_,
-                       facs__fixed_rig_pinhole__args__calib__data_,
-                       fixed_rig_pinhole_num_max_,
-                       nodes__Point__storage_check_,
-                       Point_num_max_,
-                       facs__fixed_rig_pinhole__args__point__idx_shared_,
-                       facs__fixed_rig_pinhole__args__pixel__data_,
-                       fixed_rig_pinhole_num_max_,
-                       solver__res_tot_,
-                       fixed_rig_pinhole_num_);
+  FixedRigPinholeScore(
+      nodes__PinholePose__storage_check_,
+      PinholePose_num_max_,
+      facs__fixed_rig_pinhole__args__pose__idx_shared_,
+      facs__fixed_rig_pinhole__args__sensor_from_rig__data_,
+      fixed_rig_pinhole_num_max_,
+      nodes__SensorFromRigLogScale__storage_check_,
+      facs__fixed_rig_pinhole__args__calib__data_,
+      fixed_rig_pinhole_num_max_,
+      nodes__Point__storage_check_,
+      Point_num_max_,
+      facs__fixed_rig_pinhole__args__point__idx_shared_,
+      facs__fixed_rig_pinhole__args__pixel__data_,
+      fixed_rig_pinhole_num_max_,
+      facs__fixed_rig_pinhole__args__reprojection_loss_scale__data_,
+      solver__res_tot_,
+      fixed_rig_pinhole_num_);
   FixedRigPositionPriorScore(
       nodes__PinholePose__storage_check_,
       PinholePose_num_max_,
@@ -9130,6 +9136,43 @@ void GraphSolver::SetFixedRigPinholePixelDataFromStackedDevice(
                             fixed_rig_pinhole_num_max_,
                             offset,
                             num);
+}
+void GraphSolver::SetFixedRigPinholeReprojectionLossScaleDataFromStackedHost(
+    const double* const data) {
+  cudaSetDevice(device_id_);
+  const size_t offset = 0;
+  const size_t num = 1;
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  cudaMemcpy(marker__scratch_inout_,
+             data,
+             1 * num * sizeof(double),
+             cudaMemcpyHostToDevice);
+  ConstReprojectionLossScaleStackedToCaspar(
+      marker__scratch_inout_,
+      facs__fixed_rig_pinhole__args__reprojection_loss_scale__data_,
+      1,
+      offset,
+      num);
+}
+
+void GraphSolver::SetFixedRigPinholeReprojectionLossScaleDataFromStackedDevice(
+    const double* const data) {
+  cudaSetDevice(device_id_);
+  const size_t offset = 0;
+  const size_t num = 1;
+  if (offset + num > fixed_rig_pinhole_num_max_) {
+    throw std::runtime_error(std::to_string(offset + num) +
+                             " > fixed_rig_pinhole_num_max_");
+  }
+  ConstReprojectionLossScaleStackedToCaspar(
+      data,
+      facs__fixed_rig_pinhole__args__reprojection_loss_scale__data_,
+      1,
+      offset,
+      num);
 }
 void GraphSolver::SetFixedRigPositionPriorNum(const size_t num) {
   if (num > fixed_rig_position_prior_num_max_) {
@@ -14896,6 +14939,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 4 * fixed_rig_pinhole_num_, 4);
   increment_offset<SharedIndex>(offset, 1 * fixed_rig_pinhole_num_, 4);
   increment_offset<double>(offset, 2 * fixed_rig_pinhole_num_, 4);
+  increment_offset<double>(offset, 1 * 1, 4);
   increment_offset<SharedIndex>(offset, 1 * fixed_rig_position_prior_num_, 4);
   increment_offset<double>(offset, 4 * fixed_rig_position_prior_num_, 4);
   increment_offset<double>(offset, 9 * fixed_rig_position_prior_num_, 4);

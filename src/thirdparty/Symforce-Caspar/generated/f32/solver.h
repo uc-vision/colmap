@@ -1550,6 +1550,24 @@ class GraphSolver {
                                                     size_t num);
 
   /**
+   * Set the values for the reprojection_loss_scale consts FixedRigPinhole
+   * factor from stacked host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedRigPinholeReprojectionLossScaleDataFromStackedHost(
+      const float* const data);
+
+  /**
+   * Set the values for the reprojection_loss_scale consts FixedRigPinhole
+   * factor from stacked device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedRigPinholeReprojectionLossScaleDataFromStackedDevice(
+      const float* const data);
+
+  /**
    * Set the current number of FixedRigPinhole factors.
    *
    * The value is set during initialization and this function is only needed if
@@ -4512,6 +4530,7 @@ class GraphSolver {
   float* facs__fixed_rig_pinhole__args__calib__data_;
   SharedIndex* facs__fixed_rig_pinhole__args__point__idx_shared_;
   float* facs__fixed_rig_pinhole__args__pixel__data_;
+  float* facs__fixed_rig_pinhole__args__reprojection_loss_scale__data_;
   SharedIndex* facs__fixed_rig_position_prior__args__pose__idx_shared_;
   float* facs__fixed_rig_position_prior__args__position__data_;
   float* facs__fixed_rig_position_prior__args__sqrt_information__data_;
