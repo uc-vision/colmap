@@ -72,6 +72,10 @@ class GraphSolver {
    * @param fixed_rig_pinhole_num_max the maximum number of fixed_rig_pinholes
    * @param fixed_rig_position_prior_num_max the maximum number of
    * fixed_rig_position_priors
+   * @param fixed_camera_pinhole_point_num_max the maximum number of
+   * fixed_camera_pinhole_points
+   * @param fixed_camera_pinhole_point_image_from_world_num_max the maximum
+   * number of indexed fixed-camera projection matrices
    * @param simple_radial_split_fixed_focal_and_extra_num_max the maximum number
    * of simple_radial_split_fixed_focal_and_extras
    * @param simple_radial_split_fixed_principal_point_num_max the maximum number
@@ -152,6 +156,8 @@ class GraphSolver {
       size_t pinhole_fixed_pose_fixed_point_num_max,
       size_t fixed_rig_pinhole_num_max,
       size_t fixed_rig_position_prior_num_max,
+      size_t fixed_camera_pinhole_point_num_max,
+      size_t fixed_camera_pinhole_point_image_from_world_num_max,
       size_t simple_radial_split_fixed_focal_and_extra_num_max,
       size_t simple_radial_split_fixed_principal_point_num_max,
       size_t simple_radial_split_fixed_pose_fixed_focal_and_extra_num_max,
@@ -1619,6 +1625,87 @@ class GraphSolver {
    * progress and can have performance impacts.
    */
   void SetFixedRigPositionPriorNum(size_t num);
+
+  /**
+   * Set the indices for the point argument for the FixedCameraPinholePoint
+   * factor from host.
+   */
+  void SetFixedCameraPinholePointPointIndicesFromHost(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the point argument for the FixedCameraPinholePoint
+   * factor from device.
+   */
+  void SetFixedCameraPinholePointPointIndicesFromDevice(
+      const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the values for the image_from_world consts FixedCameraPinholePoint
+   * factor from stacked host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedCameraPinholePointImageFromWorldDataFromStackedHost(
+      const double* const data, size_t offset, size_t num);
+
+  /**
+   * Set the values for the image_from_world consts FixedCameraPinholePoint
+   * factor from stacked device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedCameraPinholePointImageFromWorldDataFromStackedDevice(
+      const double* const data, size_t offset, size_t num);
+
+  void SetFixedCameraPinholePointImageFromWorldIndicesFromHost(
+      const unsigned int* const indices, size_t num);
+  void SetFixedCameraPinholePointImageFromWorldIndicesFromDevice(
+      const unsigned int* const indices, size_t num);
+  /**
+   * Set the values for the pixel consts FixedCameraPinholePoint factor from
+   * stacked host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedCameraPinholePointPixelDataFromStackedHost(
+      const double* const data, size_t offset, size_t num);
+
+  /**
+   * Set the values for the pixel consts FixedCameraPinholePoint factor from
+   * stacked device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedCameraPinholePointPixelDataFromStackedDevice(
+      const double* const data, size_t offset, size_t num);
+
+  /**
+   * Set the values for the reprojection_loss_scale consts
+   * FixedCameraPinholePoint factor from stacked host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedCameraPinholePointReprojectionLossScaleDataFromStackedHost(
+      const double* const data);
+
+  /**
+   * Set the values for the reprojection_loss_scale consts
+   * FixedCameraPinholePoint factor from stacked device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedCameraPinholePointReprojectionLossScaleDataFromStackedDevice(
+      const double* const data);
+
+  /**
+   * Set the current number of FixedCameraPinholePoint factors.
+   *
+   * The value is set during initialization and this function is only needed if
+   * you want to change the problem between optimization runs. This is work in
+   * progress and can have performance impacts.
+   */
+  void SetFixedCameraPinholePointNum(size_t num);
 
   /**
    * Set the indices for the pose argument for the
@@ -4364,6 +4451,9 @@ class GraphSolver {
   size_t fixed_rig_pinhole_num_max_;
   size_t fixed_rig_position_prior_num_;
   size_t fixed_rig_position_prior_num_max_;
+  size_t fixed_camera_pinhole_point_num_;
+  size_t fixed_camera_pinhole_point_num_max_;
+  size_t fixed_camera_pinhole_point_image_from_world_num_max_;
   size_t simple_radial_split_fixed_focal_and_extra_num_;
   size_t simple_radial_split_fixed_focal_and_extra_num_max_;
   size_t simple_radial_split_fixed_principal_point_num_;
@@ -4519,6 +4609,13 @@ class GraphSolver {
   SharedIndex* facs__fixed_rig_position_prior__args__pose__idx_shared_;
   double* facs__fixed_rig_position_prior__args__position__data_;
   double* facs__fixed_rig_position_prior__args__sqrt_information__data_;
+  SharedIndex* facs__fixed_camera_pinhole_point__args__point__idx_shared_;
+  double* facs__fixed_camera_pinhole_point__args__image_from_world__data_;
+  SharedIndex*
+      facs__fixed_camera_pinhole_point__args__image_from_world__idx_shared_;
+  double* facs__fixed_camera_pinhole_point__args__pixel__data_;
+  double*
+      facs__fixed_camera_pinhole_point__args__reprojection_loss_scale__data_;
   SharedIndex*
       facs__simple_radial_split_fixed_focal_and_extra__args__pose__idx_shared_;
   double*
@@ -4780,6 +4877,7 @@ class GraphSolver {
   double* facs__pinhole_fixed_pose_fixed_point__res_;
   double* facs__fixed_rig_pinhole__res_;
   double* facs__fixed_rig_position_prior__res_;
+  double* facs__fixed_camera_pinhole_point__res_;
   double* facs__simple_radial_split_fixed_focal_and_extra__res_;
   double* facs__simple_radial_split_fixed_principal_point__res_;
   double* facs__simple_radial_split_fixed_pose_fixed_focal_and_extra__res_;
@@ -4830,6 +4928,7 @@ class GraphSolver {
   double* facs__fixed_rig_pinhole__args__sensor_from_rig_log_scale__jac_;
   double* facs__fixed_rig_pinhole__args__point__jac_;
   double* facs__fixed_rig_position_prior__args__pose__jac_;
+  double* facs__fixed_camera_pinhole_point__args__point__jac_;
   double* facs__simple_radial_split_fixed_focal_and_extra__args__pose__jac_;
   double*
       facs__simple_radial_split_fixed_focal_and_extra__args__principal_point__jac_;
@@ -5039,6 +5138,7 @@ class GraphSolver {
   double* facs__pinhole_fixed_pose_fixed_point__jp_;
   double* facs__fixed_rig_pinhole__jp_;
   double* facs__fixed_rig_position_prior__jp_;
+  double* facs__fixed_camera_pinhole_point__jp_;
   double* facs__simple_radial_split_fixed_focal_and_extra__jp_;
   double* facs__simple_radial_split_fixed_principal_point__jp_;
   double* facs__simple_radial_split_fixed_pose_fixed_focal_and_extra__jp_;

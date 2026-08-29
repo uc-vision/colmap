@@ -53,6 +53,10 @@ class ConstReprojectionLossScale(sf.V1):
     pass
 
 
+class ConstImageFromWorld(sf.M34):
+    pass
+
+
 class SensorFromRigLogScale(sf.V1):
     pass
 
@@ -329,6 +333,29 @@ def fixed_rig_position_prior(
     return weight * (pose.inverse().t - position)
 
 
+def fixed_camera_pinhole_point(
+    point: T.Annotated[Point, mem.TunableShared],
+    image_from_world: T.Annotated[ConstImageFromWorld, mem.ConstantShared],
+    pixel: T.Annotated[ConstPixel, mem.ConstantSequential],
+    reprojection_loss_scale: T.Annotated[
+        ConstReprojectionLossScale, mem.ConstantUnique
+    ],
+) -> sf.V2:
+    """Robust point-only reprojection with fixed indexed camera matrices."""
+    point_homogeneous = sf.V4([point[0], point[1], point[2], 1])
+    projected = image_from_world * point_homogeneous
+    depth = projected[2]
+    residual = (
+        sf.V2(projected[:2]) / (depth + sf.epsilon() * sf.sign_no_zero(depth))
+        - pixel
+    )
+    scaled_squared_norm = (
+        residual.squared_norm() / reprojection_loss_scale[0] ** 2
+    )
+    weight = sf.sqrt(2 / (sf.sqrt(1 + scaled_squared_norm) + 1))
+    return weight * residual
+
+
 # Split cores delegate to merged cores to avoid duplicating projection math.
 
 
@@ -442,6 +469,7 @@ register_camera_model(
 )
 caslib.add_factor(fixed_rig_pinhole)
 caslib.add_factor(fixed_rig_position_prior)
+caslib.add_factor(fixed_camera_pinhole_point)
 
 # Split: all variants where at least one of
 # {focal_and_extra, principal_point} is fixed (11 variants per model).

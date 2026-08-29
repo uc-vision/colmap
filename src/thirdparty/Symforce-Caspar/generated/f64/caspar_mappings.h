@@ -4,6 +4,18 @@
 
 namespace caspar {
 
+cudaError_t ConstImageFromWorldStackedToCaspar(const double* stacked_data,
+                                               double* cas_data,
+                                               const unsigned int cas_stride,
+                                               const unsigned int cas_offset,
+                                               const unsigned int num_objects);
+
+cudaError_t ConstImageFromWorldCasparToStacked(const double* cas_data,
+                                               double* stacked_data,
+                                               const unsigned int cas_stride,
+                                               const unsigned int cas_offset,
+                                               const unsigned int num_objects);
+
 cudaError_t ConstPinholeCalibStackedToCaspar(const double* stacked_data,
                                              double* cas_data,
                                              const unsigned int cas_stride,

@@ -59,6 +59,8 @@ if(CASPAR_ENABLED)
     list(APPEND ESTIMATORS_SRCS
         bundle_adjustment_caspar.h
         bundle_adjustment_caspar.cc
+        point_refinement_caspar.h
+        point_refinement_caspar.cc
     )
 endif()
 
@@ -108,6 +110,11 @@ if(CASPAR_ENABLED)
     COLMAP_ADD_TEST(
         NAME bundle_adjustment_caspar_test
         SRCS bundle_adjustment_caspar_test.cc
+        LINK_LIBS colmap_estimators
+    )
+    COLMAP_ADD_TEST(
+        NAME point_refinement_caspar_test
+        SRCS point_refinement_caspar_test.cc
         LINK_LIBS colmap_estimators
     )
 endif()

@@ -1,3 +1,5 @@
+import numpy as np
+
 import pycolmap
 
 
@@ -256,3 +258,91 @@ def test_bundle_adjustment_pipeline(synthetic_reconstruction):
     options = pycolmap.BundleAdjustmentOptions()
     options.print_summary = False
     pycolmap.bundle_adjustment(reconstruction, options)
+
+
+def pinhole_projections(camera_centers):
+    projections = np.zeros((len(camera_centers), 3, 4), dtype=np.float32)
+    projections[:, :3, :3] = np.array(
+        [[400.0, 0.0, 320.0], [0.0, 400.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    projections[:, 0, 3] = -400.0 * np.asarray(camera_centers, dtype=np.float32)
+    return projections
+
+
+def project_observations(projections, points, point_indices, image_indices):
+    homogeneous_points = np.concatenate(
+        [points, np.ones((len(points), 1), dtype=np.float32)], axis=1
+    )
+    projected = np.einsum(
+        "nij,nj->ni",
+        projections[image_indices],
+        homogeneous_points[point_indices],
+    )
+    return np.ascontiguousarray(projected[:, :2] / projected[:, 2:3])
+
+
+def test_caspar_refines_points_against_exact_fixed_cameras():
+    projections = pinhole_projections([-1.0, 0.0, 1.0])
+    original_projections = projections.copy()
+    expected = np.array([[0.2, -0.1, 4.0], [-0.4, 0.3, 5.0]], dtype=np.float32)
+    initial = np.array([[0.7, 0.2, 3.2], [-0.8, 0.0, 4.1]], dtype=np.float32)
+    point_indices = np.array([0, 1, 0, 1, 0, 1], dtype=np.uint32)
+    image_indices = np.array([0, 0, 1, 1, 2, 2], dtype=np.uint32)
+    pixels = project_observations(
+        projections, expected, point_indices, image_indices
+    )
+
+    options = pycolmap.CasparPointRefinementOptions()
+    options.loss_scale = 100.0
+    options.solver_iter_max = 100
+    result = pycolmap.caspar_refine_pinhole_points(
+        initial,
+        projections,
+        point_indices,
+        image_indices,
+        pixels,
+        options,
+    )
+
+    np.testing.assert_allclose(result.points, expected, atol=1e-3)
+    np.testing.assert_array_equal(projections, original_projections)
+    assert result.summary.final_score < result.summary.initial_score
+
+
+def test_caspar_point_refinement_soft_l1_rejects_outlier():
+    projections = pinhole_projections([-2.0, -1.0, 0.0, 1.0, 2.0])
+    expected = np.array([[0.2, -0.1, 4.0]], dtype=np.float32)
+    initial = np.array([[0.5, 0.1, 3.5]], dtype=np.float32)
+    point_indices = np.zeros(5, dtype=np.uint32)
+    image_indices = np.arange(5, dtype=np.uint32)
+    pixels = project_observations(
+        projections, expected, point_indices, image_indices
+    )
+    pixels[-1] += np.array([300.0, -200.0], dtype=np.float32)
+
+    options = pycolmap.CasparPointRefinementOptions()
+    options.loss_scale = 1.0
+    options.solver_iter_max = 100
+    robust = pycolmap.caspar_refine_pinhole_points(
+        initial,
+        projections,
+        point_indices,
+        image_indices,
+        pixels,
+        options,
+    ).points[0]
+    options.loss_scale = 1e6
+    quadratic = pycolmap.caspar_refine_pinhole_points(
+        initial,
+        projections,
+        point_indices,
+        image_indices,
+        pixels,
+        options,
+    ).points[0]
+
+    robust_error = np.linalg.norm(robust - expected[0])
+    quadratic_error = np.linalg.norm(quadratic - expected[0])
+    assert robust_error < 0.03
+    assert robust_error < 0.2 * quadratic_error

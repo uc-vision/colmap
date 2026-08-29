@@ -146,6 +146,9 @@ struct CasparBundleAdjustmentSummary : public BundleAdjustmentSummary {
       const caspar::SolveResult& caspar_summary);
   int iteration_count = 0;
   double initial_score = 0.0;
+  double final_score = 0.0;
+  double runtime = 0.0;
+  size_t allocation_size = 0;
   std::vector<caspar::IterationData> iterations;
 };
 #endif

@@ -1450,6 +1450,8 @@ CasparBundleAdjustmentSummary::Create(
   auto summary = std::make_shared<CasparBundleAdjustmentSummary>();
   summary->iteration_count = caspar_summary.iteration_count;
   summary->initial_score = caspar_summary.initial_score;
+  summary->final_score = caspar_summary.final_score;
+  summary->runtime = caspar_summary.runtime;
   summary->iterations = caspar_summary.iterations;
   switch (caspar_summary.exit_reason) {
     case caspar::ExitReason::CONVERGED_DIAG_EXIT:

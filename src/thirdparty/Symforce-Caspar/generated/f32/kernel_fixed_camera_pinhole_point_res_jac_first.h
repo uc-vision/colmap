@@ -1,0 +1,29 @@
+#pragma once
+
+#include "shared_indices.h"
+#include <cuda_runtime.h>
+
+namespace caspar {
+
+void FixedCameraPinholePointResJacFirst(
+    float* point,
+    unsigned int point_num_alloc,
+    SharedIndex* point_indices,
+    float* image_from_world,
+    unsigned int image_from_world_num_alloc,
+    SharedIndex* image_from_world_indices,
+    float* pixel,
+    unsigned int pixel_num_alloc,
+    const float* const reprojection_loss_scale,
+    float* out_res,
+    unsigned int out_res_num_alloc,
+    float* const out_rTr,
+    float* const out_point_njtr,
+    unsigned int out_point_njtr_num_alloc,
+    float* const out_point_precond_diag,
+    unsigned int out_point_precond_diag_num_alloc,
+    float* const out_point_precond_tril,
+    unsigned int out_point_precond_tril_num_alloc,
+    size_t problem_size);
+
+}  // namespace caspar

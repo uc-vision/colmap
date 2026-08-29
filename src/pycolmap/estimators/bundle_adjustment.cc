@@ -2,12 +2,18 @@
 
 #include "colmap/estimators/bundle_adjustment_caspar.h"
 #include "colmap/estimators/bundle_adjustment_ceres.h"
+#ifdef CASPAR_ENABLED
+#include "colmap/estimators/point_refinement_caspar.h"
+#endif
 
 #include "pycolmap/helpers.h"
 #include "pycolmap/pybind11_extension.h"
 #include "pycolmap/utils.h"
 
+#include <algorithm>
+
 #include <pybind11/eigen.h>
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -16,6 +22,81 @@ using namespace pybind11::literals;
 namespace py = pybind11;
 
 namespace {
+
+#ifdef CASPAR_ENABLED
+using FloatArray = py::array_t<float, py::array::c_style>;
+using Uint32Array = py::array_t<uint32_t, py::array::c_style>;
+
+struct PyCasparPointRefinementResult {
+  py::array_t<float> points;
+  std::shared_ptr<CasparBundleAdjustmentSummary> summary;
+};
+
+py::array_t<float> PointArray(std::vector<float>&& values,
+                              const size_t num_points) {
+  auto* storage = new std::vector<float>(std::move(values));
+  py::capsule owner(storage, [](void* pointer) {
+    delete static_cast<std::vector<float>*>(pointer);
+  });
+  return py::array_t<float>(
+      {static_cast<ssize_t>(num_points), static_cast<ssize_t>(3)},
+      {static_cast<ssize_t>(3 * sizeof(float)),
+       static_cast<ssize_t>(sizeof(float))},
+      storage->data(),
+      owner);
+}
+
+PyCasparPointRefinementResult RefineFixedCameraPinholePoints(
+    const FloatArray& initial_points,
+    const FloatArray& image_from_world,
+    const Uint32Array& observation_point_indices,
+    const Uint32Array& observation_image_indices,
+    const FloatArray& observation_xy,
+    const CasparPointRefinementOptions& options) {
+  THROW_CHECK_EQ(initial_points.ndim(), 2);
+  THROW_CHECK_EQ(initial_points.shape(1), 3);
+  THROW_CHECK_GT(initial_points.shape(0), 0);
+  THROW_CHECK_EQ(image_from_world.ndim(), 3);
+  THROW_CHECK_EQ(image_from_world.shape(1), 3);
+  THROW_CHECK_EQ(image_from_world.shape(2), 4);
+  THROW_CHECK_GT(image_from_world.shape(0), 0);
+  THROW_CHECK_EQ(observation_point_indices.ndim(), 1);
+  THROW_CHECK_EQ(observation_image_indices.ndim(), 1);
+  THROW_CHECK_EQ(observation_xy.ndim(), 2);
+  THROW_CHECK_EQ(observation_xy.shape(1), 2);
+  const size_t num_observations = observation_point_indices.shape(0);
+  THROW_CHECK_GT(num_observations, 0);
+  THROW_CHECK_EQ(observation_image_indices.shape(0), num_observations);
+  THROW_CHECK_EQ(observation_xy.shape(0), num_observations);
+
+  const size_t num_points = initial_points.shape(0);
+  const size_t num_images = image_from_world.shape(0);
+  CasparPointRefinementResult result;
+  {
+    py::gil_scoped_release release;
+    THROW_CHECK_LT(
+        *std::max_element(observation_point_indices.data(),
+                          observation_point_indices.data() + num_observations),
+        num_points);
+    THROW_CHECK_LT(
+        *std::max_element(observation_image_indices.data(),
+                          observation_image_indices.data() + num_observations),
+        num_images);
+    result =
+        RefineFixedCameraPinholePointsCaspar(initial_points.data(),
+                                             num_points,
+                                             image_from_world.data(),
+                                             num_images,
+                                             observation_point_indices.data(),
+                                             observation_image_indices.data(),
+                                             observation_xy.data(),
+                                             num_observations,
+                                             options);
+  }
+  return {PointArray(std::move(result.points), num_points),
+          std::move(result.summary)};
+}
+#endif
 
 class PyBundleAdjuster : public BundleAdjuster,
                          py::trampoline_self_life_support {
@@ -109,8 +190,27 @@ void BindBundleAdjuster(py::module& m) {
   using CasparBASummary = CasparBundleAdjustmentSummary;
   auto PyCasparBundleAdjustmentSummary =
       py::classh<CasparBASummary, BASummary>(m, "CasparBundleAdjustmentSummary")
-          .def(py::init<>());
+          .def(py::init<>())
+          .def_readwrite("iteration_count", &CasparBASummary::iteration_count)
+          .def_readwrite("initial_score", &CasparBASummary::initial_score)
+          .def_readwrite("final_score", &CasparBASummary::final_score)
+          .def_readwrite("runtime", &CasparBASummary::runtime)
+          .def_readwrite("allocation_size", &CasparBASummary::allocation_size);
   MakeDataclass(PyCasparBundleAdjustmentSummary);
+
+  using CasparPointOpts = CasparPointRefinementOptions;
+  auto PyCasparPointRefinementOptions =
+      py::classh<CasparPointOpts>(m, "CasparPointRefinementOptions")
+          .def(py::init<>())
+          .def_readwrite("solver_iter_max", &CasparPointOpts::solver_iter_max)
+          .def_readwrite("pcg_iter_max", &CasparPointOpts::pcg_iter_max)
+          .def_readwrite("gpu_index", &CasparPointOpts::gpu_index)
+          .def_readwrite("loss_scale", &CasparPointOpts::loss_scale);
+  MakeDataclass(PyCasparPointRefinementOptions);
+
+  py::classh<PyCasparPointRefinementResult>(m, "CasparPointRefinementResult")
+      .def_readonly("points", &PyCasparPointRefinementResult::points)
+      .def_readonly("summary", &PyCasparPointRefinementResult::summary);
 #endif
 
   auto PyBundleAdjustmentGauge =
@@ -485,4 +585,16 @@ void BindBundleAdjuster(py::module& m) {
         "Jointly optimize rig-frame poses and 3D points with reference-camera "
         "position priors, a first-frame rotation gauge anchor, and one shared "
         "positive correction on non-reference sensor-from-rig translations.");
+#ifdef CASPAR_ENABLED
+  m.def("caspar_refine_pinhole_points",
+        RefineFixedCameraPinholePoints,
+        "initial_points"_a.noconvert(),
+        "image_from_world"_a.noconvert(),
+        "observation_point_indices"_a.noconvert(),
+        "observation_image_indices"_a.noconvert(),
+        "observation_xy"_a.noconvert(),
+        "options"_a = CasparPointRefinementOptions(),
+        "Refine 3D points against fixed distortion-free 3x4 projection "
+        "matrices with CASPAR.");
+#endif
 }
