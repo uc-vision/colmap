@@ -31,22 +31,22 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
         )
     )
     first_join = pycolmap.RowTrackSource(
-        np.array((0, 2, 4), np.int64),
-        np.array((0, 1, 0, 2), np.int32),
-        np.array(
+        observation_offsets=np.array((0, 2, 4), np.int64),
+        observation_image_indices=np.array((0, 1, 0, 2), np.int32),
+        observation_xy=np.array(
             ((10.0, 10.0), (20.0, 20.0), (30.0, 30.0), (40.0, 40.0)),
             np.float32,
         ),
-        np.array((0, 1, 2), np.int32),
+        image_to_shared_index=np.array((0, 1, 2), np.int32),
     )
     second_join = pycolmap.RowTrackSource(
-        np.array((0, 2, 4), np.int64),
-        np.array((2, 1, 2, 1), np.int32),
-        np.array(
-            ((40.05, 40.0), (60.0, 60.0), (50.0, 50.0), (20.0, 20.05)),
+        observation_offsets=np.array((0, 2, 4), np.int64),
+        observation_image_indices=np.array((2, 1, 2, 1), np.int32),
+        observation_xy=np.array(
+            ((40.75, 40.0), (60.0, 60.0), (50.0, 50.0), (20.0, 20.75)),
             np.float32,
         ),
-        np.array((0, 1, 2), np.int32),
+        image_to_shared_index=np.array((0, 1, 2), np.int32),
     )
     joined = pycolmap.join_row_tracks((first_join, second_join))
 

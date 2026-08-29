@@ -23,25 +23,25 @@ using FloatArray = py::array_t<float, py::array::c_style>;
 using Int32Array = py::array_t<int32_t, py::array::c_style>;
 using Int64Array = py::array_t<int64_t, py::array::c_style>;
 
-constexpr float kFeatureTolerancePixels = 0.125f;
-constexpr float kFeatureToleranceSquared =
-    kFeatureTolerancePixels * kFeatureTolerancePixels;
-constexpr float kFeatureCellScale = 1.0f / kFeatureTolerancePixels;
+constexpr float kObservationTolerancePixels = 1.0f;
+constexpr float kObservationToleranceSquared =
+    kObservationTolerancePixels * kObservationTolerancePixels;
+constexpr float kObservationCellScale = 1.0f / kObservationTolerancePixels;
 constexpr uint32_t kInvalidIndex = std::numeric_limits<uint32_t>::max();
 
 struct RowTrackSource {
   RowTrackSource(Int64Array observation_offsets,
                  Int32Array observation_image_indices,
-                 FloatArray observation_feature_xy,
+                 FloatArray observation_xy,
                  Int32Array image_to_shared_index)
       : observation_offsets(std::move(observation_offsets)),
         observation_image_indices(std::move(observation_image_indices)),
-        observation_feature_xy(std::move(observation_feature_xy)),
+        observation_xy(std::move(observation_xy)),
         image_to_shared_index(std::move(image_to_shared_index)) {}
 
   Int64Array observation_offsets;
   Int32Array observation_image_indices;
-  FloatArray observation_feature_xy;
+  FloatArray observation_xy;
   Int32Array image_to_shared_index;
 };
 
@@ -55,18 +55,18 @@ struct RowTrackJoin {
   py::array_t<uint32_t> duplicate_observation_indices;
 };
 
-struct CanonicalFeature {
+struct CanonicalObservation {
   Eigen::Vector2f xy;
   uint32_t track;
   uint32_t next_in_cell;
 };
 
-struct SharedImageFeatures {
-  std::vector<CanonicalFeature> features;
+struct SharedImageObservations {
+  std::vector<CanonicalObservation> observations;
   FlatHashMap<uint64_t, uint32_t> cell_heads;
 };
 
-struct PendingFeature {
+struct PendingObservation {
   uint32_t shared_image;
   Eigen::Vector2f xy;
   uint32_t track;
@@ -88,14 +88,14 @@ void UnionRoots(uint32_t* parent, uint32_t first, uint32_t second) {
   }
 }
 
-Eigen::Map<const Eigen::Vector2f> FeatureXY(const RowTrackSource& source,
-                                            uint32_t observation) {
-  return Eigen::Map<const Eigen::Vector2f>(
-      source.observation_feature_xy.data() + 2 * observation);
+Eigen::Map<const Eigen::Vector2f> ObservationXY(const RowTrackSource& source,
+                                                uint32_t observation) {
+  return Eigen::Map<const Eigen::Vector2f>(source.observation_xy.data() +
+                                           2 * observation);
 }
 
-Eigen::Vector2i FeatureCell(const Eigen::Vector2f& xy) {
-  return (xy * kFeatureCellScale).array().floor().cast<int>().matrix();
+Eigen::Vector2i ObservationCell(const Eigen::Vector2f& xy) {
+  return (xy * kObservationCellScale).array().floor().cast<int>().matrix();
 }
 
 uint64_t CellKey(const Eigen::Vector2i& cell) {
@@ -103,22 +103,23 @@ uint64_t CellKey(const Eigen::Vector2i& cell) {
          static_cast<uint32_t>(cell.y());
 }
 
-void AddCanonicalFeature(const Eigen::Vector2f& xy,
-                         uint32_t track,
-                         SharedImageFeatures* image) {
-  const uint64_t cell_key = CellKey(FeatureCell(xy));
+void AddCanonicalObservation(const Eigen::Vector2f& xy,
+                             uint32_t track,
+                             SharedImageObservations* image) {
+  const uint64_t cell_key = CellKey(ObservationCell(xy));
   const auto [cell_it, inserted] =
       image->cell_heads.try_emplace(cell_key, kInvalidIndex);
-  const uint32_t feature = static_cast<uint32_t>(image->features.size());
-  image->features.push_back(
-      CanonicalFeature{xy, track, inserted ? kInvalidIndex : cell_it->second});
-  cell_it->second = feature;
+  const uint32_t observation =
+      static_cast<uint32_t>(image->observations.size());
+  image->observations.push_back(CanonicalObservation{
+      xy, track, inserted ? kInvalidIndex : cell_it->second});
+  cell_it->second = observation;
 }
 
-uint32_t FindCanonicalFeature(const SharedImageFeatures& image,
-                              const Eigen::Vector2f& xy) {
-  const Eigen::Vector2i cell = FeatureCell(xy);
-  uint32_t nearest_feature = kInvalidIndex;
+uint32_t FindCanonicalObservation(const SharedImageObservations& image,
+                                  const Eigen::Vector2f& xy) {
+  const Eigen::Vector2i cell = ObservationCell(xy);
+  uint32_t nearest_observation = kInvalidIndex;
   float nearest_distance = std::numeric_limits<float>::infinity();
   for (int cell_y = -1; cell_y <= 1; ++cell_y) {
     for (int cell_x = -1; cell_x <= 1; ++cell_x) {
@@ -127,21 +128,21 @@ uint32_t FindCanonicalFeature(const SharedImageFeatures& image,
       if (cell_it == image.cell_heads.end()) {
         continue;
       }
-      for (uint32_t feature = cell_it->second; feature != kInvalidIndex;
-           feature = image.features[feature].next_in_cell) {
+      for (uint32_t observation = cell_it->second; observation != kInvalidIndex;
+           observation = image.observations[observation].next_in_cell) {
         const float squared_distance =
-            (image.features[feature].xy - xy).squaredNorm();
-        if (squared_distance <= kFeatureToleranceSquared &&
+            (image.observations[observation].xy - xy).squaredNorm();
+        if (squared_distance <= kObservationToleranceSquared &&
             (squared_distance < nearest_distance ||
              (squared_distance == nearest_distance &&
-              feature < nearest_feature))) {
-          nearest_feature = feature;
+              observation < nearest_observation))) {
+          nearest_observation = observation;
           nearest_distance = squared_distance;
         }
       }
     }
   }
-  return nearest_feature;
+  return nearest_observation;
 }
 
 size_t NumSharedImages(const std::vector<const RowTrackSource*>& sources) {
@@ -178,7 +179,8 @@ RowTrackJoin JoinRowTracks(const std::vector<const RowTrackSource*>& sources) {
     py::gil_scoped_release release;
     std::iota(parent, parent + num_tracks, uint32_t{0});
 
-    std::vector<SharedImageFeatures> shared_images(NumSharedImages(sources));
+    std::vector<SharedImageObservations> shared_images(
+        NumSharedImages(sources));
     uint32_t track_base = 0;
     for (const RowTrackSource* source_pointer : sources) {
       const RowTrackSource& source = *source_pointer;
@@ -189,7 +191,7 @@ RowTrackJoin JoinRowTracks(const std::vector<const RowTrackSource*>& sources) {
           source.image_to_shared_index.data();
       const uint32_t source_track_count =
           source.observation_offsets.shape(0) - 1;
-      std::vector<PendingFeature> pending_features;
+      std::vector<PendingObservation> pending_observations;
       for (uint32_t track = 0; track < source_track_count; ++track) {
         const uint32_t global_track = track_base + track;
         track_observation_counts[global_track] = static_cast<uint32_t>(
@@ -201,24 +203,28 @@ RowTrackJoin JoinRowTracks(const std::vector<const RowTrackSource*>& sources) {
               image_to_shared_index[observation_image_indices[observation]];
           if (shared_image >= 0) {
             const Eigen::Vector2f xy =
-                FeatureXY(source, static_cast<uint32_t>(observation));
-            SharedImageFeatures& image = shared_images[shared_image];
-            const uint32_t feature = FindCanonicalFeature(image, xy);
-            if (feature == kInvalidIndex) {
-              pending_features.push_back(PendingFeature{
+                ObservationXY(source, static_cast<uint32_t>(observation));
+            SharedImageObservations& image = shared_images[shared_image];
+            const uint32_t canonical_observation =
+                FindCanonicalObservation(image, xy);
+            if (canonical_observation == kInvalidIndex) {
+              pending_observations.push_back(PendingObservation{
                   static_cast<uint32_t>(shared_image), xy, global_track});
             } else {
               duplicate_observation_indices.push_back(
                   static_cast<uint32_t>(observation));
               --track_observation_counts[global_track];
-              UnionRoots(parent, global_track, image.features[feature].track);
+              UnionRoots(parent,
+                         global_track,
+                         image.observations[canonical_observation].track);
             }
           }
         }
       }
-      for (const PendingFeature& feature : pending_features) {
-        AddCanonicalFeature(
-            feature.xy, feature.track, &shared_images[feature.shared_image]);
+      for (const PendingObservation& observation : pending_observations) {
+        AddCanonicalObservation(observation.xy,
+                                observation.track,
+                                &shared_images[observation.shared_image]);
       }
       track_base += source_track_count;
       duplicate_observation_offsets.push_back(
@@ -287,13 +293,12 @@ void BindRowTrackJoin(py::module& m) {
       .def(py::init<Int64Array, Int32Array, FloatArray, Int32Array>(),
            "observation_offsets"_a,
            "observation_image_indices"_a,
-           "observation_feature_xy"_a,
+           "observation_xy"_a,
            "image_to_shared_index"_a)
       .def_readonly("observation_offsets", &RowTrackSource::observation_offsets)
       .def_readonly("observation_image_indices",
                     &RowTrackSource::observation_image_indices)
-      .def_readonly("observation_feature_xy",
-                    &RowTrackSource::observation_feature_xy)
+      .def_readonly("observation_xy", &RowTrackSource::observation_xy)
       .def_readonly("image_to_shared_index",
                     &RowTrackSource::image_to_shared_index);
 
@@ -312,5 +317,5 @@ void BindRowTrackJoin(py::module& m) {
   m.def("join_row_tracks",
         &JoinRowTracks,
         "sources"_a,
-        "Join row tracks by shared-image feature coordinates.");
+        "Join row tracks by shared-image observation coordinates.");
 }
