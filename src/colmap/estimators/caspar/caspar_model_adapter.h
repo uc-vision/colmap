@@ -921,7 +921,8 @@ inline std::unique_ptr<ICasparModelAdapter> CreateCasparAdapter(
 // WARNING: Argument order is opaque and bug-prone and will change in a future
 // Caspar release. Order:
 //   1. Node type counts, alphabetical by type name
-//   2. Factor counts, in registration order from caspar_generate.py:
+//   2. Typed constant-pool capacities
+//   3. Factor counts, in registration order from caspar_generate.py:
 //        simple_radial (4) → pinhole (4) → fixed_rig (2) →
 //        fixed_camera_pinhole_point (1) →
 //        simple_radial_split (11) → pinhole_split (11)
@@ -949,6 +950,7 @@ inline caspar::GraphSolver CreateSolver(
       sz.num_simple_radial_poses,   // SimpleRadialPose
       sz.num_simple_radial_calibs,  // SimpleRadialPrincipalPoint      (split
                                     // pool)
+      sz.num_fixed_camera_pinhole_point_images,  // ConstImageFromWorld
       // simple_radial factor counts (r=0..2 over {pose, point}):
       sz.num_simple_radial,                         // {}
       sz.num_simple_radial_fixed_pose,              // {pose}
@@ -962,7 +964,6 @@ inline caspar::GraphSolver CreateSolver(
       sz.num_fixed_rig_pinhole,
       sz.num_fixed_rig_position_prior,
       sz.num_fixed_camera_pinhole_point,
-      sz.num_fixed_camera_pinhole_point_images,
       // simple_radial_split factor counts (11 variants, must_fix_one_of):
       sz.num_simple_radial_split_fixed_focal_and_extra,             // r=1 {fae}
       sz.num_simple_radial_split_fixed_principal_point,             // r=1 {pp}

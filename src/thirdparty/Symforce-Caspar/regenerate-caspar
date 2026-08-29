@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if (( $# < 2 || $# > 3 )); then
+  echo "Usage: $0 OUTPUT_DIRECTORY f32|f64 [PYTHON_EXECUTABLE]" >&2
+  exit 2
+fi
+
+script_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+output_directory=$(realpath -m "$1")
+precision=$2
+python_executable=${3:-python3}
+symforce_repository=https://github.com/symforce-org/symforce.git
+symforce_commit=658293082085486f564ca2c7244a778d6db8278f
+temporary_directory=$(mktemp -d)
+trap 'rm -rf -- "$temporary_directory"' EXIT
+
+symforce_checkout=$temporary_directory/symforce
+git init --quiet "$symforce_checkout"
+git -C "$symforce_checkout" remote add origin "$symforce_repository"
+git -C "$symforce_checkout" fetch --quiet --depth 1 origin "$symforce_commit"
+git -C "$symforce_checkout" checkout --quiet FETCH_HEAD
+git -C "$symforce_checkout" apply \
+  "$script_directory/symforce-caspar-shared-constant-pool.patch"
+
+PYTHONPATH="$symforce_checkout${PYTHONPATH:+:$PYTHONPATH}" \
+  "$python_executable" "$script_directory/caspar_generate.py" \
+  "$output_directory" "$precision"

@@ -312,6 +312,7 @@ GraphSolver::GraphSolver(
     size_t SimpleRadialFocalAndExtra_num_max,
     size_t SimpleRadialPose_num_max,
     size_t SimpleRadialPrincipalPoint_num_max,
+    size_t ConstImageFromWorld_num_max,
     size_t simple_radial_num_max,
     size_t simple_radial_fixed_pose_num_max,
     size_t simple_radial_fixed_point_num_max,
@@ -323,7 +324,6 @@ GraphSolver::GraphSolver(
     size_t fixed_rig_pinhole_num_max,
     size_t fixed_rig_position_prior_num_max,
     size_t fixed_camera_pinhole_point_num_max,
-    size_t fixed_camera_pinhole_point_image_from_world_num_max,
     size_t simple_radial_split_fixed_focal_and_extra_num_max,
     size_t simple_radial_split_fixed_principal_point_num_max,
     size_t simple_radial_split_fixed_pose_fixed_focal_and_extra_num_max,
@@ -374,6 +374,8 @@ GraphSolver::GraphSolver(
       SimpleRadialPose_num_max_(SimpleRadialPose_num_max),
       SimpleRadialPrincipalPoint_num_(SimpleRadialPrincipalPoint_num_max),
       SimpleRadialPrincipalPoint_num_max_(SimpleRadialPrincipalPoint_num_max),
+      ConstImageFromWorld_num_(ConstImageFromWorld_num_max),
+      ConstImageFromWorld_num_max_(ConstImageFromWorld_num_max),
       simple_radial_num_(simple_radial_num_max),
       simple_radial_num_max_(simple_radial_num_max),
       simple_radial_fixed_pose_num_(simple_radial_fixed_pose_num_max),
@@ -400,8 +402,6 @@ GraphSolver::GraphSolver(
       fixed_rig_position_prior_num_max_(fixed_rig_position_prior_num_max),
       fixed_camera_pinhole_point_num_(fixed_camera_pinhole_point_num_max),
       fixed_camera_pinhole_point_num_max_(fixed_camera_pinhole_point_num_max),
-      fixed_camera_pinhole_point_image_from_world_num_max_(
-          fixed_camera_pinhole_point_image_from_world_num_max),
       simple_radial_split_fixed_focal_and_extra_num_(
           simple_radial_split_fixed_focal_and_extra_num_max),
       simple_radial_split_fixed_focal_and_extra_num_max_(
@@ -735,10 +735,7 @@ GraphSolver::GraphSolver(
           origin_ptr_, offset, 1 * fixed_camera_pinhole_point_num_, 4);
   facs__fixed_camera_pinhole_point__args__image_from_world__data_ =
       assign_and_increment<float>(
-          origin_ptr_,
-          offset,
-          12 * fixed_camera_pinhole_point_image_from_world_num_max_,
-          4);
+          origin_ptr_, offset, 12 * ConstImageFromWorld_num_max_, 4);
   facs__fixed_camera_pinhole_point__args__image_from_world__idx_shared_ =
       assign_and_increment<SharedIndex>(
           origin_ptr_, offset, 1 * fixed_camera_pinhole_point_num_, 4);
@@ -2902,7 +2899,7 @@ float GraphSolver::DoResJacFirst() {
       Point_num_max_,
       facs__fixed_camera_pinhole_point__args__point__idx_shared_,
       facs__fixed_camera_pinhole_point__args__image_from_world__data_,
-      fixed_camera_pinhole_point_image_from_world_num_max_,
+      ConstImageFromWorld_num_max_,
       facs__fixed_camera_pinhole_point__args__image_from_world__idx_shared_,
       facs__fixed_camera_pinhole_point__args__pixel__data_,
       fixed_camera_pinhole_point_num_max_,
@@ -4028,7 +4025,7 @@ void GraphSolver::DoResJac() {
       Point_num_max_,
       facs__fixed_camera_pinhole_point__args__point__idx_shared_,
       facs__fixed_camera_pinhole_point__args__image_from_world__data_,
-      fixed_camera_pinhole_point_image_from_world_num_max_,
+      ConstImageFromWorld_num_max_,
       facs__fixed_camera_pinhole_point__args__image_from_world__idx_shared_,
       facs__fixed_camera_pinhole_point__args__pixel__data_,
       fixed_camera_pinhole_point_num_max_,
@@ -6182,7 +6179,7 @@ float GraphSolver::DoRetractScore() {
       Point_num_max_,
       facs__fixed_camera_pinhole_point__args__point__idx_shared_,
       facs__fixed_camera_pinhole_point__args__image_from_world__data_,
-      fixed_camera_pinhole_point_image_from_world_num_max_,
+      ConstImageFromWorld_num_max_,
       facs__fixed_camera_pinhole_point__args__image_from_world__idx_shared_,
       facs__fixed_camera_pinhole_point__args__pixel__data_,
       fixed_camera_pinhole_point_num_max_,
@@ -9397,10 +9394,9 @@ void GraphSolver::SetFixedCameraPinholePointPointIndicesFromDevice(
 void GraphSolver::SetFixedCameraPinholePointImageFromWorldDataFromStackedHost(
     const float* const data, size_t offset, size_t num) {
   cudaSetDevice(device_id_);
-  if (offset + num > fixed_camera_pinhole_point_image_from_world_num_max_) {
+  if (offset + num > ConstImageFromWorld_num_max_) {
     throw std::runtime_error(std::to_string(offset + num) +
-                             " > fixed_camera_pinhole_point_"
-                             "image_from_world_num_max_");
+                             " > ConstImageFromWorld_num_max_");
   }
   cudaMemcpy(marker__scratch_inout_,
              data,
@@ -9409,7 +9405,7 @@ void GraphSolver::SetFixedCameraPinholePointImageFromWorldDataFromStackedHost(
   ConstImageFromWorldStackedToCaspar(
       marker__scratch_inout_,
       facs__fixed_camera_pinhole_point__args__image_from_world__data_,
-      fixed_camera_pinhole_point_image_from_world_num_max_,
+      ConstImageFromWorld_num_max_,
       offset,
       num);
 }
@@ -9417,15 +9413,14 @@ void GraphSolver::SetFixedCameraPinholePointImageFromWorldDataFromStackedHost(
 void GraphSolver::SetFixedCameraPinholePointImageFromWorldDataFromStackedDevice(
     const float* const data, size_t offset, size_t num) {
   cudaSetDevice(device_id_);
-  if (offset + num > fixed_camera_pinhole_point_image_from_world_num_max_) {
+  if (offset + num > ConstImageFromWorld_num_max_) {
     throw std::runtime_error(std::to_string(offset + num) +
-                             " > fixed_camera_pinhole_point_"
-                             "image_from_world_num_max_");
+                             " > ConstImageFromWorld_num_max_");
   }
   ConstImageFromWorldStackedToCaspar(
       data,
       facs__fixed_camera_pinhole_point__args__image_from_world__data_,
-      fixed_camera_pinhole_point_image_from_world_num_max_,
+      ConstImageFromWorld_num_max_,
       offset,
       num);
 }
@@ -15199,8 +15194,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<float>(offset, 4 * fixed_rig_position_prior_num_, 4);
   increment_offset<float>(offset, 9 * fixed_rig_position_prior_num_, 4);
   increment_offset<SharedIndex>(offset, 1 * fixed_camera_pinhole_point_num_, 4);
-  increment_offset<float>(
-      offset, 12 * fixed_camera_pinhole_point_image_from_world_num_max_, 4);
+  increment_offset<float>(offset, 12 * ConstImageFromWorld_num_max_, 4);
   increment_offset<SharedIndex>(offset, 1 * fixed_camera_pinhole_point_num_, 4);
   increment_offset<float>(offset, 2 * fixed_camera_pinhole_point_num_, 4);
   increment_offset<float>(offset, 1 * 1, 4);
@@ -15593,7 +15587,8 @@ size_t GraphSolver::get_nbytes() {
                                   4 * SimpleRadialCalib_num_max_,
                                   2 * SimpleRadialFocalAndExtra_num_max_,
                                   7 * SimpleRadialPose_num_max_,
-                                  2 * SimpleRadialPrincipalPoint_num_max_}) *
+                                  2 * SimpleRadialPrincipalPoint_num_max_,
+                                  12 * ConstImageFromWorld_num_max_}) *
                             sizeof(float));
   increment_offset<float>(offset, 0 * 0, 4);
   increment_offset<float>(offset, 2 * simple_radial_num_, 4);

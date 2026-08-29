@@ -56,6 +56,8 @@ class GraphSolver {
    * @param SimpleRadialPose_num_max the maximum number of SimpleRadialPoses
    * @param SimpleRadialPrincipalPoint_num_max the maximum number of
    * SimpleRadialPrincipalPoints
+   * @param ConstImageFromWorld_num_max the maximum number of
+   * ConstImageFromWorlds
    * @param simple_radial_num_max the maximum number of simple_radials
    * @param simple_radial_fixed_pose_num_max the maximum number of
    * simple_radial_fixed_poses
@@ -74,8 +76,6 @@ class GraphSolver {
    * fixed_rig_position_priors
    * @param fixed_camera_pinhole_point_num_max the maximum number of
    * fixed_camera_pinhole_points
-   * @param fixed_camera_pinhole_point_image_from_world_num_max the maximum
-   * number of indexed fixed-camera projection matrices
    * @param simple_radial_split_fixed_focal_and_extra_num_max the maximum number
    * of simple_radial_split_fixed_focal_and_extras
    * @param simple_radial_split_fixed_principal_point_num_max the maximum number
@@ -146,6 +146,7 @@ class GraphSolver {
       size_t SimpleRadialFocalAndExtra_num_max,
       size_t SimpleRadialPose_num_max,
       size_t SimpleRadialPrincipalPoint_num_max,
+      size_t ConstImageFromWorld_num_max,
       size_t simple_radial_num_max,
       size_t simple_radial_fixed_pose_num_max,
       size_t simple_radial_fixed_point_num_max,
@@ -157,7 +158,6 @@ class GraphSolver {
       size_t fixed_rig_pinhole_num_max,
       size_t fixed_rig_position_prior_num_max,
       size_t fixed_camera_pinhole_point_num_max,
-      size_t fixed_camera_pinhole_point_image_from_world_num_max,
       size_t simple_radial_split_fixed_focal_and_extra_num_max,
       size_t simple_radial_split_fixed_principal_point_num_max,
       size_t simple_radial_split_fixed_pose_fixed_focal_and_extra_num_max,
@@ -4431,6 +4431,8 @@ class GraphSolver {
   size_t SimpleRadialPose_num_max_;
   size_t SimpleRadialPrincipalPoint_num_;
   size_t SimpleRadialPrincipalPoint_num_max_;
+  size_t ConstImageFromWorld_num_;
+  size_t ConstImageFromWorld_num_max_;
   size_t simple_radial_num_;
   size_t simple_radial_num_max_;
   size_t simple_radial_fixed_pose_num_;
@@ -4453,7 +4455,6 @@ class GraphSolver {
   size_t fixed_rig_position_prior_num_max_;
   size_t fixed_camera_pinhole_point_num_;
   size_t fixed_camera_pinhole_point_num_max_;
-  size_t fixed_camera_pinhole_point_image_from_world_num_max_;
   size_t simple_radial_split_fixed_focal_and_extra_num_;
   size_t simple_radial_split_fixed_focal_and_extra_num_max_;
   size_t simple_radial_split_fixed_principal_point_num_;

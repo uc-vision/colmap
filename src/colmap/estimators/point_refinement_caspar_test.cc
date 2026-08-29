@@ -144,6 +144,39 @@ TEST(CasparPointRefinement, SoftL1RejectsASevereOutlier) {
             0.2f * (quadratic_point - expected_point).norm());
 }
 
+TEST(CasparPointRefinement, SupportsMoreImagesThanObservations) {
+  constexpr size_t kNumImages = 4096;
+  std::vector<Matrix3x4f> projections(kNumImages, ProjectionMatrix(0.0f));
+  projections[0] = ProjectionMatrix(-1.0f);
+  projections[1] = ProjectionMatrix(1.0f);
+  const std::vector<Eigen::Vector3f> expected_points = {
+      {0.2f, -0.1f, 4.0f},
+  };
+  const std::vector<float> initial_points = {0.5f, 0.1f, 3.5f};
+  const std::vector<uint32_t> point_indices = {0, 0};
+  const std::vector<uint32_t> image_indices = {0, 1};
+  const std::vector<float> projection_data = Flatten(projections);
+  const std::vector<float> pixels =
+      Observations(projections, expected_points, point_indices, image_indices);
+
+  CasparPointRefinementOptions options;
+  options.loss_scale = 100.0;
+  options.solver_iter_max = 100;
+  const CasparPointRefinementResult result =
+      RefineFixedCameraPinholePointsCaspar(initial_points.data(),
+                                           1,
+                                           projection_data.data(),
+                                           kNumImages,
+                                           point_indices.data(),
+                                           image_indices.data(),
+                                           pixels.data(),
+                                           point_indices.size(),
+                                           options);
+
+  const Eigen::Map<const Eigen::Vector3f> actual(result.points.data());
+  EXPECT_TRUE(actual.isApprox(expected_points[0], 1e-3f));
+}
+
 TEST(CasparPointRefinement, MediumProblemHasBoundedPackedAllocation) {
   constexpr size_t kNumPoints = 100000;
   constexpr size_t kNumImages = 64;

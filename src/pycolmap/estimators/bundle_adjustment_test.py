@@ -1,6 +1,12 @@
 import numpy as np
+import pytest
 
 import pycolmap
+
+caspar_only = pytest.mark.skipif(
+    not hasattr(pycolmap, "caspar_refine_pinhole_points"),
+    reason="requires a CASPAR-enabled build",
+)
 
 
 def test_bundle_adjustment_termination_type_enum():
@@ -282,6 +288,7 @@ def project_observations(projections, points, point_indices, image_indices):
     return np.ascontiguousarray(projected[:, :2] / projected[:, 2:3])
 
 
+@caspar_only
 def test_caspar_refines_points_against_exact_fixed_cameras():
     projections = pinhole_projections([-1.0, 0.0, 1.0])
     original_projections = projections.copy()
@@ -310,6 +317,7 @@ def test_caspar_refines_points_against_exact_fixed_cameras():
     assert result.summary.final_score < result.summary.initial_score
 
 
+@caspar_only
 def test_caspar_point_refinement_soft_l1_rejects_outlier():
     projections = pinhole_projections([-2.0, -1.0, 0.0, 1.0, 2.0])
     expected = np.array([[0.2, -0.1, 4.0]], dtype=np.float32)

@@ -20,7 +20,7 @@ symforce.set_epsilon_to_number(1e-15 if precision == "f64" else 1e-6)
 
 import symforce.symbolic as sf  # noqa: E402
 from symforce import typing as T  # noqa: E402
-from symforce.caspar import CasparLibrary  # noqa: E402
+from symforce.caspar import CasparLibrary, SharedConstantPool  # noqa: E402
 from symforce.caspar import memory as mem  # noqa: E402
 from symforce.caspar.code_formulation import ftypes  # noqa: E402
 
@@ -469,7 +469,12 @@ register_camera_model(
 )
 caslib.add_factor(fixed_rig_pinhole)
 caslib.add_factor(fixed_rig_position_prior)
-caslib.add_factor(fixed_camera_pinhole_point)
+caslib.add_factor(
+    fixed_camera_pinhole_point,
+    shared_constant_pools={
+        "image_from_world": SharedConstantPool(ConstImageFromWorld)
+    },
+)
 
 # Split: all variants where at least one of
 # {focal_and_extra, principal_point} is fixed (11 variants per model).

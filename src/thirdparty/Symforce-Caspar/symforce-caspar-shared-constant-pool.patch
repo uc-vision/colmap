@@ -1,0 +1,283 @@
+diff --git a/symforce/caspar/__init__.py b/symforce/caspar/__init__.py
+index 798d041..6ec98d3 100644
+--- a/symforce/caspar/__init__.py
++++ b/symforce/caspar/__init__.py
+@@ -3,4 +3,5 @@
+ # This source code is under the Apache 2.0 license found in the LICENSE file.
+ # ----------------------------------------------------------------------------
+
++from .code_generation.factor import SharedConstantPool
+ from .code_generation.library import CasparLibrary
+diff --git a/symforce/caspar/code_generation/factor.py b/symforce/caspar/code_generation/factor.py
+index d24b120..6975800 100644
+--- a/symforce/caspar/code_generation/factor.py
++++ b/symforce/caspar/code_generation/factor.py
+@@ -5,6 +5,8 @@
+
+ from __future__ import annotations
+
++from dataclasses import dataclass
++
+ import symforce.symbolic as sf
+ from symforce import jacobian_helpers
+ from symforce import typing as T
+@@ -37,6 +39,11 @@ from ..memory.pair import get_memtype
+ from ..memory.pair import get_symbolic
+
+
++@dataclass(frozen=True)
++class SharedConstantPool:
++    storage_type: T.Type[sf.Storage]
++
++
+ def get_diagonal_and_lower_triangle(mat: sf.Matrix) -> tuple[sf.Matrix, sf.Matrix]:
+     """
+     Returns the diagonal and lower triangular part of a matrix.
+@@ -91,7 +98,13 @@ class Factor:
+     A Factor object is essentially just a collection of kernels necessary for optimization.
+     """
+
+-    def __init__(self, func: T.Callable, name: T.Optional[str], dtype: DType):  # noqa: PLR0915
++    def __init__(  # noqa: PLR0915
++        self,
++        func: T.Callable,
++        name: T.Optional[str],
++        dtype: DType,
++        shared_constant_pools: T.Mapping[str, SharedConstantPool],
++    ):
+         assert isinstance(dtype, DType)
+         self.name = name or func.__name__
+         self.func = func
+@@ -120,6 +133,10 @@ class Factor:
+         }
+         self.node_arg_types = {k: v for k, v in self.arg_types.items() if self.isnode[k]}
+         self.const_arg_types = {k: v for k, v in self.arg_types.items() if not self.isnode[k]}
++        self.shared_constant_pools = dict(shared_constant_pools)
++        for arg, pool in shared_constant_pools.items():
++            if not self.isconstshared[arg] or self.arg_types[arg] is not pool.storage_type:
++                raise ValueError(f"Shared constant pool does not match {self.name}.{arg}")
+
+         self.solved_by_preconditioner = len(self.node_arg_types) == 1
+
+diff --git a/symforce/caspar/code_generation/library.py b/symforce/caspar/code_generation/library.py
+index a1e452f..9d27873 100644
+--- a/symforce/caspar/code_generation/library.py
++++ b/symforce/caspar/code_generation/library.py
+@@ -9,6 +9,7 @@ import logging
+ import shutil
+ import subprocess
+ from pathlib import Path
++from types import MappingProxyType
+
+ from symforce import caspar
+ from symforce import typing as T
+@@ -18,6 +19,7 @@ from symforce.python_util import camelcase_to_snakecase
+ from symforce.python_util import parts_to_pascal
+
+ from ..code_generation.factor import Factor
++from ..code_generation.factor import SharedConstantPool
+ from ..code_generation.kernel import Kernel
+ from ..code_generation.solver import Solver
+ from ..code_generation.solver import num_arg_key
+@@ -85,6 +87,7 @@ class CasparLibrary:
+         self.storage_t = dtype
+         # Keep sorted for deterministic template output
+         self.node_types: list[T.LieGroupElement] = []
++        self.shared_constant_pools: list[SharedConstantPool] = []
+         self.exposed_types: list[T.LieGroupElement] = []
+
+     def add_kernel(self, func: T.Callable) -> T.Callable:
+@@ -145,13 +148,18 @@ class CasparLibrary:
+         self,
+         func_or_name: T.Union[T.Callable, str],
+         name: str | None = None,
++        shared_constant_pools: T.Mapping[str, SharedConstantPool] = MappingProxyType({}),
+     ) -> T.Callable:
+         if isinstance(func_or_name, str):
+-            return lambda func: self.add_factor(func, func_or_name)
++            return lambda func: self.add_factor(func, func_or_name, shared_constant_pools)
+         else:
+-            factor = Factor(func_or_name, name, dtype=self.storage_t)
++            factor = Factor(func_or_name, name, self.storage_t, shared_constant_pools)
+             self.factors.append(factor)
+             insert_sorted_unique(self.node_types, factor.node_arg_types.values())
++            self.shared_constant_pools = sorted(
++                {*self.shared_constant_pools, *shared_constant_pools.values()},
++                key=lambda pool: pool.storage_type.__name__,
++            )
+             insert_sorted_unique(self.exposed_types, factor.arg_types.values())
+             return func_or_name
+
+diff --git a/symforce/caspar/code_generation/solver.py b/symforce/caspar/code_generation/solver.py
+index ee9c60c..5126b57 100644
+--- a/symforce/caspar/code_generation/solver.py
++++ b/symforce/caspar/code_generation/solver.py
+@@ -15,6 +15,7 @@ from symforce.ops import LieGroupOps as Ops
+ from symforce.python_util import parts_to_pascal
+
+ from ..code_generation.factor import Factor
++from ..code_generation.factor import SharedConstantPool
+ from ..code_generation.factor import dyn_part
+ from ..code_generation.factor import from_diagonal_and_lower_triangle
+ from ..code_generation.factor import lower_tiangle_size
+@@ -91,7 +92,9 @@ class Solver:
+         self.add_storage(self.fields)
+         self.add_indices(self.fields)
+         self.fields["marker__scratch_inout_"] = MemDesc(0, 0, self.storage_t)
+-        self.at_least["marker__scratch_inout_"] = max_stacked_storage(*caslib.node_types)
++        self.at_least["marker__scratch_inout_"] = max_stacked_storage(
++            *caslib.node_types, *caslib.shared_constant_pools
++        )
+
+         self.add_solver_data(self.fields)
+         self.diag = sf.symbols("dampening")
+@@ -100,6 +103,7 @@ class Solver:
+             assert k.endswith("_")
+         self.size_contributors = [
+             *sorted(caslib.node_types, key=lambda x: x.__name__),
++            *caslib.shared_constant_pools,
+             *caslib.factors,
+         ]
+         self.kernels: T.Dict[str, Kernel] = {}
+@@ -131,7 +135,7 @@ class Solver:
+                 fields[arg_key(fac, arg, "data")] = MemDesc(Ops.storage_dim(typ), 1, self.storage_t)
+             elif fac.isconstshared[arg]:
+                 fields[arg_key(fac, arg, "data")] = MemDesc(
+-                    Ops.storage_dim(typ), num_key(fac), self.storage_t
++                    Ops.storage_dim(typ), self.const_num_max_key(fac, arg), self.storage_t
+                 )
+                 fields[arg_key(fac, arg, "idx_shared")] = MemDesc(
+                     1, num_key(fac), "SharedIndex", False
+@@ -144,6 +148,11 @@ class Solver:
+             else:
+                 raise ValueError(f"Unknown arg type for {fac}.{arg}: {typ}")
+
++    @staticmethod
++    def const_num_max_key(factor: Factor, arg: str) -> str:
++        pool: SharedConstantPool | Factor = factor.shared_constant_pools.get(arg, factor)
++        return num_max_key(pool)
++
+     def add_solver_data(self, fields: T.Dict[str, MemDesc]) -> None:
+         caslib = self.caslib
+         for fac in caslib.factors:
+diff --git a/symforce/caspar/code_generation/solver_utils.py b/symforce/caspar/code_generation/solver_utils.py
+index 41e553f..a4928b6 100644
+--- a/symforce/caspar/code_generation/solver_utils.py
++++ b/symforce/caspar/code_generation/solver_utils.py
+@@ -10,6 +10,7 @@ from symforce.ops import StorageOps
+ from symforce.ops.interfaces import LieGroup
+
+ from ..code_generation.factor import Factor
++from ..code_generation.factor import SharedConstantPool
+ from ..memory import caspar_size
+ from ..memory.dtype import DType
+
+@@ -30,8 +31,10 @@ def node_key(typ: T.LieGroupElement, suffix: str = "") -> str:
+     return f"nodes__{typ.__name__}__{suffix}_"
+
+
+-def name_key(thing: T.LieGroupElement | Factor) -> str:
+-    if isinstance(thing, LieGroup) or isinstance(thing, type):
++def name_key(thing: T.LieGroupElement | Factor | SharedConstantPool) -> str:
++    if isinstance(thing, SharedConstantPool):
++        return thing.storage_type.__name__
++    elif isinstance(thing, LieGroup) or isinstance(thing, type):
+         return thing.__name__  # type: ignore[union-attr]
+     elif isinstance(thing, Factor):
+         return thing.name
+@@ -39,11 +42,11 @@ def name_key(thing: T.LieGroupElement | Factor) -> str:
+         raise ValueError(f"Unknown type {type(thing)}")
+
+
+-def num_key(thing: T.LieGroupElement | Factor, suffix: str = "num_") -> str:
++def num_key(thing: T.LieGroupElement | Factor | SharedConstantPool, suffix: str = "num_") -> str:
+     return f"{name_key(thing)}_{suffix}"
+
+
+-def num_max_key(thing: T.LieGroupElement | Factor) -> str:
++def num_max_key(thing: T.LieGroupElement | Factor | SharedConstantPool) -> str:
+     return num_key(thing, "num_max_")
+
+
+@@ -51,12 +54,16 @@ def num_blocks_key(thing: T.LieGroupElement | Factor) -> str:
+     return num_key(thing, "bnum_")
+
+
+-def num_arg_key(thing: T.LieGroupElement | Factor) -> str:
++def num_arg_key(thing: T.LieGroupElement | Factor | SharedConstantPool) -> str:
+     return num_key(thing, "num_max")
+
+
+-def max_stacked_storage(*things: T.LieGroupElement) -> str:
+-    inner = " , ".join(f" {StorageOps.storage_dim(n)} * {num_max_key(n)}" for n in things)
++def max_stacked_storage(*things: T.LieGroupElement | SharedConstantPool) -> str:
++    inner = " , ".join(
++        f" {StorageOps.storage_dim(n.storage_type if isinstance(n, SharedConstantPool) else n)}"
++        f" * {num_max_key(n)}"
++        for n in things
++    )
+     return f"std::max({{{inner}}})"
+
+
+diff --git a/symforce/caspar/source/templates/solver.cc.jinja b/symforce/caspar/source/templates/solver.cc.jinja
+index 4379d6e..ae0b001 100644
+--- a/symforce/caspar/source/templates/solver.cc.jinja
++++ b/symforce/caspar/source/templates/solver.cc.jinja
+@@ -293,7 +293,7 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
+                 {{arg_key(fac, arg, "data")}},
+                 {{num_max_key(fac)}},
+             {% elif fac.isconstshared[arg] %}
+-                {{arg_key(fac, arg, "data")}}, {{num_max_key(fac)}}, {{arg_key(fac, arg, "idx_shared")}},
++                {{arg_key(fac, arg, "data")}}, {{solver.const_num_max_key(fac, arg)}}, {{arg_key(fac, arg, "idx_shared")}},
+             {% elif fac.isconstindexed[arg] %}
+                 {{arg_key(fac, arg, "data")}}, {{num_max_key(fac)}}, {{arg_key(fac, arg, "idx")}},
+             {% elif fac.isconstuniq[arg] %}
+@@ -579,7 +579,7 @@ void {{ solver.struct_name }}::DoUpdateR() {
+                 {{arg_key(fac, arg, "data")}},
+                 {{num_max_key(fac)}},
+             {% elif fac.isconstshared[arg] %}
+-                {{arg_key(fac, arg, "data")}}, {{num_max_key(fac)}}, {{arg_key(fac, arg, "idx_shared")}},
++                {{arg_key(fac, arg, "data")}}, {{solver.const_num_max_key(fac, arg)}}, {{arg_key(fac, arg, "idx_shared")}},
+             {% elif fac.isconstindexed[arg] %}
+                 {{arg_key(fac, arg, "data")}}, {{num_max_key(fac)}}, {{arg_key(fac, arg, "idx")}},
+             {% elif fac.isconstuniq[arg] %}
+@@ -768,8 +768,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+       const size_t offset = 0;
+       const size_t num = 1;
+       {% endif %}
+-      if (offset + num > {{num_max_key(fac)}}) {
+-          throw std::runtime_error(std::to_string(offset + num) + " > {{num_max_key(fac)}}");
++      if (offset + num > {{solver.const_num_max_key(fac, arg)}}) {
++          throw std::runtime_error(std::to_string(offset + num) + " > {{solver.const_num_max_key(fac, arg)}}");
+       }
+       cudaMemcpy(marker__scratch_inout_, data, {{Ops.storage_dim(argtype)}} * num * sizeof({{solver.storage_t}}),
+                 cudaMemcpyHostToDevice);
+@@ -779,7 +779,7 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+                                             {% elif fac.isconstuniq[arg] %}
+                                             1,
+                                             {% elif fac.isconstshared[arg] %}
+-                                            {{num_max_key(fac)}},
++                                            {{solver.const_num_max_key(fac, arg)}},
+                                             {% elif fac.isconstindexed[arg] %}
+                                             {{num_max_key(fac)}},
+                                             {% endif %}
+@@ -801,8 +801,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+       const size_t offset = 0;
+       const size_t num = 1;
+       {% endif %}
+-      if (offset + num > {{num_max_key(fac)}}){
+-        throw std::runtime_error(std::to_string(offset + num) + " > {{num_max_key(fac)}}");
++      if (offset + num > {{solver.const_num_max_key(fac, arg)}}){
++        throw std::runtime_error(std::to_string(offset + num) + " > {{solver.const_num_max_key(fac, arg)}}");
+       }
+       {{argtype.__name__}}StackedToCaspar(data, {{arg_key(fac, arg, "data")}},
+                                             {% if fac.isconstseq[arg] %}
+@@ -810,7 +810,7 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
+                                             {% elif fac.isconstuniq[arg] %}
+                                             1,
+                                             {% elif fac.isconstshared[arg] %}
+-                                            {{num_max_key(fac)}},
++                                            {{solver.const_num_max_key(fac, arg)}},
+                                             {% elif fac.isconstindexed[arg] %}
+                                             {{num_max_key(fac)}},
+                                             {% endif %}
