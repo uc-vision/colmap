@@ -1,5 +1,5 @@
 # Usage:
-#   python generate_caspar.py <out_dir> [f32|f64]
+#   ./regenerate-caspar <out_dir> f32|f64 [python_executable]
 
 import inspect
 import sys

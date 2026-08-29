@@ -110,7 +110,7 @@ if(CASPAR_ENABLED AND CUDA_ENABLED)
         message(FATAL_ERROR
             "Caspar: pre-generated code not found for precision '${_caspar_precision}'.\n"
             "Expected: ${CASPAR_GEN_DIR}/CMakeLists.txt\n"
-            "Re-run generate_caspar.py to regenerate.")
+            "Run src/thirdparty/Symforce-Caspar/regenerate-caspar to regenerate.")
     endif()
 
     include(FetchContent)
