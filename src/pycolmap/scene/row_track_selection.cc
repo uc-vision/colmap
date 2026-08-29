@@ -107,10 +107,18 @@ py::array_t<uint32_t> SelectRowBundlePoints(
           const int32_t global_image =
               image_to_global_index[observation_image_indices[observation]];
           const int32_t camera = observation_camera_indices[observation];
+          const Eigen::RowVector2f observation_position =
+              observation_xy.row(observation);
+          const Eigen::RowVector2f image_dimensions =
+              camera_dimensions.row(camera);
+          if ((observation_position.array() < 0.0f).any() ||
+              (observation_position.array() >= image_dimensions.array())
+                  .any()) {
+            continue;
+          }
           const Eigen::RowVector2i cell =
-              (observation_xy.row(observation).array() *
-               static_cast<float>(kSpatialGridSide) /
-               camera_dimensions.row(camera).array())
+              (observation_position.array() *
+               static_cast<float>(kSpatialGridSide) / image_dimensions.array())
                   .cast<int32_t>()
                   .matrix();
           const uint32_t stratum = global_image * kSpatialCellCount +
