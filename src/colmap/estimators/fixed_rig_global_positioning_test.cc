@@ -10,14 +10,16 @@
 namespace colmap {
 namespace {
 
-TEST(FixedRigGlobalPositioning, RecoversMetricRigPositions) {
+void TestRecoversMetricRigPositions(const int num_rigs,
+                                    const int num_frames_per_rig,
+                                    const bool require_frame_constraints) {
   const auto database_path = CreateTestDir() / "database.db";
   auto database = Database::Open(database_path);
   Reconstruction ground_truth;
   SyntheticDatasetOptions dataset_options;
-  dataset_options.num_rigs = 2;
+  dataset_options.num_rigs = num_rigs;
   dataset_options.num_cameras_per_rig = 3;
-  dataset_options.num_frames_per_rig = 5;
+  dataset_options.num_frames_per_rig = num_frames_per_rig;
   dataset_options.num_points3D = 200;
   dataset_options.two_view_geometry_has_relative_pose = true;
   SynthesizeDataset(dataset_options, &ground_truth, database.get());
@@ -39,8 +41,10 @@ TEST(FixedRigGlobalPositioning, RecoversMetricRigPositions) {
   GlobalPositionerOptions options;
   options.use_gpu = false;
   options.random_seed = 42;
+  FixedRigGlobalPositionerOptions rig_options;
+  rig_options.require_frame_constraints = require_frame_constraints;
   ASSERT_TRUE(RunFixedRigGlobalPositioning(options,
-                                           FixedRigGlobalPositionerOptions(),
+                                           rig_options,
                                            pose_graph,
                                            reconstruction,
                                            database_cache.PosePriors(),
@@ -52,6 +56,19 @@ TEST(FixedRigGlobalPositioning, RecoversMetricRigPositions) {
                                  /*max_proj_center_error=*/0.5,
                                  /*max_scale_error=*/0.05,
                                  /*num_obs_tolerance=*/0.0));
+}
+
+TEST(FixedRigGlobalPositioning, RecoversMetricRigPositions) {
+  TestRecoversMetricRigPositions(/*num_rigs=*/2,
+                                 /*num_frames_per_rig=*/5,
+                                 /*require_frame_constraints=*/false);
+}
+
+TEST(FixedRigGlobalPositioning,
+     RecoversMetricRigPositionsWithRequiredFrameConstraints) {
+  TestRecoversMetricRigPositions(/*num_rigs=*/1,
+                                 /*num_frames_per_rig=*/10,
+                                 /*require_frame_constraints=*/true);
 }
 
 }  // namespace

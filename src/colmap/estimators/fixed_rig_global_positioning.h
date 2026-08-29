@@ -11,6 +11,10 @@ namespace colmap {
 struct FixedRigGlobalPositionerOptions {
   // Seed frame positions from camera pose priors.
   bool initialize_from_pose_priors = false;
+
+  // Fail instead of constructing observation-level residuals when calibrated
+  // rig frame constraints do not cover every frame.
+  bool require_frame_constraints = false;
 };
 
 // Metric global positioner for a calibrated camera rig. The known sensor

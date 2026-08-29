@@ -126,6 +126,10 @@ bool FixedRigGlobalPositioner::Solve(
                 << " calibrated-rig frame constraints";
       return SolveFramePositions(reconstruction, constraints);
     }
+    if (rig_options_.require_frame_constraints) {
+      LOG(ERROR) << "Calibrated-rig frame constraints do not cover all frames";
+      return false;
+    }
     LOG(INFO) << "Calibrated-rig frame constraints do not cover all frames; "
                  "using observation-level positioning";
   }

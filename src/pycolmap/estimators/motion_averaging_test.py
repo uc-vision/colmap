@@ -78,6 +78,7 @@ def test_global_positioner_options_default_init():
         "run_rotation_averaging",
         "run_gravity_refinement",
         "run_global_positioning",
+        "run_fixed_rig_global_positioning",
     ],
 )
 def test_public_api_callable(name):
