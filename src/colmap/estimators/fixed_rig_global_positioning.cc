@@ -706,28 +706,27 @@ bool FixedRigGlobalPositioner::BuildFrameConstraints(
     adjacency[constraint.frame_id2].push_back(constraint.frame_id1);
   }
   if (adjacency.size() != frame_centers_.size()) {
+    std::vector<frame_t> uncovered_frame_ids;
+    uncovered_frame_ids.reserve(frame_centers_.size() - adjacency.size());
+    for (const auto& [frame_id, _] : frame_centers_) {
+      if (adjacency.count(frame_id) == 0) {
+        uncovered_frame_ids.push_back(frame_id);
+      }
+    }
+    std::sort(uncovered_frame_ids.begin(), uncovered_frame_ids.end());
+    LOG(ERROR) << "Calibrated-rig frame constraints leave "
+               << uncovered_frame_ids.size() << " of " << frame_centers_.size()
+               << " frames uncovered: " << VectorToCSV(uncovered_frame_ids);
     return false;
   }
-
-  FlatHashSet<frame_t> visited;
-  std::queue<frame_t> queue;
-  queue.push(adjacency.begin()->first);
-  while (!queue.empty()) {
-    const frame_t frame_id = queue.front();
-    queue.pop();
-    if (!visited.insert(frame_id).second) {
-      continue;
-    }
-    for (const frame_t neighbor : adjacency.at(frame_id)) {
-      queue.push(neighbor);
-    }
-  }
-  return visited.size() == frame_centers_.size();
+  return true;
 }
 
 bool FixedRigGlobalPositioner::SolveFramePositions(
     Reconstruction& reconstruction,
     const std::vector<FrameConstraint>& constraints) {
+  NodeHashMap<frame_t, std::vector<frame_t>> adjacency;
+  adjacency.reserve(frame_centers_.size());
   for (const FrameConstraint& constraint : constraints) {
     problem_->AddResidualBlock(
         FixedRigFramePositionCostFunctor::Create(
@@ -735,14 +734,40 @@ bool FixedRigGlobalPositioner::SolveFramePositions(
         loss_function_.get(),
         frame_centers_.at(constraint.frame_id1).data(),
         frame_centers_.at(constraint.frame_id2).data());
+    adjacency[constraint.frame_id1].push_back(constraint.frame_id2);
+    adjacency[constraint.frame_id2].push_back(constraint.frame_id1);
   }
-  const auto anchor =
-      std::min_element(frame_centers_.begin(),
-                       frame_centers_.end(),
-                       [](const auto& frame1, const auto& frame2) {
-                         return frame1.first < frame2.first;
-                       });
-  problem_->SetParameterBlockConstant(anchor->second.data());
+
+  std::vector<frame_t> frame_ids;
+  frame_ids.reserve(frame_centers_.size());
+  for (const auto& [frame_id, _] : frame_centers_) {
+    frame_ids.push_back(frame_id);
+  }
+  std::sort(frame_ids.begin(), frame_ids.end());
+  FlatHashSet<frame_t> visited;
+  size_t component_count = 0;
+  for (const frame_t anchor_frame_id : frame_ids) {
+    if (visited.count(anchor_frame_id) > 0) {
+      continue;
+    }
+    ++component_count;
+    problem_->SetParameterBlockConstant(
+        frame_centers_.at(anchor_frame_id).data());
+    std::queue<frame_t> queue;
+    queue.push(anchor_frame_id);
+    while (!queue.empty()) {
+      const frame_t frame_id = queue.front();
+      queue.pop();
+      if (!visited.insert(frame_id).second) {
+        continue;
+      }
+      for (const frame_t neighbor : adjacency.at(frame_id)) {
+        queue.push(neighbor);
+      }
+    }
+  }
+  LOG(INFO) << "Solving calibrated-rig frame constraints in " << component_count
+            << " connected component(s)";
 
   ceres::Solver::Options solver_options = options_.solver_options;
   solver_options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
