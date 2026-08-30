@@ -13,6 +13,7 @@ void FixedRigPositionPriorResJacFirst(
     unsigned int position_num_alloc,
     float* sqrt_information,
     unsigned int sqrt_information_num_alloc,
+    const float* const position_loss_scale,
     float* out_res,
     unsigned int out_res_num_alloc,
     float* const out_rTr,

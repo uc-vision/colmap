@@ -23,6 +23,7 @@ __global__ void __launch_bounds__(1024, 1)
                                   SharedIndex* point_indices,
                                   double* pixel,
                                   unsigned int pixel_num_alloc,
+                                  const double* const reprojection_loss_scale,
                                   double* const out_rTr,
                                   size_t problem_size) {
   const int global_thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -249,6 +250,17 @@ __global__ void __launch_bounds__(1024, 1)
     r40 = fma(r41, r40, r28);
     r40 = 1.0 / r40;
     r2 = fma(r40, r44, r2);
+    r2 = r2 * r2;
+  };
+  LoadUnique<1, double, double>(
+      reprojection_loss_scale, 0, (double*)inout_shared);
+  if (global_thread_idx < problem_size) {
+    ReadShared1<double>((double*)inout_shared, 0, r44);
+  };
+  __syncthreads();
+  if (global_thread_idx < problem_size) {
+    r44 = r44 * r44;
+    r44 = 1.0 / r44;
   };
   LoadShared<1, double, double>(sensor_calibration,
                                 10 * sensor_calibration_num_alloc,
@@ -257,11 +269,11 @@ __global__ void __launch_bounds__(1024, 1)
   if (global_thread_idx < problem_size) {
     ReadShared1<double>((double*)inout_shared,
                         sensor_calibration_indices_loc[threadIdx.x].target,
-                        r44);
+                        r41);
   };
   __syncthreads();
   if (global_thread_idx < problem_size) {
-    r4 = fma(r3, r4, r44);
+    r4 = fma(r3, r4, r41);
     r42 = r27 + r42;
     r42 = r42 + r30;
     r26 = r27 + r26;
@@ -280,13 +292,20 @@ __global__ void __launch_bounds__(1024, 1)
     r26 = fma(r38, r18, r26);
     r18 = r0 * r26;
     r4 = fma(r40, r18, r4);
-    r4 = fma(r4, r4, r2 * r2);
+    r4 = r4 * r4;
+    r18 = r2 + r4;
+    r44 = fma(r18, r44, r27);
+    r44 = sqrt(r44);
+    r44 = r27 + r44;
+    r44 = 1.0 / r44;
+    r44 = r16 * r44;
+    r44 = fma(r4, r44, r2 * r44);
   };
   SumStore<double>(out_rTr_local,
                    (double*)inout_shared,
                    0,
                    global_thread_idx < problem_size,
-                   r4);
+                   r44);
   SumFlushFinal<double>(out_rTr_local, out_rTr, 1);
 }
 
@@ -302,6 +321,7 @@ void RowFixedRigPinholeScore(double* pose,
                              SharedIndex* point_indices,
                              double* pixel,
                              unsigned int pixel_num_alloc,
+                             const double* const reprojection_loss_scale,
                              double* const out_rTr,
                              size_t problem_size) {
   if (problem_size == 0) {
@@ -322,6 +342,7 @@ void RowFixedRigPinholeScore(double* pose,
       point_indices,
       pixel,
       pixel_num_alloc,
+      reprojection_loss_scale,
       out_rTr,
       problem_size);
 }

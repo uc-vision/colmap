@@ -1657,6 +1657,24 @@ class GraphSolver {
       const float* const data, size_t offset, size_t num);
 
   /**
+   * Set the values for the position_loss_scale consts FixedRigPositionPrior
+   * factor from stacked host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedRigPositionPriorPositionLossScaleDataFromStackedHost(
+      const float* const data);
+
+  /**
+   * Set the values for the position_loss_scale consts FixedRigPositionPrior
+   * factor from stacked device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetFixedRigPositionPriorPositionLossScaleDataFromStackedDevice(
+      const float* const data);
+
+  /**
    * Set the current number of FixedRigPositionPrior factors.
    *
    * The value is set during initialization and this function is only needed if
@@ -1898,6 +1916,24 @@ class GraphSolver {
   void SetRowFixedRigPinholePixelDataFromStackedDevice(const float* const data,
                                                        size_t offset,
                                                        size_t num);
+
+  /**
+   * Set the values for the reprojection_loss_scale consts RowFixedRigPinhole
+   * factor from stacked host data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetRowFixedRigPinholeReprojectionLossScaleDataFromStackedHost(
+      const float* const data);
+
+  /**
+   * Set the values for the reprojection_loss_scale consts RowFixedRigPinhole
+   * factor from stacked device data.
+   *
+   * The offset can be used to start writing from a specific index.
+   */
+  void SetRowFixedRigPinholeReprojectionLossScaleDataFromStackedDevice(
+      const float* const data);
 
   /**
    * Set the current number of RowFixedRigPinhole factors.
@@ -4882,6 +4918,7 @@ class GraphSolver {
   SharedIndex* facs__fixed_rig_position_prior__args__pose__idx_shared_;
   float* facs__fixed_rig_position_prior__args__position__data_;
   float* facs__fixed_rig_position_prior__args__sqrt_information__data_;
+  float* facs__fixed_rig_position_prior__args__position_loss_scale__data_;
   SharedIndex* facs__fixed_rig_sensor_position_prior__args__pose__idx_shared_;
   float* facs__fixed_rig_sensor_position_prior__args__sensor_from_rig__data_;
   SharedIndex*
@@ -4900,6 +4937,7 @@ class GraphSolver {
       facs__row_fixed_rig_pinhole__args__sensor_from_rig_log_scale__idx_shared_;
   SharedIndex* facs__row_fixed_rig_pinhole__args__point__idx_shared_;
   float* facs__row_fixed_rig_pinhole__args__pixel__data_;
+  float* facs__row_fixed_rig_pinhole__args__reprojection_loss_scale__data_;
   SharedIndex* facs__fixed_camera_pinhole_point__args__point__idx_shared_;
   float* facs__fixed_camera_pinhole_point__args__image_from_world__data_;
   SharedIndex*

@@ -18,6 +18,7 @@ void RowFixedRigPinholeResJac(
     SharedIndex* point_indices,
     float* pixel,
     unsigned int pixel_num_alloc,
+    const float* const reprojection_loss_scale,
     float* out_res,
     unsigned int out_res_num_alloc,
     float* out_pose_jac,

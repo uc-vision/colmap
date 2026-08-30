@@ -17,6 +17,7 @@ void RowFixedRigPinholeScore(double* pose,
                              SharedIndex* point_indices,
                              double* pixel,
                              unsigned int pixel_num_alloc,
+                             const double* const reprojection_loss_scale,
                              double* const out_rTr,
                              size_t problem_size);
 

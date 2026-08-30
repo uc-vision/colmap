@@ -124,6 +124,7 @@ struct CasparSolverOptions {
 
 struct CasparBundleAdjustmentOptions : CasparSolverOptions {
   double fixed_rig_reprojection_loss_scale = 5.0;
+  double prior_position_loss_scale = 4.0;
 };
 
 #ifdef CASPAR_ENABLED

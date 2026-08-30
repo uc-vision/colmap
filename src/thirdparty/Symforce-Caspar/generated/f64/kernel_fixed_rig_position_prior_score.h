@@ -12,6 +12,7 @@ void FixedRigPositionPriorScore(double* pose,
                                 unsigned int position_num_alloc,
                                 double* sqrt_information,
                                 unsigned int sqrt_information_num_alloc,
+                                const double* const position_loss_scale,
                                 double* const out_rTr,
                                 size_t problem_size);
 

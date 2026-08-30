@@ -451,6 +451,7 @@ bool FixedRigPosePriorBundleAdjustmentOptions::Check() const {
   if (backend == BundleAdjustmentBackend::CASPAR_RIG_SCHUR) {
     THROW_CHECK_NOTNULL(caspar);
     CHECK_OPTION_GT(caspar->fixed_rig_reprojection_loss_scale, 0);
+    CHECK_OPTION_GT(caspar->prior_position_loss_scale, 0);
   }
   return true;
 }

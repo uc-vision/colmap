@@ -1363,6 +1363,10 @@ class FixedRigPosePriorCasparBundleAdjuster : public BundleAdjuster {
         prior_positions_.data(), 0, prior_pose_indices_.size());
     solver.SetFixedRigPositionPriorSqrtInformationDataFromStackedHost(
         prior_sqrt_information_.data(), 0, prior_pose_indices_.size());
+    const StorageType prior_position_loss_scale =
+        fixed_options_.caspar->prior_position_loss_scale;
+    solver.SetFixedRigPositionPriorPositionLossScaleDataFromStackedHost(
+        &prior_position_loss_scale);
     solver.SetFixedRigSchurTopology(
         pose_indices_, point_indices_, {}, rotation_anchor_pose_index_);
     solver.finish_indices();

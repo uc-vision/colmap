@@ -37,6 +37,6 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
     const float* prior_positions,
     const float* prior_sqrt_information,
     size_t num_priors,
-    const CasparSolverOptions& options);
+    const CasparBundleAdjustmentOptions& options);
 
 }  // namespace colmap

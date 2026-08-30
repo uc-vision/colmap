@@ -188,7 +188,7 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
     const float* prior_positions,
     const float* prior_sqrt_information,
     const size_t num_priors,
-    const CasparSolverOptions& options) {
+    const CasparBundleAdjustmentOptions& options) {
 #ifdef CASPAR_USE_DOUBLE
   LOG(FATAL_THROW) << "Caspar fixed-rig array BA requires float precision";
   return {};
@@ -247,12 +247,20 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
       observations.sensor_indices.data(), num_observations);
   solver.SetRowFixedRigPinholePixelDataFromStackedHost(
       observation_xy, 0, num_observations);
+  const StorageType reprojection_loss_scale =
+      options.fixed_rig_reprojection_loss_scale;
+  solver.SetRowFixedRigPinholeReprojectionLossScaleDataFromStackedHost(
+      &reprojection_loss_scale);
   solver.SetFixedRigPositionPriorPoseIndicesFromHost(priors.pose_indices.data(),
                                                      num_priors);
   solver.SetFixedRigPositionPriorPositionDataFromStackedHost(
       priors.positions.data(), 0, num_priors);
   solver.SetFixedRigPositionPriorSqrtInformationDataFromStackedHost(
       priors.sqrt_information.data(), 0, num_priors);
+  const StorageType prior_position_loss_scale =
+      options.prior_position_loss_scale;
+  solver.SetFixedRigPositionPriorPositionLossScaleDataFromStackedHost(
+      &prior_position_loss_scale);
   const unsigned int rotation_anchor_pose_index = *std::min_element(
       observations.pose_indices.begin(), observations.pose_indices.end());
   solver.SetRowFixedRigSchurTopology(observations.pose_indices,

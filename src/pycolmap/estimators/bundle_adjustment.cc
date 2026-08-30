@@ -160,7 +160,7 @@ FixedRigPosePriorBundleAdjustmentArrays(
     const Uint32Array& prior_frame_indices,
     const FloatArray& prior_positions,
     const FloatArray& prior_sqrt_information,
-    const CasparSolverOptions& options) {
+    const CasparBundleAdjustmentOptions& options) {
   THROW_CHECK_GE(rigs_from_world.size(), 2)
       << "Row bundle adjustment requires at least two rig frames";
   THROW_CHECK_EQ(points.ndim(), 2);
@@ -580,7 +580,11 @@ void BindBundleAdjuster(py::module& m) {
           .def_readwrite("fixed_rig_reprojection_loss_scale",
                          &CasparBAOpts::fixed_rig_reprojection_loss_scale,
                          "Pseudo-Huber loss scale in pixels for fixed-rig "
-                         "reprojection residuals.");
+                         "reprojection residuals.")
+          .def_readwrite("prior_position_loss_scale",
+                         &CasparBAOpts::prior_position_loss_scale,
+                         "Norm-wise pseudo-Huber scale in Mahalanobis standard "
+                         "deviations for position priors.");
   MakeDataclass(PyCasparBundleAdjustmentOptions);
 
   // Solver-agnostic bundle adjustment options
@@ -777,10 +781,11 @@ void BindBundleAdjuster(py::module& m) {
         "prior_frame_indices"_a.noconvert(),
         "prior_positions"_a.noconvert(),
         "prior_sqrt_information"_a.noconvert(),
-        "options"_a = CasparSolverOptions(),
+        "options"_a = CasparBundleAdjustmentOptions(),
         "Jointly optimize rig-frame poses, points, and one multiplicative "
         "sensor-from-rig translation scale from flat pinhole observation "
-        "arrays and direct rig-frame position priors. Reprojection uses "
-        "ordinary squared error; intrinsics and sensor rotations are fixed.");
+        "arrays and direct rig-frame position priors. Reprojection and "
+        "position priors use norm-wise pseudo-Huber losses; intrinsics and "
+        "sensor rotations are fixed.");
 #endif
 }

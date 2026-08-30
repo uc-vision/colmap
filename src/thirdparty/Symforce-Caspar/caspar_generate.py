@@ -75,6 +75,10 @@ class ConstPositionSqrtInformation(sf.V9):
     pass
 
 
+class ConstPositionLossScale(sf.V1):
+    pass
+
+
 class ConstLogScalePriorTarget(sf.V1):
     pass
 
@@ -307,6 +311,13 @@ def pinhole_core(
     return sf.V2([fx * p[0] + cx, fy * p[1] + cy]) - pixel
 
 
+def pseudo_huber_norm(residual: sf.Matrix, loss_scale: sf.V1) -> sf.Matrix:
+    """Apply one rotationally invariant pseudo-Huber loss to a residual."""
+    scaled_squared_norm = residual.squared_norm() / loss_scale[0] ** 2
+    weight = sf.sqrt(2 / (sf.sqrt(1 + scaled_squared_norm) + 1))
+    return weight * residual
+
+
 def fixed_rig_pinhole(
     pose: T.Annotated[PinholePose, mem.TunableShared],
     sensor_from_rig: T.Annotated[
@@ -328,11 +339,7 @@ def fixed_rig_pinhole(
         sf.exp(sensor_from_rig_log_scale[0]) * sensor_from_rig.t,
     )
     residual = pinhole_core(pose, scaled_sensor_from_rig, calib, point, pixel)
-    scaled_squared_norm = (
-        residual.squared_norm() / reprojection_loss_scale[0] ** 2
-    )
-    weight = sf.sqrt(2 / (sf.sqrt(1 + scaled_squared_norm) + 1))
-    return weight * residual
+    return pseudo_huber_norm(residual, reprojection_loss_scale)
 
 
 def row_fixed_rig_pinhole(
@@ -345,15 +352,19 @@ def row_fixed_rig_pinhole(
     ],
     point: T.Annotated[Point, mem.TunableShared],
     pixel: T.Annotated[ConstPixel, mem.ConstantSequential],
+    reprojection_loss_scale: T.Annotated[
+        ConstReprojectionLossScale, mem.ConstantUnique
+    ],
 ) -> sf.V2:
-    """Squared row reprojection with fixed indexed calibration and live scale."""
+    """Robust row reprojection with fixed indexed calibration and live scale."""
     sensor_from_rig = sf.Pose3.from_storage(sensor_calibration[:7])
     calib = sf.V4(sensor_calibration[7:])
     scaled_sensor_from_rig = sf.Pose3(
         sensor_from_rig.R,
         sf.exp(sensor_from_rig_log_scale[0]) * sensor_from_rig.t,
     )
-    return pinhole_core(pose, scaled_sensor_from_rig, calib, point, pixel)
+    residual = pinhole_core(pose, scaled_sensor_from_rig, calib, point, pixel)
+    return pseudo_huber_norm(residual, reprojection_loss_scale)
 
 
 def fixed_rig_position_prior(
@@ -362,10 +373,14 @@ def fixed_rig_position_prior(
     sqrt_information: T.Annotated[
         ConstPositionSqrtInformation, mem.ConstantSequential
     ],
+    position_loss_scale: T.Annotated[
+        ConstPositionLossScale, mem.ConstantUnique
+    ],
 ) -> sf.V3:
-    """Covariance-weighted prior on a reference camera's world position."""
+    """Robust covariance-weighted reference-camera position prior."""
     weight = sf.Matrix33.from_storage(sqrt_information.to_storage())
-    return weight * (pose.inverse().t - position)
+    residual = weight * (pose.inverse().t - position)
+    return pseudo_huber_norm(residual, position_loss_scale)
 
 
 def fixed_rig_sensor_position_prior(

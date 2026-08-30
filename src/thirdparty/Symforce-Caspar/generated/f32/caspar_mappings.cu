@@ -1088,6 +1088,93 @@ cudaError_t ConstPointCasparToStacked(const float* cas_data,
 }
 
 __global__
+__launch_bounds__(block_size, 1) void ConstPositionLossScaleStackedToCaspar_kernel(
+    const float* const __restrict__ stacked_data,
+    float* const __restrict__ cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects) {
+  const unsigned int global_thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  __shared__ float stacked_data_local[block_size * 1];
+
+  for (unsigned int target = (blockIdx.x * blockDim.x) * 1 + threadIdx.x;
+       target < min(num_objects, (blockIdx.x + 1) * blockDim.x) * 1;
+       target += blockDim.x) {
+    stacked_data_local[target - (blockIdx.x * blockDim.x) * 1] =
+        stacked_data[target];
+  }
+
+  __syncthreads();
+
+  if (global_thread_idx < num_objects) {
+    float data[4] = {0, 0, 0, 0};
+    float* stacked_local_ptr = stacked_data_local + threadIdx.x * 1;
+    float* out_ptr;
+    data[0] = stacked_local_ptr[0];
+
+    out_ptr = cas_data + 1 * (global_thread_idx + cas_offset) + 0 * cas_stride;
+    out_ptr[0] = data[0];
+  }
+}
+
+__global__
+__launch_bounds__(block_size, 1) void ConstPositionLossScaleCasparToStacked_kernel(
+    const float* const __restrict__ cas_data,
+    float* const __restrict__ stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects) {
+  const unsigned int global_thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  __shared__ float stacked_data_local[block_size * 1];
+
+  if (global_thread_idx < num_objects) {
+    float data[4] = {0, 0, 0, 0};
+    float* stacked_local_ptr = stacked_data_local + threadIdx.x * 1;
+    const float* in_ptr;
+    in_ptr = cas_data + 1 * (global_thread_idx + cas_offset) + 0 * cas_stride;
+    data[0] = in_ptr[0];
+    stacked_local_ptr[0] = data[0];
+  }
+
+  __syncthreads();
+
+  for (unsigned int target = (blockIdx.x * blockDim.x) * 1 + threadIdx.x;
+       target < min(num_objects, (blockIdx.x + 1) * blockDim.x) * 1;
+       target += blockDim.x) {
+    stacked_data[target] =
+        stacked_data_local[target - (blockIdx.x * blockDim.x) * 1];
+  }
+}
+
+cudaError_t ConstPositionLossScaleStackedToCaspar(
+    const float* stacked_data,
+    float* cas_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects) {
+  const int num_blocks = (num_objects + block_size - 1) / block_size;
+
+  ConstPositionLossScaleStackedToCaspar_kernel<<<num_blocks, block_size>>>(
+      stacked_data, cas_data, cas_stride, cas_offset, num_objects);
+
+  return cudaGetLastError();
+}
+
+cudaError_t ConstPositionLossScaleCasparToStacked(
+    const float* cas_data,
+    float* stacked_data,
+    const unsigned int cas_stride,
+    const unsigned int cas_offset,
+    const unsigned int num_objects) {
+  const int num_blocks = (num_objects + block_size - 1) / block_size;
+
+  ConstPositionLossScaleCasparToStacked_kernel<<<num_blocks, block_size>>>(
+      cas_data, stacked_data, cas_stride, cas_offset, num_objects);
+
+  return cudaGetLastError();
+}
+
+__global__
 __launch_bounds__(block_size, 1) void ConstPositionSqrtInformationStackedToCaspar_kernel(
     const float* const __restrict__ stacked_data,
     float* const __restrict__ cas_data,

@@ -383,7 +383,7 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
     prior_sqrt_information = np.repeat(
         (1000.0 * np.eye(3, dtype=np.float32))[None], 3, axis=0
     )
-    options = pycolmap.CasparSolverOptions()
+    options = pycolmap.CasparBundleAdjustmentOptions()
     options.gpu_index = "0"
     options.solver_iter_max = 100
     result = pycolmap.fixed_rig_pose_prior_bundle_adjustment_arrays(

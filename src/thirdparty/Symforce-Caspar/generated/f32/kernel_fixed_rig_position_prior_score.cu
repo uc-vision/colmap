@@ -18,6 +18,7 @@ __global__ void __launch_bounds__(1024, 1)
                                      unsigned int position_num_alloc,
                                      float* sqrt_information,
                                      unsigned int sqrt_information_num_alloc,
+                                     const float* const position_loss_scale,
                                      float* const out_rTr,
                                      size_t problem_size) {
   const int global_thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -32,7 +33,7 @@ __global__ void __launch_bounds__(1024, 1)
   __shared__ float out_rTr_local[1];
 
   float r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15,
-      r16, r17, r18, r19, r20, r21, r22, r23, r24, r25;
+      r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28;
 
   if (global_thread_idx < problem_size) {
     ReadIdx4<1024, float, float, float4>(sqrt_information,
@@ -83,13 +84,16 @@ __global__ void __launch_bounds__(1024, 1)
     ReadIdx3<1024, float, float, float4>(
         position, 0 * position_num_alloc, global_thread_idx, r22, r23, r24);
     r22 = fmaf(r22, r4, r4 * r20);
-    ReadIdx1<1024, float, float, float>(sqrt_information,
-                                        8 * sqrt_information_num_alloc,
-                                        global_thread_idx,
-                                        r20);
-    r25 = r8 * r8;
-    r25 = r13 * r25;
-    r15 = r25 + r15;
+    ReadIdx4<1024, float, float, float4>(sqrt_information,
+                                         4 * sqrt_information_num_alloc,
+                                         global_thread_idx,
+                                         r20,
+                                         r25,
+                                         r26,
+                                         r27);
+    r28 = r8 * r8;
+    r28 = r13 * r28;
+    r15 = r28 + r15;
     r19 = r9 * r19;
     r13 = fmaf(r8, r21, r19);
     r13 = fmaf(r6, r13, r7 * r15);
@@ -97,35 +101,51 @@ __global__ void __launch_bounds__(1024, 1)
     r15 = fmaf(r18, r15, r16);
     r13 = fmaf(r5, r15, r13);
     r24 = fmaf(r24, r4, r4 * r13);
-    r20 = fmaf(r20, r24, r2 * r22);
-    ReadIdx4<1024, float, float, float4>(sqrt_information,
-                                         4 * sqrt_information_num_alloc,
-                                         global_thread_idx,
-                                         r2,
-                                         r13,
-                                         r15,
-                                         r16);
+    r26 = fmaf(r26, r24, r0 * r22);
     r12 = r14 + r12;
-    r12 = r12 + r25;
-    r25 = r8 * r11;
-    r25 = fmaf(r18, r25, r19);
-    r25 = fmaf(r7, r25, r6 * r12);
+    r12 = r12 + r28;
+    r28 = r8 * r11;
+    r28 = fmaf(r18, r28, r19);
+    r28 = fmaf(r7, r28, r6 * r12);
     r21 = fmaf(r10, r21, r17);
-    r25 = fmaf(r5, r21, r25);
-    r4 = fmaf(r23, r4, r4 * r25);
-    r20 = fmaf(r13, r4, r20);
-    r16 = fmaf(r16, r24, r1 * r22);
-    r16 = fmaf(r2, r4, r16);
-    r16 = fmaf(r16, r16, r20 * r20);
-    r24 = fmaf(r15, r24, r0 * r22);
-    r24 = fmaf(r3, r4, r24);
-    r16 = fmaf(r24, r24, r16);
+    r28 = fmaf(r5, r21, r28);
+    r4 = fmaf(r23, r4, r4 * r28);
+    r26 = fmaf(r3, r4, r26);
+    r26 = r26 * r26;
+  };
+  LoadUnique<1, float, float>(position_loss_scale, 0, (float*)inout_shared);
+  if (global_thread_idx < problem_size) {
+    ReadShared1<float>((float*)inout_shared, 0, r3);
+  };
+  __syncthreads();
+  if (global_thread_idx < problem_size) {
+    r3 = r3 * r3;
+    r3 = 1.0 / r3;
+    ReadIdx1<1024, float, float, float>(sqrt_information,
+                                        8 * sqrt_information_num_alloc,
+                                        global_thread_idx,
+                                        r23);
+    r23 = fmaf(r23, r24, r2 * r22);
+    r23 = fmaf(r25, r4, r23);
+    r23 = r23 * r23;
+    r25 = r26 + r23;
+    r24 = fmaf(r27, r24, r1 * r22);
+    r24 = fmaf(r20, r4, r24);
+    r24 = r24 * r24;
+    r25 = r25 + r24;
+    r3 = fmaf(r25, r3, r14);
+    r3 = sqrtf(r3);
+    r3 = r14 + r3;
+    r3 = 1.0 / r3;
+    r3 = r18 * r3;
+    r23 = fmaf(r23, r3, r26 * r3);
+    r23 = fmaf(r24, r3, r23);
   };
   SumStore<float>(out_rTr_local,
                   (float*)inout_shared,
                   0,
                   global_thread_idx < problem_size,
-                  r16);
+                  r23);
   SumFlushFinal<float>(out_rTr_local, out_rTr, 1);
 }
 
@@ -136,6 +156,7 @@ void FixedRigPositionPriorScore(float* pose,
                                 unsigned int position_num_alloc,
                                 float* sqrt_information,
                                 unsigned int sqrt_information_num_alloc,
+                                const float* const position_loss_scale,
                                 float* const out_rTr,
                                 size_t problem_size) {
   if (problem_size == 0) {
@@ -151,6 +172,7 @@ void FixedRigPositionPriorScore(float* pose,
       position_num_alloc,
       sqrt_information,
       sqrt_information_num_alloc,
+      position_loss_scale,
       out_rTr,
       problem_size);
 }
