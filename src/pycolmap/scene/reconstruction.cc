@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 #include <pybind11/eigen.h>
@@ -90,6 +91,34 @@ py::dict TrackArrays(const Reconstruction& reconstruction) {
       "observation_image_ids"_a = std::move(observation_image_ids),
       "observation_point2D_indices"_a = std::move(observation_point2D_indices),
       "observation_xy"_a = std::move(observation_xy));
+}
+
+py::array_t<double> ComputePointReprojectionErrors(
+    const Reconstruction& reconstruction,
+    const std::unordered_map<camera_t, Eigen::Matrix2d>& residual_transforms) {
+  py::array_t<double> point_errors(
+      static_cast<ssize_t>(reconstruction.NumPoints3D()));
+  double* point_errors_ptr = point_errors.mutable_data();
+
+  {
+    py::gil_scoped_release release;
+    ssize_t point_index = 0;
+    for (const auto& [_, point3D] : reconstruction.Points3D()) {
+      double error_sum = 0.0;
+      for (const TrackElement& element : point3D.track.Elements()) {
+        const Image& image = reconstruction.Image(element.image_id);
+        const Eigen::Vector2d projected_xy =
+            image.ProjectPoint(point3D.xyz).value();
+        const Eigen::Vector2d residual =
+            image.Point2D(element.point2D_idx).xy - projected_xy;
+        error_sum +=
+            (residual_transforms.at(image.CameraId()) * residual).norm();
+      }
+      point_errors_ptr[point_index++] = error_sum / point3D.track.Length();
+    }
+  }
+
+  return point_errors;
 }
 
 py::array_t<point3D_t> AddPoints3DFromArrays(
@@ -225,6 +254,11 @@ void BindReconstruction(py::module& m) {
            &TrackArrays,
            "Export points and tracks as contiguous NumPy arrays without "
            "creating Python objects per observation.")
+      .def("compute_point_reprojection_errors",
+           &ComputePointReprojectionErrors,
+           "residual_transforms"_a,
+           "Compute mean reprojection error per point after applying a "
+           "camera-specific 2D transform to each residual.")
       .def("add_points3D_from_arrays",
            &AddPoints3DFromArrays,
            "point_xyz"_a.noconvert(),

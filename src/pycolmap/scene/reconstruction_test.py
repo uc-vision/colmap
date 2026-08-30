@@ -251,6 +251,34 @@ def test_reconstruction_compute_mean_reprojection_error(
     assert isinstance(error, float)
 
 
+def test_reconstruction_compute_point_reprojection_errors(
+    synthetic_reconstruction,
+):
+    residual_transforms = {
+        camera_id: np.diag([2.0, 3.0])
+        for camera_id in synthetic_reconstruction.cameras
+    }
+    errors = synthetic_reconstruction.compute_point_reprojection_errors(
+        residual_transforms
+    )
+
+    expected = []
+    for point in synthetic_reconstruction.points3D.values():
+        residuals = []
+        for element in point.track.elements:
+            image = synthetic_reconstruction.image(element.image_id)
+            residual = (
+                image.point2D(element.point2D_idx).xy
+                - image.project_point(point.xyz)
+            )
+            residuals.append(
+                np.linalg.norm(residual_transforms[image.camera_id] @ residual)
+            )
+        expected.append(np.mean(residuals))
+
+    np.testing.assert_allclose(errors, expected)
+
+
 def test_reconstruction_compute_mean_observations_per_reg_image(
     synthetic_reconstruction,
 ):
