@@ -8,6 +8,7 @@ if (( $# < 2 || $# > 3 )); then
 fi
 
 script_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repository_directory=$(realpath "$script_directory/../../..")
 output_directory=$(realpath -m "$1")
 precision=$2
 python_executable=${3:-python3}
@@ -67,3 +68,17 @@ git -C "$symforce_checkout" apply \
 PYTHONPATH="$symforce_checkout${PYTHONPATH:+:$PYTHONPATH}" \
   "$python_executable" "$script_directory/caspar_generate.py" \
   "$output_directory" "$precision"
+
+# Caspar copies these support files verbatim from upstream. Preserve their
+# upstream formatting while applying COLMAP's style to generated sources.
+while IFS= read -r -d '' generated_file; do
+  case "${generated_file##*/}" in
+    shared_indices.cu|shared_indices.h|solver_params.h|solver_tools.cu|solver_tools.h|sort_indices.cu|sort_indices.h)
+      continue
+      ;;
+  esac
+  clang-format \
+    "--style=file:$repository_directory/.clang-format" \
+    -i "$generated_file"
+done < <(find "$output_directory" -type f \
+  \( -name '*.cc' -o -name '*.cu' -o -name '*.h' \) -print0)
