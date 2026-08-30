@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -25,7 +26,16 @@ struct PreparedSource {
   std::vector<uint32_t> track_duplicate_offsets;
 };
 
-struct PackedPointChunk {
+template <bool IncludeObservationOffsets>
+struct ObservationOffsets {};
+
+template <>
+struct ObservationOffsets<true> {
+  std::vector<uint32_t> observation_offsets;
+};
+
+template <bool IncludeObservationOffsets>
+struct PackedPointChunk : ObservationOffsets<IncludeObservationOffsets> {
   std::vector<float> initial_points;
   std::vector<uint32_t> observation_point_indices;
   std::vector<uint32_t> observation_image_indices;
@@ -77,7 +87,8 @@ std::vector<uint32_t> TrackSourceIndices(
   return source_indices;
 }
 
-PackedPointChunk PackPointChunk(
+template <bool IncludeObservationOffsets>
+PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
     const std::vector<PreparedSource>& sources,
     const std::vector<uint32_t>& source_track_offsets,
     const std::vector<uint32_t>& track_source_indices,
@@ -90,8 +101,11 @@ PackedPointChunk PackPointChunk(
     const float* initialized_points,
     const size_t num_initialized_points,
     float* row_colors) {
-  PackedPointChunk chunk;
+  PackedPointChunk<IncludeObservationOffsets> chunk;
   chunk.initial_points.resize((point_end - point_start) * 3);
+  if constexpr (IncludeObservationOffsets) {
+    chunk.observation_offsets.resize(point_end - point_start + 1);
+  }
   chunk.observation_point_indices.resize(observation_count);
   chunk.observation_image_indices.resize(observation_count);
   chunk.observation_xy.resize(observation_count * 2);
@@ -172,13 +186,18 @@ PackedPointChunk PackPointChunk(
                                                         initialized_index * 3);
       ++initialized_index;
     }
+    if constexpr (IncludeObservationOffsets) {
+      chunk.observation_offsets[row_point - point_start + 1] =
+          static_cast<uint32_t>(packed_observation);
+    }
   }
   return chunk;
 }
 
 }  // namespace
 
-CasparRowPointRefinementResult RefineRowPointsCaspar(
+template <bool ValidateReprojection>
+CasparRowPointRefinementResult RefineRowPointsCasparImpl(
     const std::vector<CasparRowPointRefinementSource>& sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
@@ -191,7 +210,7 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
     const size_t num_initialized_points,
     const size_t maximum_chunk_points,
     const size_t maximum_chunk_observations,
-    const CasparPointRefinementOptions& options) {
+    const CasparRowPointRefinementOptions& options) {
   CasparRowPointRefinementResult output;
   const Clock::time_point preparation_start = Clock::now();
   const std::vector<PreparedSource> prepared = PrepareSources(sources);
@@ -203,7 +222,23 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
   output.colors.resize(num_points * 3);
   output.preparation_seconds = ElapsedSeconds(preparation_start);
 
+  std::unique_ptr<CasparRowReprojectionValidator> validator;
+  if constexpr (ValidateReprojection) {
+    const Clock::time_point validation_start = Clock::now();
+    const size_t maximum_point_observations = *std::max_element(
+        point_observation_counts, point_observation_counts + num_points);
+    validator = std::make_unique<CasparRowReprojectionValidator>(
+        num_points,
+        image_from_world,
+        num_images,
+        maximum_chunk_points,
+        std::max(maximum_chunk_observations, maximum_point_observations),
+        SelectCasparDevice(options));
+    output.validation_seconds += ElapsedSeconds(validation_start);
+  }
+
   size_t point_start = 0;
+  size_t validated_observation_count = 0;
   while (point_start < num_points) {
     const Clock::time_point packing_start = Clock::now();
     size_t point_end = point_start;
@@ -220,31 +255,54 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
       ++point_end;
     }
 
-    const PackedPointChunk chunk = PackPointChunk(prepared,
-                                                  source_track_offsets,
-                                                  track_source_indices,
-                                                  point_track_offsets,
-                                                  point_track_indices,
-                                                  point_start,
-                                                  point_end,
-                                                  observation_count,
-                                                  initialized_row_point_indices,
-                                                  initialized_points,
-                                                  num_initialized_points,
-                                                  output.colors.data());
+    const PackedPointChunk<ValidateReprojection> chunk =
+        PackPointChunk<ValidateReprojection>(prepared,
+                                             source_track_offsets,
+                                             track_source_indices,
+                                             point_track_offsets,
+                                             point_track_indices,
+                                             point_start,
+                                             point_end,
+                                             observation_count,
+                                             initialized_row_point_indices,
+                                             initialized_points,
+                                             num_initialized_points,
+                                             output.colors.data());
     output.packing_seconds += ElapsedSeconds(packing_start);
     const Clock::time_point optimization_start = Clock::now();
-    CasparPointRefinementResult refined = RefineFixedCameraPinholePointsCaspar(
-        chunk.initial_points.data(),
-        point_end - point_start,
-        image_from_world,
-        num_images,
-        chunk.observation_point_indices.data(),
-        chunk.observation_image_indices.data(),
-        chunk.observation_xy.data(),
-        observation_count,
-        options);
-    output.optimization_seconds += ElapsedSeconds(optimization_start);
+    CasparPointRefinementResult refined;
+    if constexpr (ValidateReprojection) {
+      refined = RefineFixedCameraPinholePointsCasparWithReprojectionValidation(
+          chunk.initial_points.data(),
+          point_end - point_start,
+          image_from_world,
+          num_images,
+          chunk.observation_point_indices.data(),
+          chunk.observation_image_indices.data(),
+          chunk.observation_xy.data(),
+          observation_count,
+          chunk.observation_offsets.data(),
+          point_start,
+          options,
+          *validator);
+      validated_observation_count += observation_count;
+    } else {
+      refined = RefineFixedCameraPinholePointsCaspar(
+          chunk.initial_points.data(),
+          point_end - point_start,
+          image_from_world,
+          num_images,
+          chunk.observation_point_indices.data(),
+          chunk.observation_image_indices.data(),
+          chunk.observation_xy.data(),
+          observation_count,
+          options);
+    }
+    output.optimization_seconds +=
+        ElapsedSeconds(optimization_start) - refined.validation_seconds;
+    if constexpr (ValidateReprojection) {
+      output.validation_seconds += refined.validation_seconds;
+    }
     if (!refined.summary->IsSolutionUsable()) {
       throw std::runtime_error(refined.summary->BriefReport());
     }
@@ -260,7 +318,59 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
     output.final_score += refined.summary->final_score;
     point_start = point_end;
   }
+  if constexpr (ValidateReprojection) {
+    const Clock::time_point validation_start = Clock::now();
+    output.reprojection = validator->Summarize(validated_observation_count);
+    output.validation_seconds += ElapsedSeconds(validation_start);
+    const Clock::time_point release_start = Clock::now();
+    validator.reset();
+    output.validation_seconds += ElapsedSeconds(release_start);
+  }
   return output;
+}
+
+CasparRowPointRefinementResult RefineRowPointsCaspar(
+    const std::vector<CasparRowPointRefinementSource>& sources,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const uint32_t* point_observation_counts,
+    const size_t num_points,
+    const float* image_from_world,
+    const size_t num_images,
+    const uint32_t* initialized_row_point_indices,
+    const float* initialized_points,
+    const size_t num_initialized_points,
+    const size_t maximum_chunk_points,
+    const size_t maximum_chunk_observations,
+    const CasparRowPointRefinementOptions& options) {
+  if (options.validate_reprojection) {
+    return RefineRowPointsCasparImpl<true>(sources,
+                                           point_track_offsets,
+                                           point_track_indices,
+                                           point_observation_counts,
+                                           num_points,
+                                           image_from_world,
+                                           num_images,
+                                           initialized_row_point_indices,
+                                           initialized_points,
+                                           num_initialized_points,
+                                           maximum_chunk_points,
+                                           maximum_chunk_observations,
+                                           options);
+  }
+  return RefineRowPointsCasparImpl<false>(sources,
+                                          point_track_offsets,
+                                          point_track_indices,
+                                          point_observation_counts,
+                                          num_points,
+                                          image_from_world,
+                                          num_images,
+                                          initialized_row_point_indices,
+                                          initialized_points,
+                                          num_initialized_points,
+                                          maximum_chunk_points,
+                                          maximum_chunk_observations,
+                                          options);
 }
 
 }  // namespace colmap

@@ -59,6 +59,7 @@ if(CASPAR_ENABLED)
     list(APPEND ESTIMATORS_SRCS
         bundle_adjustment_caspar.h
         bundle_adjustment_caspar.cc
+        caspar/row_reprojection_validation.h
         point_refinement_caspar.h
         point_refinement_caspar.cc
         row_point_refinement_caspar.h

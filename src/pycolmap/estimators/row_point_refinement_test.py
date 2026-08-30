@@ -98,8 +98,9 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
         np.array((0, 1, 2), np.uint32),
         np.tile(source_translation, (3, 1, 1)),
     )
-    options = pycolmap.CasparPointRefinementOptions()
+    options = pycolmap.CasparRowPointRefinementOptions()
     options.solver_iter_max = 20
+    options.validate_reprojection = True
     result = pycolmap.caspar_refine_row_points(
         (first, second),
         joined.point_track_offsets,
@@ -120,3 +121,29 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
         ((1.0, 0.5, 0.0), (0.0, 0.5, 0.5)),
     )
     assert result.chunk_count == 2
+    point_errors = np.array(
+        tuple(
+            np.mean(
+                tuple(
+                    np.linalg.norm(
+                        project(projections[image], result.points[point])
+                        - project(projections[image], expected[point])
+                    )
+                    for image in range(3)
+                )
+            )
+            for point in range(2)
+        )
+    )
+    assert result.reprojection.point_count == 2
+    assert result.reprojection.observation_count == 6
+    np.testing.assert_allclose(
+        result.reprojection.mean_pixels, np.mean(point_errors)
+    )
+    np.testing.assert_allclose(
+        result.reprojection.median_pixels, np.median(point_errors)
+    )
+    np.testing.assert_allclose(
+        result.reprojection.p95_pixels, np.percentile(point_errors, 95)
+    )
+    assert result.validation_seconds > 0.0

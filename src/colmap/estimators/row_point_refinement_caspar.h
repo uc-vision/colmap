@@ -1,5 +1,6 @@
 #pragma once
 
+#include "colmap/estimators/caspar/row_reprojection_validation.h"
 #include "colmap/estimators/point_refinement_caspar.h"
 
 #include <cstddef>
@@ -7,6 +8,10 @@
 #include <vector>
 
 namespace colmap {
+
+struct CasparRowPointRefinementOptions : CasparPointRefinementOptions {
+  bool validate_reprojection = false;
+};
 
 struct CasparRowPointRefinementSource {
   const float* points;
@@ -34,6 +39,8 @@ struct CasparRowPointRefinementResult {
   double preparation_seconds = 0.0;
   double packing_seconds = 0.0;
   double optimization_seconds = 0.0;
+  double validation_seconds = 0.0;
+  CasparReprojectionErrorSummary reprojection;
 };
 
 CasparRowPointRefinementResult RefineRowPointsCaspar(
@@ -49,6 +56,6 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
     size_t num_initialized_points,
     size_t maximum_chunk_points,
     size_t maximum_chunk_observations,
-    const CasparPointRefinementOptions& options);
+    const CasparRowPointRefinementOptions& options);
 
 }  // namespace colmap

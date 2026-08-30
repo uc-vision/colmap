@@ -120,6 +120,16 @@ if(CASPAR_ENABLED AND CUDA_ENABLED)
     )
     message(STATUS "Configuring Caspar...")
     FetchContent_MakeAvailable(caspar)
+    set(CASPAR_ROW_VALIDATION_DIR
+        "${CMAKE_SOURCE_DIR}/src/colmap/estimators/caspar")
+    target_sources(caspar_lib_core PRIVATE
+        "${CASPAR_ROW_VALIDATION_DIR}/row_reprojection_validation.cu")
+    target_include_directories(caspar_lib_core PRIVATE
+        "${CMAKE_SOURCE_DIR}/src")
+    set_source_files_properties(
+        "${CASPAR_ROW_VALIDATION_DIR}/row_reprojection_validation.cu"
+        TARGET_DIRECTORY caspar_lib_core
+        PROPERTIES COMPILE_OPTIONS "--prec-div=true;--prec-sqrt=true")
     if(NOT CASPAR_USE_DOUBLE)
         set(CASPAR_RIG_SCHUR_DIR
             "${CMAKE_SOURCE_DIR}/src/thirdparty/Symforce-Caspar/rig_schur/f32")

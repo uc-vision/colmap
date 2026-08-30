@@ -2,6 +2,7 @@
 #include "colmap/estimators/row_point_refinement_caspar.h"
 #endif
 
+#include "pycolmap/helpers.h"
 #include "pycolmap/pybind11_extension.h"
 
 #include <cstddef>
@@ -70,6 +71,8 @@ struct PyCasparRowPointRefinementResult {
   double preparation_seconds;
   double packing_seconds;
   double optimization_seconds;
+  double validation_seconds;
+  CasparReprojectionErrorSummary reprojection;
 };
 
 py::array_t<float> MatrixArray(std::vector<float>&& values,
@@ -97,7 +100,7 @@ PyCasparRowPointRefinementResult RefineRowPoints(
     const FloatArray& initialized_points,
     const size_t maximum_chunk_points,
     const size_t maximum_chunk_observations,
-    const CasparPointRefinementOptions& options) {
+    const CasparRowPointRefinementOptions& options) {
   std::vector<CasparRowPointRefinementSource> native_sources;
   native_sources.reserve(sources.size());
   for (const PyCasparRowPointRefinementSource* source : sources) {
@@ -146,6 +149,8 @@ PyCasparRowPointRefinementResult RefineRowPoints(
       result.preparation_seconds,
       result.packing_seconds,
       result.optimization_seconds,
+      result.validation_seconds,
+      result.reprojection,
   };
 }
 #endif
@@ -154,6 +159,24 @@ PyCasparRowPointRefinementResult RefineRowPoints(
 
 void BindRowPointRefinement(py::module& m) {
 #ifdef CASPAR_ENABLED
+  using RowOptions = CasparRowPointRefinementOptions;
+  auto PyCasparRowPointRefinementOptions =
+      py::classh<RowOptions, CasparPointRefinementOptions>(
+          m, "CasparRowPointRefinementOptions")
+          .def(py::init<>())
+          .def_readwrite("validate_reprojection",
+                         &RowOptions::validate_reprojection);
+  MakeDataclass(PyCasparRowPointRefinementOptions);
+
+  using ReprojectionSummary = CasparReprojectionErrorSummary;
+  py::classh<ReprojectionSummary>(m, "CasparReprojectionErrorSummary")
+      .def_readonly("point_count", &ReprojectionSummary::point_count)
+      .def_readonly("observation_count",
+                    &ReprojectionSummary::observation_count)
+      .def_readonly("mean_pixels", &ReprojectionSummary::mean_pixels)
+      .def_readonly("median_pixels", &ReprojectionSummary::median_pixels)
+      .def_readonly("p95_pixels", &ReprojectionSummary::p95_pixels);
+
   py::classh<PyCasparRowPointRefinementSource>(m,
                                                "CasparRowPointRefinementSource")
       .def(py::init<FloatArray,
@@ -196,7 +219,11 @@ void BindRowPointRefinement(py::module& m) {
       .def_readonly("packing_seconds",
                     &PyCasparRowPointRefinementResult::packing_seconds)
       .def_readonly("optimization_seconds",
-                    &PyCasparRowPointRefinementResult::optimization_seconds);
+                    &PyCasparRowPointRefinementResult::optimization_seconds)
+      .def_readonly("validation_seconds",
+                    &PyCasparRowPointRefinementResult::validation_seconds)
+      .def_readonly("reprojection",
+                    &PyCasparRowPointRefinementResult::reprojection);
 
   m.def("caspar_refine_row_points",
         RefineRowPoints,
@@ -209,7 +236,7 @@ void BindRowPointRefinement(py::module& m) {
         "initialized_points"_a.noconvert(),
         "maximum_chunk_points"_a,
         "maximum_chunk_observations"_a,
-        "options"_a = CasparPointRefinementOptions(),
+        "options"_a = CasparRowPointRefinementOptions(),
         "Refine complete row points from canonical point-track CSR using "
         "fixed pinhole cameras and CASPAR.");
 #endif
