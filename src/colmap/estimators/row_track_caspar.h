@@ -47,14 +47,41 @@ struct CasparRowPointSelection {
   std::vector<float> points;
 };
 
+struct CasparRowTrackSelection {
+  std::vector<uint32_t> point_indices;
+  bool interior_quota_truncated = false;
+};
+
+struct CasparRowTiers {
+  std::vector<uint8_t> first_tier;
+  bool interior_quota_truncated = false;
+};
+
 std::vector<uint32_t> RowSourceTrackOffsets(
     const std::vector<CasparRowTrackSource>& sources);
 
-std::vector<uint32_t> SelectRowPointsByFrame(
+CasparRowTiers AssignCasparRowTiers(
     const std::vector<CasparRowTrackSource>& sources,
+    const uint16_t* source_support,
     const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
     const bool* active_frame_mask,
-    size_t num_row_points);
+    size_t num_row_points,
+    size_t minimum_track_length,
+    const uint32_t* density_tiers,
+    size_t num_density_tiers);
+
+CasparRowTrackSelection SelectCasparRowPoints(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint16_t* source_support,
+    const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
+    const bool* active_frame_mask,
+    size_t num_row_points,
+    size_t minimum_track_length,
+    uint32_t tracks_per_spatial_cell);
 
 CasparRowPointSelection InitializeRowPoints(
     const std::vector<CasparRowTrackSource>& sources,
@@ -114,7 +141,10 @@ void ForEachRowTrackObservation(const CasparRowTrackSource& source,
     }
     const uint32_t image =
         source.image_rows[source.observation_image_indices[observation]];
-    callback(image, source.observation_xy + 2 * observation);
+    callback(
+        static_cast<uint32_t>(source.observation_image_indices[observation]),
+        image,
+        source.observation_xy + 2 * observation);
   }
 }
 
@@ -137,7 +167,9 @@ void ForEachRowObservation(
             const CasparRowTrackSource& source,
             const uint32_t track) {
           ForEachRowTrackObservation(
-              source, track, [&](const uint32_t image, const float* xy) {
+              source,
+              track,
+              [&](const uint32_t, const uint32_t image, const float* xy) {
                 callback(static_cast<uint32_t>(point), image, xy);
               });
         });

@@ -3,6 +3,12 @@
 #include <Eigen/Core>
 
 namespace colmap {
+namespace {
+
+constexpr uint32_t kSpatialGridSide = 4;
+constexpr uint32_t kSpatialCellCount = kSpatialGridSide * kSpatialGridSide;
+
+}  // namespace
 
 std::vector<uint32_t> RowSourceTrackOffsets(
     const std::vector<CasparRowTrackSource>& sources) {
@@ -14,49 +20,146 @@ std::vector<uint32_t> RowSourceTrackOffsets(
   return offsets;
 }
 
-std::vector<uint32_t> SelectRowPointsByFrame(
+CasparRowTiers AssignCasparRowTiers(
     const std::vector<CasparRowTrackSource>& sources,
+    const uint16_t* source_support,
     const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
     const bool* active_frame_mask,
-    const size_t num_row_points) {
-  size_t candidate_track_count = 0;
+    const size_t num_row_points,
+    const size_t minimum_track_length,
+    const uint32_t* density_tiers,
+    const size_t num_density_tiers) {
+  const uint8_t no_tier = static_cast<uint8_t>(num_density_tiers);
+  CasparRowTiers assignment{std::vector<uint8_t>(num_row_points, no_tier),
+                            false};
+  const uint32_t maximum_density = density_tiers[num_density_tiers - 1];
+  std::vector<bool> denied_point(maximum_density > 0 ? num_row_points : 0,
+                                 false);
+  std::vector<uint32_t> stratum_count;
   for (const CasparRowTrackSource& source : sources) {
+    bool source_is_active = false;
     for (size_t image = 0; image < source.num_images; ++image) {
       if (active_frame_mask[image_frame_indices[source.image_rows[image]]]) {
-        candidate_track_count += source.num_tracks;
+        source_is_active = true;
         break;
       }
     }
-  }
-  std::vector<uint32_t> selected;
-  selected.reserve(candidate_track_count);
-  std::vector<uint8_t> selected_point(num_row_points, uint8_t{0});
-  for (const CasparRowTrackSource& source : sources) {
-    bool source_is_candidate = false;
-    for (size_t image = 0; image < source.num_images; ++image) {
-      if (active_frame_mask[image_frame_indices[source.image_rows[image]]]) {
-        source_is_candidate = true;
-        break;
-      }
-    }
-    if (!source_is_candidate) {
+    if (!source_is_active) {
       continue;
     }
+    if (maximum_density > 0) {
+      stratum_count.assign(source.num_images * kSpatialCellCount, uint32_t{0});
+    }
     for (uint32_t track = 0; track < source.num_tracks; ++track) {
-      bool observed_active_frame = false;
-      ForEachRowTrackObservation(
-          source, track, [&](const uint32_t image, const float*) {
-            observed_active_frame |=
-                active_frame_mask[image_frame_indices[image]];
-          });
       const uint32_t row_point = source.row_point_indices[track];
-      if (observed_active_frame && !selected_point[row_point]) {
-        selected_point[row_point] = 1;
-        selected.push_back(row_point);
+      const uint16_t support = source_support[row_point];
+      if (support > 1 && assignment.first_tier[row_point] == 0) {
+        continue;
+      }
+      if (support == 1 && source.observation_offsets[track + 1] -
+                                  source.observation_offsets[track] <
+                              static_cast<int64_t>(minimum_track_length)) {
+        continue;
+      }
+      if (support == 1 && maximum_density == 0) {
+        assignment.interior_quota_truncated = true;
+        continue;
+      }
+      uint32_t first_density = 0;
+      bool admitted = false;
+      ForEachRowTrackObservation(
+          source,
+          track,
+          [&](const uint32_t source_image,
+              const uint32_t image,
+              const float* xy) {
+            if (!active_frame_mask[image_frame_indices[image]]) {
+              return;
+            }
+            if (support > 1) {
+              assignment.first_tier[row_point] = 0;
+              return;
+            }
+            const float* dimensions =
+                sensor_dimensions + 2 * image_sensor_indices[image];
+            if (xy[0] < 0.0f || xy[0] >= dimensions[0] || xy[1] < 0.0f ||
+                xy[1] >= dimensions[1]) {
+              return;
+            }
+            const uint32_t cell_x =
+                static_cast<uint32_t>(xy[0] * kSpatialGridSide / dimensions[0]);
+            const uint32_t cell_y =
+                static_cast<uint32_t>(xy[1] * kSpatialGridSide / dimensions[1]);
+            const uint32_t stratum = source_image * kSpatialCellCount +
+                                     cell_y * kSpatialGridSide + cell_x;
+            uint32_t& count = stratum_count[stratum];
+            if (count < maximum_density) {
+              ++count;
+              if (!admitted || count < first_density) {
+                first_density = count;
+                admitted = true;
+              }
+            } else {
+              denied_point[row_point] = true;
+            }
+          });
+      if (support == 1 && admitted) {
+        const uint8_t first_tier = static_cast<uint8_t>(
+            std::lower_bound(density_tiers,
+                             density_tiers + num_density_tiers,
+                             first_density) -
+            density_tiers);
+        assignment.first_tier[row_point] =
+            std::min(assignment.first_tier[row_point], first_tier);
       }
     }
   }
-  return selected;
+  if (maximum_density > 0) {
+    for (uint32_t row_point = 0; row_point < num_row_points; ++row_point) {
+      if (denied_point[row_point] &&
+          assignment.first_tier[row_point] == no_tier) {
+        assignment.interior_quota_truncated = true;
+        break;
+      }
+    }
+  }
+  return assignment;
+}
+
+CasparRowTrackSelection SelectCasparRowPoints(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint16_t* source_support,
+    const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
+    const bool* active_frame_mask,
+    const size_t num_row_points,
+    const size_t minimum_track_length,
+    const uint32_t tracks_per_spatial_cell) {
+  const CasparRowTiers assignment =
+      AssignCasparRowTiers(sources,
+                           source_support,
+                           image_frame_indices,
+                           image_sensor_indices,
+                           sensor_dimensions,
+                           active_frame_mask,
+                           num_row_points,
+                           minimum_track_length,
+                           &tracks_per_spatial_cell,
+                           1);
+  CasparRowTrackSelection selection;
+  selection.point_indices.resize(static_cast<size_t>(std::count(
+      assignment.first_tier.begin(), assignment.first_tier.end(), uint8_t{0})));
+  auto selected_point = selection.point_indices.begin();
+  for (uint32_t row_point = 0; row_point < num_row_points; ++row_point) {
+    if (assignment.first_tier[row_point] == 0) {
+      *selected_point++ = row_point;
+    }
+  }
+  selection.interior_quota_truncated = assignment.interior_quota_truncated;
+  return selection;
 }
 
 CasparRowPointSelection InitializeRowPoints(

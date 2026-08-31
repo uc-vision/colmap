@@ -103,7 +103,9 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
                                           source_point_index);
 
           ForEachRowTrackObservation(
-              tracks, track, [&](const uint32_t image, const float* xy) {
+              tracks,
+              track,
+              [&](const uint32_t, const uint32_t image, const float* xy) {
                 chunk.observation_point_indices[packed_observation] =
                     static_cast<uint32_t>(row_point - point_start);
                 chunk.observation_image_indices[packed_observation] = image;

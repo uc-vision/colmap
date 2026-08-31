@@ -204,40 +204,73 @@ SectionProblem BuildProblem(const std::vector<CasparRowTrackSource>& sources,
 
 }  // namespace
 
-CasparRowSectionStats ComputeRowSectionStats(
+std::vector<CasparRowSectionStats> ComputeRowSectionStats(
     const std::vector<CasparRowTrackSource>& sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
+    const uint16_t* source_support,
     const size_t num_row_points,
     const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
     const bool* active_frame_mask,
-    const size_t num_frames,
-    const size_t num_images) {
+    const size_t minimum_track_length,
+    const uint32_t* density_tiers,
+    const size_t num_density_tiers) {
   const std::vector<uint32_t> source_track_offsets =
       RowSourceTrackOffsets(sources);
-  const std::vector<uint32_t> row_point_indices = SelectRowPointsByFrame(
-      sources, image_frame_indices, active_frame_mask, num_row_points);
-  const SectionObservations observations =
-      AnalyzeObservations(sources,
-                          source_track_offsets,
-                          point_track_offsets,
-                          point_track_indices,
-                          row_point_indices,
-                          image_frame_indices,
-                          active_frame_mask,
-                          num_frames,
-                          num_images);
-  return {
-      row_point_indices.size(),
-      observations.observation_count,
-      observations.active_observation_count,
-  };
+  const CasparRowTiers assignment = AssignCasparRowTiers(sources,
+                                                         source_support,
+                                                         image_frame_indices,
+                                                         image_sensor_indices,
+                                                         sensor_dimensions,
+                                                         active_frame_mask,
+                                                         num_row_points,
+                                                         minimum_track_length,
+                                                         density_tiers,
+                                                         num_density_tiers);
+  std::vector<CasparRowSectionStats> stats(num_density_tiers);
+  for (uint32_t row_point = 0; row_point < num_row_points; ++row_point) {
+    const uint8_t tier = assignment.first_tier[row_point];
+    if (tier == num_density_tiers) {
+      continue;
+    }
+    CasparRowSectionStats& tier_stats = stats[tier];
+    ++tier_stats.point_count;
+    ForEachRowPointTrack(
+        sources,
+        source_track_offsets,
+        point_track_offsets,
+        point_track_indices,
+        row_point,
+        [&](const size_t,
+            const CasparRowTrackSource& source,
+            const uint32_t track) {
+          ForEachRowTrackObservation(
+              source,
+              track,
+              [&](const uint32_t, const uint32_t image, const float*) {
+                ++tier_stats.observation_count;
+                if (active_frame_mask[image_frame_indices[image]]) {
+                  ++tier_stats.active_observation_count;
+                }
+              });
+        });
+  }
+  for (size_t tier = 1; tier < stats.size(); ++tier) {
+    stats[tier].point_count += stats[tier - 1].point_count;
+    stats[tier].observation_count += stats[tier - 1].observation_count;
+    stats[tier].active_observation_count +=
+        stats[tier - 1].active_observation_count;
+  }
+  return stats;
 }
 
 CasparRowSectionResult RefineRowSectionCaspar(
     const std::vector<CasparRowTrackSource>& sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
+    const uint16_t* source_support,
     float* row_points,
     const size_t num_row_points,
     const std::vector<Rigid3d>& initial_rigs_from_world,
@@ -246,7 +279,10 @@ CasparRowSectionResult RefineRowSectionCaspar(
     const size_t num_images,
     const std::vector<Rigid3d>& sensors_from_rig,
     const float* sensor_calibrations,
+    const float* sensor_dimensions,
     const bool* active_frame_mask,
+    const size_t minimum_track_length,
+    const uint32_t tracks_per_spatial_cell,
     const CasparBundleAdjustmentOptions& options) {
 #ifdef CASPAR_USE_DOUBLE
   LOG(FATAL_THROW) << "Caspar row section BA requires float precision";
@@ -255,9 +291,18 @@ CasparRowSectionResult RefineRowSectionCaspar(
   const Clock::time_point preparation_start = Clock::now();
   const std::vector<uint32_t> source_track_offsets =
       RowSourceTrackOffsets(sources);
+  CasparRowTrackSelection track_selection =
+      SelectCasparRowPoints(sources,
+                            source_support,
+                            image_frame_indices,
+                            image_sensor_indices,
+                            sensor_dimensions,
+                            active_frame_mask,
+                            num_row_points,
+                            minimum_track_length,
+                            tracks_per_spatial_cell);
   CasparRowPointSelection selected;
-  selected.row_point_indices = SelectRowPointsByFrame(
-      sources, image_frame_indices, active_frame_mask, num_row_points);
+  selected.row_point_indices = std::move(track_selection.point_indices);
   selected.points.reserve(3 * selected.row_point_indices.size());
   for (const uint32_t row_point : selected.row_point_indices) {
     selected.points.insert(selected.points.end(),

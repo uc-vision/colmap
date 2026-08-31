@@ -27,20 +27,25 @@ struct CasparRowSectionResult {
   std::shared_ptr<CasparBundleAdjustmentSummary> summary;
 };
 
-CasparRowSectionStats ComputeRowSectionStats(
+std::vector<CasparRowSectionStats> ComputeRowSectionStats(
     const std::vector<CasparRowTrackSource>& sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
+    const uint16_t* source_support,
     size_t num_row_points,
     const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
     const bool* active_frame_mask,
-    size_t num_frames,
-    size_t num_images);
+    size_t minimum_track_length,
+    const uint32_t* density_tiers,
+    size_t num_density_tiers);
 
 CasparRowSectionResult RefineRowSectionCaspar(
     const std::vector<CasparRowTrackSource>& sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
+    const uint16_t* source_support,
     float* row_points,
     size_t num_row_points,
     const std::vector<Rigid3d>& initial_rigs_from_world,
@@ -49,7 +54,10 @@ CasparRowSectionResult RefineRowSectionCaspar(
     size_t num_images,
     const std::vector<Rigid3d>& sensors_from_rig,
     const float* sensor_calibrations,
+    const float* sensor_dimensions,
     const bool* active_frame_mask,
+    size_t minimum_track_length,
+    uint32_t tracks_per_spatial_cell,
     const CasparBundleAdjustmentOptions& options);
 
 }  // namespace colmap

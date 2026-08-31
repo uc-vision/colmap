@@ -459,6 +459,126 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
 
 
 @caspar_only
+def test_row_section_selection_preserves_cross_source_and_spatially_caps():
+    first = pycolmap.CasparRowTrackSource(
+        np.zeros((6, 3), dtype=np.float32),
+        np.arange(6, dtype=np.int64),
+        np.array((0, 1, 1, 2, 3, 4), dtype=np.uint32),
+        np.arange(7, dtype=np.int64),
+        np.array((0, 1, 1, 2, 2, 0), dtype=np.int32),
+        np.array(
+            (
+                (10, 10),
+                (10, 10),
+                (11, 11),
+                (80, 80),
+                (81, 81),
+                (20, 20),
+            ),
+            dtype=np.float32,
+        ),
+        np.empty(0, dtype=np.uint32),
+        np.arange(3, dtype=np.uint32),
+    )
+    second = pycolmap.CasparRowTrackSource(
+        np.zeros((1, 3), dtype=np.float32),
+        np.zeros(1, dtype=np.int64),
+        np.zeros(1, dtype=np.uint32),
+        np.array((0, 1), dtype=np.int64),
+        np.zeros(1, dtype=np.int32),
+        np.array(((10, 10),), dtype=np.float32),
+        np.empty(0, dtype=np.uint32),
+        np.array((1,), dtype=np.uint32),
+    )
+    sources = (first, second)
+    point_track_offsets = np.array((0, 2, 4, 5, 6, 7), dtype=np.uint32)
+    point_track_indices = np.array((0, 6, 1, 2, 3, 4, 5), dtype=np.uint32)
+    source_support = np.array((2, 1, 1, 1, 1), dtype=np.uint16)
+    image_frame_indices = np.arange(3, dtype=np.uint32)
+    image_sensor_indices = np.zeros(3, dtype=np.uint32)
+    sensor_dimensions = np.array(((100, 100),), dtype=np.float32)
+    active_frames = np.array((False, True, True))
+
+    selected = pycolmap.caspar_select_row_points(
+        sources,
+        source_support,
+        image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
+        active_frames,
+        1,
+        1,
+    )
+    stats = pycolmap.caspar_row_section_stats(
+        sources,
+        point_track_offsets,
+        point_track_indices,
+        source_support,
+        image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
+        active_frames,
+        1,
+        np.array((0, 1, 2), dtype=np.uint32),
+    )
+    cross_source_only = pycolmap.caspar_select_row_points(
+        sources,
+        source_support,
+        image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
+        active_frames,
+        1,
+        0,
+    )
+    denser = pycolmap.caspar_select_row_points(
+        sources,
+        source_support,
+        image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
+        active_frames,
+        1,
+        2,
+    )
+    whole_row = pycolmap.caspar_select_row_points(
+        sources,
+        source_support,
+        image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
+        np.ones(3, dtype=np.bool_),
+        1,
+        1,
+    )
+    sibling_only = pycolmap.caspar_select_row_points(
+        sources,
+        source_support,
+        image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
+        np.array((False, True, False)),
+        1,
+        1,
+    )
+
+    np.testing.assert_array_equal(selected.point_indices, (0, 1, 2))
+    assert selected.interior_quota_truncated
+    assert [tier.point_count for tier in stats] == [1, 3, 4]
+    assert [tier.observation_count for tier in stats] == [2, 5, 6]
+    assert [tier.active_observation_count for tier in stats] == [1, 4, 5]
+    assert stats[1].point_count == len(selected.point_indices)
+    np.testing.assert_array_equal(cross_source_only.point_indices, (0,))
+    assert cross_source_only.interior_quota_truncated
+    np.testing.assert_array_equal(denser.point_indices, (0, 1, 2, 3))
+    assert not denser.interior_quota_truncated
+    np.testing.assert_array_equal(whole_row.point_indices, (0, 1, 2, 4))
+    assert whole_row.interior_quota_truncated
+    np.testing.assert_array_equal(sibling_only.point_indices, (0, 1))
+    assert not sibling_only.interior_quota_truncated
+
+
+@caspar_only
 def test_row_section_ba_updates_all_points_observed_by_active_frames():
     rng = np.random.default_rng(11)
     section_centers = np.array(
@@ -499,6 +619,7 @@ def test_row_section_ba_updates_all_points_observed_by_active_frames():
     )
     image_frame_indices = np.arange(len(all_centers), dtype=np.uint32)
     image_sensor_indices = np.zeros(len(all_centers), dtype=np.uint32)
+    sensor_dimensions = np.array([[1280.0, 960.0]], dtype=np.float32)
     initial_points = expected_points + rng.normal(
         0.0, 0.05, expected_points.shape
     ).astype(np.float32)
@@ -545,34 +666,47 @@ def test_row_section_ba_updates_all_points_observed_by_active_frames():
     options.solver_iter_max = 100
     row_points = np.ascontiguousarray(initial_points.copy())
     sources = (source(0, 24), source(24, 48))
-    active_frames = np.array(
-        [False, True, True, True, False, False, False]
-    )
+    point_track_offsets = np.arange(len(expected_points) + 1, dtype=np.uint32)
+    point_track_indices = np.arange(len(expected_points), dtype=np.uint32)
+    source_support = np.ones(len(expected_points), dtype=np.uint16)
+    active_frames = np.array([False, True, True, True, False, False, False])
     stats = pycolmap.caspar_row_section_stats(
         sources,
-        np.arange(len(expected_points) + 1, dtype=np.uint32),
-        np.arange(len(expected_points), dtype=np.uint32),
+        point_track_offsets,
+        point_track_indices,
+        source_support,
         image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
         active_frames,
+        1,
+        np.array((0, 48), dtype=np.uint32),
     )
     result = pycolmap.caspar_refine_row_section(
         sources,
-        np.arange(len(expected_points) + 1, dtype=np.uint32),
-        np.arange(len(expected_points), dtype=np.uint32),
+        point_track_offsets,
+        point_track_indices,
+        source_support,
         row_points,
         rigs_from_world,
         image_frame_indices,
         image_sensor_indices,
         sensors_from_rig,
         sensor_calibrations,
+        sensor_dimensions,
         active_frames,
+        1,
+        48,
         options,
     )
 
-    assert stats.point_count == result.point_count == len(expected_points)
-    assert stats.observation_count == result.observation_count == 239
+    selected_stats = stats[-1]
     assert (
-        stats.active_observation_count
+        selected_stats.point_count == result.point_count == len(expected_points)
+    )
+    assert selected_stats.observation_count == result.observation_count == 239
+    assert (
+        selected_stats.active_observation_count
         == result.active_observation_count
         == 144
     )
@@ -596,7 +730,4 @@ def test_row_section_ba_updates_all_points_observed_by_active_frames():
         )
         < initial_pose_error
     )
-    assert (
-        np.linalg.norm(row_points - expected_points)
-        < initial_point_error
-    )
+    assert np.linalg.norm(row_points - expected_points) < initial_point_error

@@ -9,8 +9,10 @@
 #include "pycolmap/helpers.h"
 #include "pycolmap/pybind11_extension.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -31,6 +33,7 @@ using FloatArray = py::array_t<float, py::array::c_style>;
 using StridedFloatArray = py::array_t<float, 0>;
 using Int32Array = py::array_t<int32_t, py::array::c_style>;
 using Int64Array = py::array_t<int64_t, py::array::c_style>;
+using Uint16Array = py::array_t<uint16_t, py::array::c_style>;
 using Uint32Array = py::array_t<uint32_t, py::array::c_style>;
 
 struct PyCasparRowPointRefinementResult {
@@ -99,6 +102,11 @@ struct PyCasparRowSectionResult {
   double preparation_seconds;
   double optimization_seconds;
   std::shared_ptr<CasparBundleAdjustmentSummary> summary;
+};
+
+struct PyCasparRowPointSelection {
+  py::array_t<uint32_t> point_indices;
+  bool interior_quota_truncated;
 };
 
 struct PyCasparRowBundleResult {
@@ -210,20 +218,67 @@ NativeRefinementSources PrepareRefinementSources(
   return native;
 }
 
+void CheckRowImageArrays(const Uint32Array& image_frame_indices,
+                         const Uint32Array& image_sensor_indices) {
+  THROW_CHECK_EQ(image_frame_indices.ndim(), 1);
+  THROW_CHECK_GT(image_frame_indices.shape(0), 0);
+  THROW_CHECK_EQ(image_sensor_indices.ndim(), 1);
+  THROW_CHECK_EQ(image_sensor_indices.shape(0), image_frame_indices.shape(0));
+}
+
 void CheckRowRigArrays(const std::vector<Rigid3d>& rigs_from_world,
                        const Uint32Array& image_frame_indices,
                        const Uint32Array& image_sensor_indices,
                        const std::vector<Rigid3d>& sensors_from_rig,
                        const FloatArray& sensor_calibrations) {
   THROW_CHECK_GE(rigs_from_world.size(), 2);
-  THROW_CHECK_EQ(image_frame_indices.ndim(), 1);
-  THROW_CHECK_GT(image_frame_indices.shape(0), 0);
-  THROW_CHECK_EQ(image_sensor_indices.ndim(), 1);
-  THROW_CHECK_EQ(image_sensor_indices.shape(0), image_frame_indices.shape(0));
+  CheckRowImageArrays(image_frame_indices, image_sensor_indices);
   THROW_CHECK_GT(sensors_from_rig.size(), 0);
   THROW_CHECK_EQ(sensor_calibrations.ndim(), 2);
   THROW_CHECK_EQ(sensor_calibrations.shape(0), sensors_from_rig.size());
   THROW_CHECK_EQ(sensor_calibrations.shape(1), 4);
+}
+
+void CheckRowPointTracks(const Uint32Array& point_track_offsets,
+                         const Uint32Array& point_track_indices,
+                         const Uint16Array& source_support) {
+  THROW_CHECK_EQ(point_track_offsets.ndim(), 1);
+  THROW_CHECK_EQ(point_track_offsets.shape(0), source_support.shape(0) + 1);
+  THROW_CHECK_EQ(point_track_indices.ndim(), 1);
+  THROW_CHECK_EQ(point_track_offsets.data()[source_support.shape(0)],
+                 point_track_indices.shape(0));
+}
+
+void CheckRowSelectionArrays(const Uint16Array& source_support,
+                             const Uint32Array& image_frame_indices,
+                             const Uint32Array& image_sensor_indices,
+                             const FloatArray& sensor_dimensions,
+                             const BoolArray& active_frame_mask) {
+  THROW_CHECK_EQ(source_support.ndim(), 1);
+  THROW_CHECK_GT(source_support.shape(0), 0);
+  CheckRowImageArrays(image_frame_indices, image_sensor_indices);
+  THROW_CHECK_EQ(sensor_dimensions.ndim(), 2);
+  THROW_CHECK_GT(sensor_dimensions.shape(0), 0);
+  THROW_CHECK_EQ(sensor_dimensions.shape(1), 2);
+  THROW_CHECK_EQ(active_frame_mask.ndim(), 1);
+  THROW_CHECK_LT(*std::max_element(
+                     image_frame_indices.data(),
+                     image_frame_indices.data() + image_frame_indices.shape(0)),
+                 active_frame_mask.shape(0));
+  THROW_CHECK_LT(*std::max_element(image_sensor_indices.data(),
+                                   image_sensor_indices.data() +
+                                       image_sensor_indices.shape(0)),
+                 sensor_dimensions.shape(0));
+}
+
+void CheckDensityTiers(const Uint32Array& tiers) {
+  THROW_CHECK_EQ(tiers.ndim(), 1);
+  THROW_CHECK_GT(tiers.shape(0), 0);
+  THROW_CHECK_LE(tiers.shape(0),
+                 static_cast<ssize_t>(std::numeric_limits<uint8_t>::max()));
+  for (ssize_t tier = 1; tier < tiers.shape(0); ++tier) {
+    THROW_CHECK_LT(tiers.data()[tier - 1], tiers.data()[tier]);
+  }
 }
 
 py::array_t<float> InitializeAllPoints(
@@ -259,33 +314,80 @@ py::array_t<float> InitializeAllPoints(
   return MatrixArray(std::move(points), num_points, 3);
 }
 
-CasparRowSectionStats RowSectionStats(
+PyCasparRowPointSelection SelectRowPoints(
     const std::vector<const PyCasparRowTrackSource*>& sources,
-    const Uint32Array& point_track_offsets,
-    const Uint32Array& point_track_indices,
+    const Uint16Array& source_support,
     const Uint32Array& image_frame_indices,
-    const BoolArray& active_frame_mask) {
+    const Uint32Array& image_sensor_indices,
+    const FloatArray& sensor_dimensions,
+    const BoolArray& active_frame_mask,
+    const size_t minimum_track_length,
+    const uint32_t tracks_per_spatial_cell) {
   THROW_CHECK_GT(sources.size(), 0);
   const std::vector<CasparRowTrackSource> native_sources =
       NativeRowTrackSources(sources);
-  THROW_CHECK_EQ(point_track_offsets.ndim(), 1);
-  THROW_CHECK_GT(point_track_offsets.shape(0), 1);
-  THROW_CHECK_EQ(point_track_indices.ndim(), 1);
-  THROW_CHECK_EQ(image_frame_indices.ndim(), 1);
-  THROW_CHECK_GT(image_frame_indices.shape(0), 0);
-  THROW_CHECK_EQ(active_frame_mask.ndim(), 1);
+  CheckRowSelectionArrays(source_support,
+                          image_frame_indices,
+                          image_sensor_indices,
+                          sensor_dimensions,
+                          active_frame_mask);
 
-  CasparRowSectionStats stats;
+  CasparRowTrackSelection selection;
+  {
+    py::gil_scoped_release release;
+    selection = SelectCasparRowPoints(native_sources,
+                                      source_support.data(),
+                                      image_frame_indices.data(),
+                                      image_sensor_indices.data(),
+                                      sensor_dimensions.data(),
+                                      active_frame_mask.data(),
+                                      source_support.shape(0),
+                                      minimum_track_length,
+                                      tracks_per_spatial_cell);
+  }
+  return {
+      IndexArray(std::move(selection.point_indices)),
+      selection.interior_quota_truncated,
+  };
+}
+
+std::vector<CasparRowSectionStats> RowSectionStats(
+    const std::vector<const PyCasparRowTrackSource*>& sources,
+    const Uint32Array& point_track_offsets,
+    const Uint32Array& point_track_indices,
+    const Uint16Array& source_support,
+    const Uint32Array& image_frame_indices,
+    const Uint32Array& image_sensor_indices,
+    const FloatArray& sensor_dimensions,
+    const BoolArray& active_frame_mask,
+    const size_t minimum_track_length,
+    const Uint32Array& tiers) {
+  THROW_CHECK_GT(sources.size(), 0);
+  const std::vector<CasparRowTrackSource> native_sources =
+      NativeRowTrackSources(sources);
+  CheckRowSelectionArrays(source_support,
+                          image_frame_indices,
+                          image_sensor_indices,
+                          sensor_dimensions,
+                          active_frame_mask);
+  CheckRowPointTracks(point_track_offsets, point_track_indices, source_support);
+  CheckDensityTiers(tiers);
+
+  std::vector<CasparRowSectionStats> stats;
   {
     py::gil_scoped_release release;
     stats = ComputeRowSectionStats(native_sources,
                                    point_track_offsets.data(),
                                    point_track_indices.data(),
+                                   source_support.data(),
                                    point_track_offsets.shape(0) - 1,
                                    image_frame_indices.data(),
+                                   image_sensor_indices.data(),
+                                   sensor_dimensions.data(),
                                    active_frame_mask.data(),
-                                   active_frame_mask.shape(0),
-                                   image_frame_indices.shape(0));
+                                   minimum_track_length,
+                                   tiers.data(),
+                                   tiers.shape(0));
   }
   return stats;
 }
@@ -294,20 +396,27 @@ PyCasparRowSectionResult RefineRowSection(
     const std::vector<const PyCasparRowTrackSource*>& sources,
     const Uint32Array& point_track_offsets,
     const Uint32Array& point_track_indices,
+    const Uint16Array& source_support,
     FloatArray row_points,
     const std::vector<Rigid3d>& rigs_from_world,
     const Uint32Array& image_frame_indices,
     const Uint32Array& image_sensor_indices,
     const std::vector<Rigid3d>& sensors_from_rig,
     const FloatArray& sensor_calibrations,
+    const FloatArray& sensor_dimensions,
     const BoolArray& active_frame_mask,
+    const size_t minimum_track_length,
+    const uint32_t tracks_per_spatial_cell,
     const CasparBundleAdjustmentOptions& options) {
   THROW_CHECK_GT(sources.size(), 0);
   const std::vector<CasparRowTrackSource> native_sources =
       NativeRowTrackSources(sources);
-  THROW_CHECK_EQ(point_track_offsets.ndim(), 1);
-  THROW_CHECK_GT(point_track_offsets.shape(0), 1);
-  THROW_CHECK_EQ(point_track_indices.ndim(), 1);
+  CheckRowSelectionArrays(source_support,
+                          image_frame_indices,
+                          image_sensor_indices,
+                          sensor_dimensions,
+                          active_frame_mask);
+  CheckRowPointTracks(point_track_offsets, point_track_indices, source_support);
   THROW_CHECK_EQ(row_points.ndim(), 2);
   THROW_CHECK_EQ(row_points.shape(0), point_track_offsets.shape(0) - 1);
   THROW_CHECK_EQ(row_points.shape(1), 3);
@@ -316,8 +425,8 @@ PyCasparRowSectionResult RefineRowSection(
                     image_sensor_indices,
                     sensors_from_rig,
                     sensor_calibrations);
-  THROW_CHECK_EQ(active_frame_mask.ndim(), 1);
   THROW_CHECK_EQ(active_frame_mask.shape(0), rigs_from_world.size());
+  THROW_CHECK_EQ(sensor_dimensions.shape(0), sensors_from_rig.size());
 
   CasparRowSectionResult result;
   {
@@ -325,6 +434,7 @@ PyCasparRowSectionResult RefineRowSection(
     result = RefineRowSectionCaspar(native_sources,
                                     point_track_offsets.data(),
                                     point_track_indices.data(),
+                                    source_support.data(),
                                     row_points.mutable_data(),
                                     row_points.shape(0),
                                     rigs_from_world,
@@ -333,7 +443,10 @@ PyCasparRowSectionResult RefineRowSection(
                                     image_frame_indices.shape(0),
                                     sensors_from_rig,
                                     sensor_calibrations.data(),
+                                    sensor_dimensions.data(),
                                     active_frame_mask.data(),
+                                    minimum_track_length,
+                                    tracks_per_spatial_cell,
                                     options);
   }
   return {
@@ -568,6 +681,11 @@ void BindRowPointRefinement(py::module& m) {
           "solved_world_from_source_world",
           &PyCasparRowPointRefinementSource::solved_world_from_source_world);
 
+  py::classh<PyCasparRowPointSelection>(m, "CasparRowPointSelection")
+      .def_readonly("point_indices", &PyCasparRowPointSelection::point_indices)
+      .def_readonly("interior_quota_truncated",
+                    &PyCasparRowPointSelection::interior_quota_truncated);
+
   py::classh<PyCasparRowSectionResult>(m, "CasparRowSectionResult")
       .def_readonly("rigs_from_world",
                     &PyCasparRowSectionResult::rigs_from_world)
@@ -627,30 +745,52 @@ void BindRowPointRefinement(py::module& m) {
         "options"_a = CasparRowPointRefinementOptions(),
         "Refine complete row points from canonical point-track CSR using "
         "fixed pinhole cameras and CASPAR.");
+  m.def("caspar_select_row_points",
+        SelectRowPoints,
+        "sources"_a,
+        "source_support"_a.noconvert(),
+        "image_frame_indices"_a.noconvert(),
+        "image_sensor_indices"_a.noconvert(),
+        "sensor_dimensions"_a.noconvert(),
+        "active_frame_mask"_a.noconvert(),
+        "minimum_track_length"_a,
+        "tracks_per_spatial_cell"_a,
+        "Select active cross-source row points and spatially bounded "
+        "single-source tracks directly from canonical row tracks.");
   m.def("caspar_refine_row_section",
         RefineRowSection,
         "sources"_a,
         "point_track_offsets"_a.noconvert(),
         "point_track_indices"_a.noconvert(),
+        "source_support"_a.noconvert(),
         "row_points"_a.noconvert(),
         "rigs_from_world"_a,
         "image_frame_indices"_a.noconvert(),
         "image_sensor_indices"_a.noconvert(),
         "sensors_from_rig"_a,
         "sensor_calibrations"_a.noconvert(),
+        "sensor_dimensions"_a.noconvert(),
         "active_frame_mask"_a.noconvert(),
+        "minimum_track_length"_a,
+        "tracks_per_spatial_cell"_a,
         "options"_a = CasparBundleAdjustmentOptions(),
-        "Jointly refine every point observed by active row-section frames. "
-        "Inactive frame poses, sensor calibration, and the established "
-        "global scale remain exact; row point positions update in place.");
+        "Jointly refine selected active row-section points. Inactive frame "
+        "poses, sensor calibration, and the established global scale remain "
+        "exact; row point positions update in place.");
   m.def("caspar_row_section_stats",
         RowSectionStats,
         "sources"_a,
         "point_track_offsets"_a.noconvert(),
         "point_track_indices"_a.noconvert(),
+        "source_support"_a.noconvert(),
         "image_frame_indices"_a.noconvert(),
+        "image_sensor_indices"_a.noconvert(),
+        "sensor_dimensions"_a.noconvert(),
         "active_frame_mask"_a.noconvert(),
-        "Measure the complete native workload for an active row section.");
+        "minimum_track_length"_a,
+        "tiers"_a.noconvert(),
+        "Measure cumulative native row-section workloads for ascending "
+        "spatial-density tiers in one track scan.");
   m.def("caspar_optimize_row",
         OptimizeRow,
         "sources"_a,
