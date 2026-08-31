@@ -16,6 +16,8 @@ namespace {
 
 constexpr uint32_t kSpatialGridSide = 4;
 constexpr uint32_t kSpatialCellCount = kSpatialGridSide * kSpatialGridSide;
+constexpr uint8_t kPointDenied = 1;
+constexpr uint8_t kPointSelected = 2;
 
 using FloatArray = py::array_t<float, py::array::c_style>;
 using Int32Array = py::array_t<int32_t, py::array::c_style>;
@@ -49,6 +51,11 @@ struct RowTrackSelectionSource {
   FloatArray camera_dimensions;
 };
 
+struct RowTrackSelection {
+  UInt32Array point_indices;
+  bool interior_quota_truncated;
+};
+
 int32_t GlobalImageCount(
     const std::vector<const RowTrackSelectionSource*>& sources) {
   int32_t image_count = 0;
@@ -68,7 +75,7 @@ void SelectSpatialTracks(const RowTrackSelectionSource& source,
                          int64_t minimum_track_length,
                          uint32_t tracks_per_spatial_cell,
                          std::vector<uint32_t>& stratum_count,
-                         std::vector<uint8_t>& selected) {
+                         std::vector<uint8_t>& point_state) {
   std::fill(stratum_count.begin(), stratum_count.end(), uint32_t{0});
   const int64_t* observation_offsets = source.observation_offsets.data();
   const int32_t* observation_image_indices =
@@ -111,51 +118,28 @@ void SelectSpatialTracks(const RowTrackSelectionSource& source,
                                cell.y() * kSpatialGridSide + cell.x();
       if (stratum_count[stratum] < tracks_per_spatial_cell) {
         ++stratum_count[stratum];
-        selected[row_point] = 1;
+        point_state[row_point] = kPointSelected;
+      } else if (point_state[row_point] == 0) {
+        point_state[row_point] = kPointDenied;
       }
     }
   }
 }
 
-py::array_t<uint32_t> SelectRowBundlePoints(
+RowTrackSelection SelectRowBundlePoints(
     const std::vector<const RowTrackSelectionSource*>& sources,
     const UInt16Array& source_support,
     int64_t minimum_track_length,
     uint32_t tracks_per_spatial_cell) {
-  std::vector<uint32_t> selected_indices;
+  const size_t point_count = source_support.shape(0);
+  std::vector<uint8_t> point_state(point_count, uint8_t{0});
+  size_t selected_count = 0;
+  bool interior_quota_truncated = false;
   {
     py::gil_scoped_release release;
-    const size_t point_count = source_support.shape(0);
-    std::vector<uint8_t> selected(point_count, uint8_t{0});
     const uint16_t* support = source_support.data();
     const int32_t global_image_count = GlobalImageCount(sources);
     std::vector<uint32_t> stratum_count(global_image_count * kSpatialCellCount);
-    std::vector<uint32_t> point_marker(point_count, uint32_t{0});
-
-    for (size_t seam = 0; seam + 1 < sources.size(); ++seam) {
-      const RowTrackSelectionSource& left = *sources[seam];
-      const RowTrackSelectionSource& right = *sources[seam + 1];
-      const uint32_t left_marker = static_cast<uint32_t>(2 * seam + 1);
-      const uint32_t shared_marker = left_marker + 1;
-      for (py::ssize_t track = 0; track < left.row_point_indices.shape(0);
-           ++track) {
-        point_marker[left.row_point_indices.data()[track]] = left_marker;
-      }
-      for (py::ssize_t track = 0; track < right.row_point_indices.shape(0);
-           ++track) {
-        const uint32_t row_point = right.row_point_indices.data()[track];
-        if (point_marker[row_point] == left_marker) {
-          point_marker[row_point] = shared_marker;
-        }
-      }
-      const auto on_seam = [&](uint32_t row_point) {
-        return point_marker[row_point] == shared_marker;
-      };
-      SelectSpatialTracks(
-          left, on_seam, 0, tracks_per_spatial_cell, stratum_count, selected);
-      SelectSpatialTracks(
-          right, on_seam, 0, tracks_per_spatial_cell, stratum_count, selected);
-    }
 
     for (const RowTrackSelectionSource* source : sources) {
       SelectSpatialTracks(
@@ -164,27 +148,40 @@ py::array_t<uint32_t> SelectRowBundlePoints(
           minimum_track_length,
           tracks_per_spatial_cell,
           stratum_count,
-          selected);
+          point_state);
     }
 
-    selected_indices.reserve(
-        std::count(selected.begin(), selected.end(), static_cast<uint8_t>(1)));
     for (uint32_t point = 0; point < point_count; ++point) {
-      if (selected[point] != 0) {
-        selected_indices.push_back(point);
+      if (support[point] > 1 || point_state[point] == kPointSelected) {
+        ++selected_count;
+      } else if (point_state[point] == kPointDenied) {
+        interior_quota_truncated = true;
       }
     }
   }
 
-  py::array_t<uint32_t> output(selected_indices.size());
-  std::copy(
-      selected_indices.begin(), selected_indices.end(), output.mutable_data());
-  return output;
+  UInt32Array output(selected_count);
+  {
+    py::gil_scoped_release release;
+    const uint16_t* support = source_support.data();
+    uint32_t* selected = output.mutable_data();
+    for (uint32_t point = 0; point < point_count; ++point) {
+      if (support[point] > 1 || point_state[point] == kPointSelected) {
+        *selected++ = point;
+      }
+    }
+  }
+  return {std::move(output), interior_quota_truncated};
 }
 
 }  // namespace
 
 void BindRowTrackSelection(py::module& m) {
+  py::classh<RowTrackSelection>(m, "RowTrackSelection")
+      .def_readonly("point_indices", &RowTrackSelection::point_indices)
+      .def_readonly("interior_quota_truncated",
+                    &RowTrackSelection::interior_quota_truncated);
+
   py::classh<RowTrackSelectionSource>(m, "RowTrackSelectionSource")
       .def(py::init<Int64Array,
                     Int32Array,
@@ -220,5 +217,6 @@ void BindRowTrackSelection(py::module& m) {
         "source_support"_a,
         "minimum_track_length"_a,
         "tracks_per_spatial_cell"_a,
-        "Select spatially bounded points for every bay and adjacent seam.");
+        "Select every cross-source point and spatially bounded interior row "
+        "points.");
 }
