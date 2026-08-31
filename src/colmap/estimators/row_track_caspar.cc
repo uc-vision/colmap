@@ -8,6 +8,36 @@ namespace {
 constexpr uint32_t kSpatialGridSide = 4;
 constexpr uint32_t kSpatialCellCount = kSpatialGridSide * kSpatialGridSide;
 
+size_t RowTrackLength(const CasparRowTrackSource& source,
+                      const uint32_t track) {
+  return static_cast<size_t>(source.observation_offsets[track + 1] -
+                             source.observation_offsets[track]);
+}
+
+void FillInteriorTrackOrder(const CasparRowTrackSource& source,
+                            const uint16_t* source_support,
+                            const size_t minimum_track_length,
+                            std::vector<uint32_t>& bucket_end,
+                            std::vector<uint32_t>& ordered_tracks) {
+  uint32_t end = 0;
+  for (auto bucket = bucket_end.rbegin(); bucket != bucket_end.rend();
+       ++bucket) {
+    end += *bucket;
+    *bucket = end;
+  }
+  ordered_tracks.resize(end);
+  for (size_t track = source.num_tracks; track > 0; --track) {
+    const uint32_t track_index = static_cast<uint32_t>(track - 1);
+    if (source_support[source.row_point_indices[track_index]] != 1) {
+      continue;
+    }
+    const size_t length = RowTrackLength(source, track_index);
+    if (length >= minimum_track_length) {
+      ordered_tracks[--bucket_end[length]] = track_index;
+    }
+  }
+}
+
 }  // namespace
 
 std::vector<uint32_t> RowSourceTrackOffsets(
@@ -38,6 +68,8 @@ CasparRowTiers AssignCasparRowTiers(
   std::vector<bool> denied_point(maximum_density > 0 ? num_row_points : 0,
                                  false);
   std::vector<uint32_t> stratum_count;
+  std::vector<uint32_t> bucket_end;
+  std::vector<uint32_t> ordered_tracks;
   for (const CasparRowTrackSource& source : sources) {
     bool source_is_active = false;
     for (size_t image = 0; image < source.num_images; ++image) {
@@ -49,24 +81,48 @@ CasparRowTiers AssignCasparRowTiers(
     if (!source_is_active) {
       continue;
     }
-    if (maximum_density > 0) {
-      stratum_count.assign(source.num_images * kSpatialCellCount, uint32_t{0});
-    }
+    bucket_end.clear();
     for (uint32_t track = 0; track < source.num_tracks; ++track) {
       const uint32_t row_point = source.row_point_indices[track];
       const uint16_t support = source_support[row_point];
-      if (support > 1 && assignment.first_tier[row_point] == 0) {
+      if (support == 1) {
+        const size_t length = RowTrackLength(source, track);
+        if (length >= minimum_track_length) {
+          if (maximum_density == 0) {
+            assignment.interior_quota_truncated = true;
+          } else {
+            if (bucket_end.size() <= length) {
+              bucket_end.resize(length + 1);
+            }
+            ++bucket_end[length];
+          }
+        }
         continue;
       }
-      if (support == 1 && source.observation_offsets[track + 1] -
-                                  source.observation_offsets[track] <
-                              static_cast<int64_t>(minimum_track_length)) {
+      if (assignment.first_tier[row_point] == 0) {
         continue;
       }
-      if (support == 1 && maximum_density == 0) {
-        assignment.interior_quota_truncated = true;
-        continue;
-      }
+      ForEachRowTrackObservation(
+          source,
+          track,
+          [&](const uint32_t, const uint32_t image, const float*) {
+            if (active_frame_mask[image_frame_indices[image]]) {
+              assignment.first_tier[row_point] = 0;
+            }
+          });
+    }
+    if (maximum_density == 0) {
+      continue;
+    }
+
+    stratum_count.assign(source.num_images * kSpatialCellCount, uint32_t{0});
+    FillInteriorTrackOrder(source,
+                           source_support,
+                           minimum_track_length,
+                           bucket_end,
+                           ordered_tracks);
+    for (const uint32_t track : ordered_tracks) {
+      const uint32_t row_point = source.row_point_indices[track];
       uint32_t first_density = 0;
       bool admitted = false;
       ForEachRowTrackObservation(
@@ -76,10 +132,6 @@ CasparRowTiers AssignCasparRowTiers(
               const uint32_t image,
               const float* xy) {
             if (!active_frame_mask[image_frame_indices[image]]) {
-              return;
-            }
-            if (support > 1) {
-              assignment.first_tier[row_point] = 0;
               return;
             }
             const float* dimensions =
@@ -105,7 +157,7 @@ CasparRowTiers AssignCasparRowTiers(
               denied_point[row_point] = true;
             }
           });
-      if (support == 1 && admitted) {
+      if (admitted) {
         const uint8_t first_tier = static_cast<uint8_t>(
             std::lower_bound(density_tiers,
                              density_tiers + num_density_tiers,

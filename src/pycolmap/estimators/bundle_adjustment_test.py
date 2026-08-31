@@ -459,19 +459,20 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
 
 
 @caspar_only
-def test_row_section_selection_preserves_cross_source_and_spatially_caps():
+def test_row_section_selection_preserves_cross_source_and_prefers_long_tracks():
     first = pycolmap.CasparRowTrackSource(
         np.zeros((6, 3), dtype=np.float32),
         np.arange(6, dtype=np.int64),
         np.array((0, 1, 1, 2, 3, 4), dtype=np.uint32),
-        np.arange(7, dtype=np.int64),
-        np.array((0, 1, 1, 2, 2, 0), dtype=np.int32),
+        np.array((0, 1, 2, 3, 4, 6, 7), dtype=np.int64),
+        np.array((0, 1, 1, 2, 2, 0, 0), dtype=np.int32),
         np.array(
             (
                 (10, 10),
                 (10, 10),
                 (11, 11),
                 (80, 80),
+                (81, 81),
                 (81, 81),
                 (20, 20),
             ),
@@ -562,17 +563,17 @@ def test_row_section_selection_preserves_cross_source_and_spatially_caps():
         1,
     )
 
-    np.testing.assert_array_equal(selected.point_indices, (0, 1, 2))
+    np.testing.assert_array_equal(selected.point_indices, (0, 1, 3))
     assert selected.interior_quota_truncated
     assert [tier.point_count for tier in stats] == [1, 3, 4]
-    assert [tier.observation_count for tier in stats] == [2, 5, 6]
+    assert [tier.observation_count for tier in stats] == [2, 6, 7]
     assert [tier.active_observation_count for tier in stats] == [1, 4, 5]
     assert stats[1].point_count == len(selected.point_indices)
     np.testing.assert_array_equal(cross_source_only.point_indices, (0,))
     assert cross_source_only.interior_quota_truncated
     np.testing.assert_array_equal(denser.point_indices, (0, 1, 2, 3))
     assert not denser.interior_quota_truncated
-    np.testing.assert_array_equal(whole_row.point_indices, (0, 1, 2, 4))
+    np.testing.assert_array_equal(whole_row.point_indices, (0, 1, 3, 4))
     assert whole_row.interior_quota_truncated
     np.testing.assert_array_equal(sibling_only.point_indices, (0, 1))
     assert not sibling_only.interior_quota_truncated
