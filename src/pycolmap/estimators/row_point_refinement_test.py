@@ -118,6 +118,26 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
         ),
         np.tile(source_translation, (3, 1, 1)),
     )
+    override = np.array((7.0, 8.0, 9.0), dtype=np.float32)
+    selected_row_point_indices = np.arange(2, dtype=np.uint32)
+    initialization = pycolmap.caspar_initialize_row_points(
+        (first, second),
+        joined.point_track_offsets,
+        joined.point_track_indices,
+        selected_row_point_indices,
+        np.array((1,), dtype=np.uint32),
+        override[None],
+    )
+    assert np.shares_memory(
+        initialization.row_point_indices, selected_row_point_indices
+    )
+    np.testing.assert_array_equal(initialization.row_point_indices, (0, 1))
+    np.testing.assert_allclose(
+        initialization.points[0],
+        expected[0] + np.array((0.1, -0.075, 0.15), dtype=np.float32),
+    )
+    np.testing.assert_array_equal(initialization.points[1], override)
+
     options = pycolmap.CasparRowPointRefinementOptions()
     options.solver_iter_max = 20
     options.validate_reprojection = True

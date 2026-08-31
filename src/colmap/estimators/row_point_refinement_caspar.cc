@@ -37,6 +37,28 @@ struct PackedPointChunk : ObservationOffsets<IncludeObservationOffsets> {
   std::vector<float> observation_xy;
 };
 
+Eigen::Vector3f SolvedRowTrackPoint(
+    const CasparRowTrackSource& tracks,
+    const CasparRowPointRefinementSource& refinement,
+    const uint32_t track) {
+  const int64_t observation_start = tracks.observation_offsets[track];
+  const int64_t observation_end = tracks.observation_offsets[track + 1];
+  const int64_t associated_observation =
+      observation_start + (observation_end - observation_start) / 2;
+  const int32_t associated_image =
+      tracks.observation_image_indices[associated_observation];
+  const Eigen::Map<const Matrix4dRowMajor> solved_world_from_source_world(
+      refinement.solved_world_from_source_world + associated_image * 16);
+  const int64_t source_point_index = tracks.source_point_indices[track];
+  Eigen::Vector4d homogeneous_point;
+  homogeneous_point
+      << RowSourcePoint(tracks, source_point_index).cast<double>(),
+      1.0;
+  return (solved_world_from_source_world * homogeneous_point)
+      .head<3>()
+      .cast<float>();
+}
+
 template <bool IncludeObservationOffsets>
 PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
     const std::vector<CasparRowTrackSource>& track_sources,
@@ -85,24 +107,8 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
             const uint32_t track) {
           const CasparRowPointRefinementSource& refinement =
               refinement_sources[source_index];
-          const int64_t observation_start = tracks.observation_offsets[track];
-          const int64_t observation_end = tracks.observation_offsets[track + 1];
-          const int64_t associated_observation =
-              observation_start + (observation_end - observation_start) / 2;
-          const int32_t associated_image =
-              tracks.observation_image_indices[associated_observation];
-          const Eigen::Map<const Matrix4dRowMajor>
-              solved_world_from_source_world(
-                  refinement.solved_world_from_source_world +
-                  associated_image * 16);
           const int64_t source_point_index = tracks.source_point_indices[track];
-          const Eigen::Vector3f source_point =
-              RowSourcePoint(tracks, source_point_index);
-          Eigen::Vector4d homogeneous_point;
-          homogeneous_point << source_point.cast<double>(), 1.0;
-          point_sum += (solved_world_from_source_world * homogeneous_point)
-                           .head<3>()
-                           .cast<float>();
+          point_sum += SolvedRowTrackPoint(tracks, refinement, track);
           color_sum += ReadStridedVector3(refinement.colors,
                                           refinement.color_row_stride,
                                           refinement.color_column_stride,
@@ -141,6 +147,53 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
 }
 
 }  // namespace
+
+std::vector<float> InitializeSectionRowPoints(
+    const std::vector<CasparRowTrackSource>& track_sources,
+    const std::vector<CasparRowPointRefinementSource>& refinement_sources,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const uint32_t* selected_row_point_indices,
+    const size_t num_selected_points,
+    const uint32_t* initialized_row_point_indices,
+    const float* initialized_points,
+    const size_t num_initialized_points) {
+  const std::vector<uint32_t> source_track_offsets =
+      RowSourceTrackOffsets(track_sources);
+  std::vector<float> points(3 * num_selected_points);
+  size_t initialized_index = 0;
+  for (size_t point = 0; point < num_selected_points; ++point) {
+    const uint32_t row_point = selected_row_point_indices[point];
+    while (initialized_index < num_initialized_points &&
+           initialized_row_point_indices[initialized_index] < row_point) {
+      ++initialized_index;
+    }
+    Eigen::Map<Eigen::Vector3f> point_position(points.data() + 3 * point);
+    if (initialized_index < num_initialized_points &&
+        initialized_row_point_indices[initialized_index] == row_point) {
+      point_position = Eigen::Map<const Eigen::Vector3f>(initialized_points +
+                                                         3 * initialized_index);
+      continue;
+    }
+
+    Eigen::Vector3f point_sum = Eigen::Vector3f::Zero();
+    ForEachRowPointTrack(track_sources,
+                         source_track_offsets,
+                         point_track_offsets,
+                         point_track_indices,
+                         row_point,
+                         [&](const size_t source_index,
+                             const CasparRowTrackSource& tracks,
+                             const uint32_t track) {
+                           point_sum += SolvedRowTrackPoint(
+                               tracks, refinement_sources[source_index], track);
+                         });
+    const uint32_t track_count =
+        point_track_offsets[row_point + 1] - point_track_offsets[row_point];
+    point_position = point_sum / static_cast<float>(track_count);
+  }
+  return points;
+}
 
 template <bool ValidateReprojection>
 CasparRowPointRefinementResult RefineRowPointsCasparImpl(

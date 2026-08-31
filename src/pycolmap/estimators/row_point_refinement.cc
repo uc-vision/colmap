@@ -88,6 +88,11 @@ struct PyCasparRowPointRefinementSource {
   DoubleArray solved_world_from_source_world;
 };
 
+struct PyCasparRowPointInitialization {
+  Uint32Array row_point_indices;
+  py::array_t<float> points;
+};
+
 struct PyCasparRowSectionResult {
   std::vector<Rigid3d> rigs_from_world;
   py::array_t<uint32_t> row_point_indices;
@@ -171,6 +176,39 @@ std::vector<CasparRowTrackSource> NativeRowTrackSources(
   return native;
 }
 
+struct NativeRefinementSources {
+  std::vector<CasparRowTrackSource> tracks;
+  std::vector<CasparRowPointRefinementSource> refinements;
+};
+
+NativeRefinementSources PrepareRefinementSources(
+    const std::vector<const PyCasparRowPointRefinementSource*>& sources) {
+  std::vector<const PyCasparRowTrackSource*> track_sources;
+  track_sources.reserve(sources.size());
+  for (const PyCasparRowPointRefinementSource* source : sources) {
+    track_sources.push_back(source->tracks);
+  }
+  NativeRefinementSources native{NativeRowTrackSources(track_sources), {}};
+  native.refinements.reserve(sources.size());
+  for (const PyCasparRowPointRefinementSource* source : sources) {
+    THROW_CHECK_EQ(source->colors.ndim(), 2);
+    THROW_CHECK_EQ(source->colors.shape(1), 3);
+    THROW_CHECK_EQ(source->colors.shape(0), source->tracks->points.shape(0));
+    THROW_CHECK_EQ(source->solved_world_from_source_world.ndim(), 3);
+    THROW_CHECK_EQ(source->solved_world_from_source_world.shape(0),
+                   source->tracks->image_rows.shape(0));
+    THROW_CHECK_EQ(source->solved_world_from_source_world.shape(1), 4);
+    THROW_CHECK_EQ(source->solved_world_from_source_world.shape(2), 4);
+    native.refinements.push_back(CasparRowPointRefinementSource{
+        source->colors.data(),
+        source->colors.strides(0) / static_cast<ssize_t>(sizeof(float)),
+        source->colors.strides(1) / static_cast<ssize_t>(sizeof(float)),
+        source->solved_world_from_source_world.data(),
+    });
+  }
+  return native;
+}
+
 void CheckRowRigArrays(const std::vector<Rigid3d>& rigs_from_world,
                        const Uint32Array& image_frame_indices,
                        const Uint32Array& image_sensor_indices,
@@ -185,6 +223,45 @@ void CheckRowRigArrays(const std::vector<Rigid3d>& rigs_from_world,
   THROW_CHECK_EQ(sensor_calibrations.ndim(), 2);
   THROW_CHECK_EQ(sensor_calibrations.shape(0), sensors_from_rig.size());
   THROW_CHECK_EQ(sensor_calibrations.shape(1), 4);
+}
+
+PyCasparRowPointInitialization InitializeSectionPoints(
+    const std::vector<const PyCasparRowPointRefinementSource*>& sources,
+    const Uint32Array& point_track_offsets,
+    const Uint32Array& point_track_indices,
+    const Uint32Array& selected_row_point_indices,
+    const Uint32Array& initialized_row_point_indices,
+    const FloatArray& initialized_points) {
+  THROW_CHECK_GT(sources.size(), 0);
+  const NativeRefinementSources native = PrepareRefinementSources(sources);
+  THROW_CHECK_EQ(point_track_offsets.ndim(), 1);
+  THROW_CHECK_GT(point_track_offsets.shape(0), 1);
+  THROW_CHECK_EQ(point_track_indices.ndim(), 1);
+  THROW_CHECK_EQ(selected_row_point_indices.ndim(), 1);
+  THROW_CHECK_GT(selected_row_point_indices.shape(0), 0);
+  THROW_CHECK_EQ(initialized_row_point_indices.ndim(), 1);
+  THROW_CHECK_EQ(initialized_points.ndim(), 2);
+  THROW_CHECK_EQ(initialized_points.shape(0),
+                 initialized_row_point_indices.shape(0));
+  THROW_CHECK_EQ(initialized_points.shape(1), 3);
+
+  std::vector<float> points;
+  {
+    py::gil_scoped_release release;
+    points = InitializeSectionRowPoints(native.tracks,
+                                        native.refinements,
+                                        point_track_offsets.data(),
+                                        point_track_indices.data(),
+                                        selected_row_point_indices.data(),
+                                        selected_row_point_indices.shape(0),
+                                        initialized_row_point_indices.data(),
+                                        initialized_points.data(),
+                                        initialized_row_point_indices.shape(0));
+  }
+  return {
+      selected_row_point_indices,
+      MatrixArray(std::move(points), selected_row_point_indices.shape(0), 3),
+  };
 }
 
 PyCasparRowSectionResult RefineRowSection(
@@ -341,38 +418,14 @@ PyCasparRowPointRefinementResult RefineRowPoints(
     const size_t maximum_chunk_points,
     const size_t maximum_chunk_observations,
     const CasparRowPointRefinementOptions& options) {
-  std::vector<const PyCasparRowTrackSource*> track_sources;
-  track_sources.reserve(sources.size());
-  for (const PyCasparRowPointRefinementSource* source : sources) {
-    track_sources.push_back(source->tracks);
-  }
-  const std::vector<CasparRowTrackSource> native_track_sources =
-      NativeRowTrackSources(track_sources);
-  std::vector<CasparRowPointRefinementSource> native_refinement_sources;
-  native_refinement_sources.reserve(sources.size());
-  for (const PyCasparRowPointRefinementSource* source : sources) {
-    THROW_CHECK_EQ(source->colors.ndim(), 2);
-    THROW_CHECK_EQ(source->colors.shape(1), 3);
-    THROW_CHECK_EQ(source->colors.shape(0), source->tracks->points.shape(0));
-    THROW_CHECK_EQ(source->solved_world_from_source_world.ndim(), 3);
-    THROW_CHECK_EQ(source->solved_world_from_source_world.shape(0),
-                   source->tracks->image_rows.shape(0));
-    THROW_CHECK_EQ(source->solved_world_from_source_world.shape(1), 4);
-    THROW_CHECK_EQ(source->solved_world_from_source_world.shape(2), 4);
-    native_refinement_sources.push_back(CasparRowPointRefinementSource{
-        source->colors.data(),
-        source->colors.strides(0) / static_cast<ssize_t>(sizeof(float)),
-        source->colors.strides(1) / static_cast<ssize_t>(sizeof(float)),
-        source->solved_world_from_source_world.data(),
-    });
-  }
+  const NativeRefinementSources native = PrepareRefinementSources(sources);
 
   const size_t num_points = point_observation_counts.shape(0);
   CasparRowPointRefinementResult result;
   {
     py::gil_scoped_release release;
-    result = RefineRowPointsCaspar(native_track_sources,
-                                   native_refinement_sources,
+    result = RefineRowPointsCaspar(native.tracks,
+                                   native.refinements,
                                    point_track_offsets.data(),
                                    point_track_indices.data(),
                                    point_observation_counts.data(),
@@ -495,6 +548,11 @@ void BindRowPointRefinement(py::module& m) {
           "solved_world_from_source_world",
           &PyCasparRowPointRefinementSource::solved_world_from_source_world);
 
+  py::classh<PyCasparRowPointInitialization>(m, "CasparRowPointInitialization")
+      .def_readonly("row_point_indices",
+                    &PyCasparRowPointInitialization::row_point_indices)
+      .def_readonly("points", &PyCasparRowPointInitialization::points);
+
   py::classh<PyCasparRowSectionResult>(m, "CasparRowSectionResult")
       .def_readonly("rigs_from_world",
                     &PyCasparRowSectionResult::rigs_from_world)
@@ -527,6 +585,16 @@ void BindRowPointRefinement(py::module& m) {
                     &PyCasparRowBundleResult::optimization_seconds)
       .def_readonly("summary", &PyCasparRowBundleResult::summary);
 
+  m.def("caspar_initialize_row_points",
+        InitializeSectionPoints,
+        "sources"_a,
+        "point_track_offsets"_a.noconvert(),
+        "point_track_indices"_a.noconvert(),
+        "selected_row_point_indices"_a.noconvert(),
+        "initialized_row_point_indices"_a.noconvert(),
+        "initialized_points"_a.noconvert(),
+        "Initialize selected section points from solved source coordinates, "
+        "preserving optimized point overrides.");
   m.def("caspar_refine_row_points",
         RefineRowPoints,
         "sources"_a,
