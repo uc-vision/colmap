@@ -382,8 +382,9 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
     options = pycolmap.CasparBundleAdjustmentOptions()
     options.gpu_index = "0"
     options.solver_iter_max = 100
+    source_points = np.asfortranarray(initial_points)
     row_source = pycolmap.CasparRowTrackSource(
-        np.ascontiguousarray(initial_points),
+        source_points,
         np.arange(len(expected_points), dtype=np.int64),
         np.arange(
             0,
@@ -405,6 +406,8 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
         np.empty(0, dtype=np.uint32),
         np.arange(len(image_frame_indices), dtype=np.uint32),
     )
+    assert np.shares_memory(row_source.points, source_points)
+    assert row_source.points.strides == source_points.strides
     result = pycolmap.caspar_optimize_row(
         (row_source,),
         np.arange(len(expected_points) + 1, dtype=np.uint32),

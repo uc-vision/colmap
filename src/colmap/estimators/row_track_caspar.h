@@ -5,10 +5,14 @@
 #include <cstdint>
 #include <vector>
 
+#include <Eigen/Core>
+
 namespace colmap {
 
 struct CasparRowTrackSource {
   const float* points;
+  std::ptrdiff_t point_row_stride;
+  std::ptrdiff_t point_column_stride;
   const int64_t* source_point_indices;
   const int64_t* observation_offsets;
   const int32_t* observation_image_indices;
@@ -18,6 +22,23 @@ struct CasparRowTrackSource {
   size_t num_tracks;
   size_t num_duplicate_observations;
 };
+
+inline Eigen::Vector3f ReadStridedVector3(const float* values,
+                                          const std::ptrdiff_t row_stride,
+                                          const std::ptrdiff_t column_stride,
+                                          const int64_t row) {
+  const float* row_values = values + row * row_stride;
+  return {
+      row_values[0], row_values[column_stride], row_values[2 * column_stride]};
+}
+
+inline Eigen::Vector3f RowSourcePoint(const CasparRowTrackSource& source,
+                                      const int64_t point) {
+  return ReadStridedVector3(source.points,
+                            source.point_row_stride,
+                            source.point_column_stride,
+                            point);
+}
 
 struct CasparRowPointSelection {
   std::vector<uint32_t> row_point_indices;

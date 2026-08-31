@@ -96,15 +96,17 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
                   refinement.solved_world_from_source_world +
                   associated_image * 16);
           const int64_t source_point_index = tracks.source_point_indices[track];
-          const Eigen::Map<const Eigen::Vector3f> source_point(
-              tracks.points + source_point_index * 3);
+          const Eigen::Vector3f source_point =
+              RowSourcePoint(tracks, source_point_index);
           Eigen::Vector4d homogeneous_point;
           homogeneous_point << source_point.cast<double>(), 1.0;
           point_sum += (solved_world_from_source_world * homogeneous_point)
                            .head<3>()
                            .cast<float>();
-          color_sum += Eigen::Map<const Eigen::Vector3f>(
-              refinement.colors + source_point_index * 3);
+          color_sum += ReadStridedVector3(refinement.colors,
+                                          refinement.color_row_stride,
+                                          refinement.color_column_stride,
+                                          source_point_index);
 
           ForEachRowTrackObservation(
               tracks, track, [&](const uint32_t image, const float* xy) {

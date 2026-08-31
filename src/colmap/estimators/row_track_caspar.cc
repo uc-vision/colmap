@@ -66,18 +66,17 @@ CasparRowPointSelection InitializeRowPoints(
     const uint32_t point_track_start = point_track_offsets[row_point];
     const uint32_t point_track_end = point_track_offsets[row_point + 1];
     Eigen::Vector3f point_sum = Eigen::Vector3f::Zero();
-    ForEachRowPointTrack(
-        sources,
-        source_track_offsets,
-        point_track_offsets,
-        point_track_indices,
-        row_point,
-        [&](const size_t,
-            const CasparRowTrackSource& source,
-            const uint32_t track) {
-          point_sum += Eigen::Map<const Eigen::Vector3f>(
-              source.points + 3 * source.source_point_indices[track]);
-        });
+    ForEachRowPointTrack(sources,
+                         source_track_offsets,
+                         point_track_offsets,
+                         point_track_indices,
+                         row_point,
+                         [&](const size_t,
+                             const CasparRowTrackSource& source,
+                             const uint32_t track) {
+                           point_sum += RowSourcePoint(
+                               source, source.source_point_indices[track]);
+                         });
     Eigen::Map<Eigen::Vector3f>(selected.points.data() + 3 * point) =
         point_sum / static_cast<float>(point_track_end - point_track_start);
   }

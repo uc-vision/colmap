@@ -28,6 +28,7 @@ namespace {
 using DoubleArray = py::array_t<double, py::array::c_style>;
 using BoolArray = py::array_t<bool, py::array::c_style>;
 using FloatArray = py::array_t<float, py::array::c_style>;
+using StridedFloatArray = py::array_t<float, 0>;
 using Int32Array = py::array_t<int32_t, py::array::c_style>;
 using Int64Array = py::array_t<int64_t, py::array::c_style>;
 using Uint32Array = py::array_t<uint32_t, py::array::c_style>;
@@ -49,7 +50,7 @@ struct PyCasparRowPointRefinementResult {
 };
 
 struct PyCasparRowTrackSource {
-  PyCasparRowTrackSource(FloatArray points,
+  PyCasparRowTrackSource(StridedFloatArray points,
                          Int64Array source_point_indices,
                          Int64Array observation_offsets,
                          Int32Array observation_image_indices,
@@ -64,7 +65,7 @@ struct PyCasparRowTrackSource {
         duplicate_observation_indices(std::move(duplicate_observation_indices)),
         image_rows(std::move(image_rows)) {}
 
-  FloatArray points;
+  StridedFloatArray points;
   Int64Array source_point_indices;
   Int64Array observation_offsets;
   Int32Array observation_image_indices;
@@ -75,7 +76,7 @@ struct PyCasparRowTrackSource {
 
 struct PyCasparRowPointRefinementSource {
   PyCasparRowPointRefinementSource(const PyCasparRowTrackSource* tracks,
-                                   FloatArray colors,
+                                   StridedFloatArray colors,
                                    DoubleArray solved_world_from_source_world)
       : tracks(tracks),
         colors(std::move(colors)),
@@ -83,7 +84,7 @@ struct PyCasparRowPointRefinementSource {
             std::move(solved_world_from_source_world)) {}
 
   const PyCasparRowTrackSource* tracks;
-  FloatArray colors;
+  StridedFloatArray colors;
   DoubleArray solved_world_from_source_world;
 };
 
@@ -155,6 +156,8 @@ std::vector<CasparRowTrackSource> NativeRowTrackSources(
                    source->observation_xy.shape(0));
     native.push_back(CasparRowTrackSource{
         source->points.data(),
+        source->points.strides(0) / static_cast<ssize_t>(sizeof(float)),
+        source->points.strides(1) / static_cast<ssize_t>(sizeof(float)),
         source->source_point_indices.data(),
         source->observation_offsets.data(),
         source->observation_image_indices.data(),
@@ -358,6 +361,8 @@ PyCasparRowPointRefinementResult RefineRowPoints(
     THROW_CHECK_EQ(source->solved_world_from_source_world.shape(2), 4);
     native_refinement_sources.push_back(CasparRowPointRefinementSource{
         source->colors.data(),
+        source->colors.strides(0) / static_cast<ssize_t>(sizeof(float)),
+        source->colors.strides(1) / static_cast<ssize_t>(sizeof(float)),
         source->solved_world_from_source_world.data(),
     });
   }
@@ -449,7 +454,7 @@ void BindRowPointRefinement(py::module& m) {
                     &PyCasparRowPointRefinementResult::reprojection);
 
   py::classh<PyCasparRowTrackSource>(m, "CasparRowTrackSource")
-      .def(py::init<FloatArray,
+      .def(py::init<StridedFloatArray,
                     Int64Array,
                     Int64Array,
                     Int32Array,
@@ -477,7 +482,9 @@ void BindRowPointRefinement(py::module& m) {
 
   py::classh<PyCasparRowPointRefinementSource>(m,
                                                "CasparRowPointRefinementSource")
-      .def(py::init<const PyCasparRowTrackSource*, FloatArray, DoubleArray>(),
+      .def(py::init<const PyCasparRowTrackSource*,
+                    StridedFloatArray,
+                    DoubleArray>(),
            "tracks"_a,
            "colors"_a.noconvert(),
            "solved_world_from_source_world"_a.noconvert(),

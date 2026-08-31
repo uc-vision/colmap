@@ -16,6 +16,8 @@ struct CasparRowPointRefinementOptions : CasparPointRefinementOptions {
 
 struct CasparRowPointRefinementSource {
   const float* colors;
+  std::ptrdiff_t color_row_stride;
+  std::ptrdiff_t color_column_stride;
   const double* solved_world_from_source_world;
 };
 
