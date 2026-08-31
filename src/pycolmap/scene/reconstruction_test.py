@@ -1,7 +1,6 @@
 import os
 
 import numpy as np
-
 import pycolmap
 
 
@@ -207,23 +206,41 @@ def test_reconstruction_add_points3d_from_arrays():
             pycolmap.Rigid3d(),
         )
 
+    point_xyz = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    point_rgb = np.array([[10, 20, 30], [40, 50, 60]], dtype=np.uint8)
+    observation_offsets = np.array([0, 2, 4], dtype=np.int64)
+    observation_image_ids = np.array([1, 2, 1, 2], dtype=np.uint32)
+    observation_point2D_indices = np.array([0, 0, 1, 1], dtype=np.uint32)
     point_ids = reconstruction.add_points3D_from_arrays(
-        np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),
-        np.array([[10, 20, 30], [40, 50, 60]], dtype=np.uint8),
-        np.array([0, 2, 4], dtype=np.int64),
-        np.array([1, 2, 1, 2], dtype=np.uint32),
-        np.array([0, 0, 1, 1], dtype=np.uint32),
+        point_xyz,
+        point_rgb,
+        observation_offsets,
+        observation_image_ids,
+        observation_point2D_indices,
     )
 
     tracks = reconstruction.track_arrays()
-    np.testing.assert_array_equal(tracks["point3D_ids"], point_ids)
-    np.testing.assert_allclose(
-        tracks["point_xyz"], [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
-    )
-    np.testing.assert_array_equal(tracks["observation_image_ids"], [1, 2, 1, 2])
-    np.testing.assert_array_equal(
-        tracks["observation_point2D_indices"], [0, 0, 1, 1]
-    )
+    assert set(tracks["point3D_ids"]) == set(point_ids)
+    input_index = {point_id: index for index, point_id in enumerate(point_ids)}
+    for track_index, point_id in enumerate(tracks["point3D_ids"]):
+        source_index = input_index[point_id]
+        np.testing.assert_allclose(
+            tracks["point_xyz"][track_index], point_xyz[source_index]
+        )
+        start, end = tracks["observation_offsets"][
+            track_index : track_index + 2
+        ]
+        source_start, source_end = observation_offsets[
+            source_index : source_index + 2
+        ]
+        np.testing.assert_array_equal(
+            tracks["observation_image_ids"][start:end],
+            observation_image_ids[source_start:source_end],
+        )
+        np.testing.assert_array_equal(
+            tracks["observation_point2D_indices"][start:end],
+            observation_point2D_indices[source_start:source_end],
+        )
 
 
 def test_reconstruction_is_valid(synthetic_reconstruction):
