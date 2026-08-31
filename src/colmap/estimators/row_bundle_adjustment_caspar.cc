@@ -1,4 +1,4 @@
-#include "colmap/estimators/fixed_rig_pose_prior_bundle_adjustment_arrays_caspar.h"
+#include "colmap/estimators/row_bundle_adjustment_caspar.h"
 
 #include "colmap/estimators/bundle_adjustment_arrays_caspar.h"
 #include "colmap/estimators/caspar/caspar_model_adapter.h"
@@ -8,6 +8,7 @@
 #include "colmap/util/misc.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 
@@ -16,15 +17,21 @@
 namespace colmap {
 namespace {
 
+using Clock = std::chrono::steady_clock;
 using PackedSensorCalibration = Eigen::Matrix<StorageType, 11, 1>;
 using InputCalibration = Eigen::Matrix<float, 4, 1>;
 using InputSqrtInformation = Eigen::Matrix<float, 3, 3, Eigen::RowMajor>;
 using PackedSqrtInformation = Eigen::Matrix<StorageType, 3, 3>;
 
+double ElapsedSeconds(const Clock::time_point start) {
+  return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
 struct ObservationFactorData {
   std::vector<unsigned int> pose_indices;
   std::vector<unsigned int> point_indices;
   std::vector<unsigned int> sensor_indices;
+  std::vector<StorageType> pixels;
 };
 
 struct PriorFactorData {
@@ -34,8 +41,8 @@ struct PriorFactorData {
 };
 
 struct NormalizedPriors {
-  std::vector<StorageType> prior_positions;
-  std::vector<StorageType> prior_sqrt_information;
+  std::vector<StorageType> positions;
+  std::vector<StorageType> sqrt_information;
 };
 
 std::vector<StorageType> PackSensorCalibrations(
@@ -76,76 +83,133 @@ NormalizedPriors NormalizePriors(const float* prior_positions,
                                prior_positions + 3 * num_priors),
       {},
   };
-  bundle_adjustment_arrays::TransformPoints(priors.prior_positions,
+  bundle_adjustment_arrays::TransformPoints(priors.positions,
                                             normalized_from_metric);
-  priors.prior_sqrt_information = NormalizeSqrtInformation(
+  priors.sqrt_information = NormalizeSqrtInformation(
       prior_sqrt_information, num_priors, normalized_from_metric.scale());
   return priors;
 }
 
-ObservationFactorData BuildObservationFactorData(
+ObservationFactorData BuildObservationFactors(
+    const std::vector<CasparRowTrackSource>& sources,
+    const std::vector<uint32_t>& source_track_offsets,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const std::vector<uint32_t>& selected_row_point_indices,
     const uint32_t* image_frame_indices,
     const uint32_t* image_sensor_indices,
-    const uint32_t* observation_image_indices,
-    const uint32_t* observation_point_indices,
     const size_t num_observations) {
-  ObservationFactorData data{
-      std::vector<unsigned int>(num_observations),
-      std::vector<unsigned int>(observation_point_indices,
-                                observation_point_indices + num_observations),
-      std::vector<unsigned int>(num_observations)};
-  for (size_t observation = 0; observation < num_observations; ++observation) {
-    const size_t image = observation_image_indices[observation];
-    data.pose_indices[observation] = image_frame_indices[image];
-    data.sensor_indices[observation] = image_sensor_indices[image];
-  }
-  return data;
+  ObservationFactorData factors;
+  factors.pose_indices.reserve(num_observations);
+  factors.point_indices.reserve(num_observations);
+  factors.sensor_indices.reserve(num_observations);
+  factors.pixels.reserve(2 * num_observations);
+  ForEachRowObservation(
+      sources,
+      source_track_offsets,
+      point_track_offsets,
+      point_track_indices,
+      selected_row_point_indices,
+      [&](const uint32_t point, const uint32_t image, const float* xy) {
+        factors.pose_indices.push_back(image_frame_indices[image]);
+        factors.point_indices.push_back(point);
+        factors.sensor_indices.push_back(image_sensor_indices[image]);
+        factors.pixels.push_back(xy[0]);
+        factors.pixels.push_back(xy[1]);
+      });
+  return factors;
 }
 
-PriorFactorData BuildPriorFactorData(
-    const uint32_t* prior_frame_indices,
-    std::vector<StorageType> prior_positions,
-    std::vector<StorageType> prior_sqrt_information) {
+PriorFactorData BuildPriorFactors(const uint32_t* prior_frame_indices,
+                                  NormalizedPriors priors) {
   return {
       std::vector<unsigned int>(
           prior_frame_indices,
-          prior_frame_indices + prior_positions.size() / 3),
-      std::move(prior_positions),
-      std::move(prior_sqrt_information),
+          prior_frame_indices + priors.positions.size() / 3),
+      std::move(priors.positions),
+      std::move(priors.sqrt_information),
   };
 }
 
 }  // namespace
 
-FixedRigPosePriorBundleAdjustmentArraysResult
-FixedRigPosePriorBundleAdjustmentArraysCaspar(
+CasparRowBundleResult OptimizeRowCaspar(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const uint32_t* point_observation_counts,
+    const uint32_t* selected_row_point_indices,
+    const size_t num_selected_points,
     const std::vector<Rigid3d>& initial_rigs_from_world,
-    const float* initial_points,
-    const size_t num_points,
     const uint32_t* image_frame_indices,
     const uint32_t* image_sensor_indices,
     const size_t num_images,
     const std::vector<Rigid3d>& sensors_from_rig,
-    const Sim3d& normalized_from_metric,
     const float* sensor_calibrations,
-    const uint32_t* observation_image_indices,
-    const uint32_t* observation_point_indices,
-    const float* observation_xy,
-    const size_t num_observations,
     const uint32_t* prior_frame_indices,
     const float* prior_positions,
     const float* prior_sqrt_information,
     const size_t num_priors,
     const CasparBundleAdjustmentOptions& options) {
 #ifdef CASPAR_USE_DOUBLE
-  LOG(FATAL_THROW) << "Caspar fixed-rig array BA requires float precision";
+  LOG(FATAL_THROW) << "Caspar row bundle adjustment requires float precision";
   return {};
 #else
+  const Clock::time_point preparation_start = Clock::now();
+  const std::vector<uint32_t> source_track_offsets =
+      RowSourceTrackOffsets(sources);
+  CasparRowPointSelection selected =
+      InitializeRowPoints(sources,
+                          source_track_offsets,
+                          point_track_offsets,
+                          point_track_indices,
+                          selected_row_point_indices,
+                          num_selected_points);
+  size_t num_observations = 0;
+  for (const uint32_t row_point : selected.row_point_indices) {
+    num_observations += point_observation_counts[row_point];
+  }
+  ObservationFactorData observations =
+      BuildObservationFactors(sources,
+                              source_track_offsets,
+                              point_track_offsets,
+                              point_track_indices,
+                              selected.row_point_indices,
+                              image_frame_indices,
+                              image_sensor_indices,
+                              num_observations);
+  const Sim3d normalized_from_metric =
+      bundle_adjustment_arrays::ComputeNormalization(initial_rigs_from_world,
+                                                     image_frame_indices,
+                                                     image_sensor_indices,
+                                                     num_images,
+                                                     sensors_from_rig);
+  bundle_adjustment_arrays::NormalizedProblem problem =
+      bundle_adjustment_arrays::NormalizeProblem(
+          normalized_from_metric,
+          initial_rigs_from_world,
+          selected.points.data(),
+          selected.row_point_indices.size(),
+          sensors_from_rig);
+  NormalizedPriors normalized_priors = NormalizePriors(prior_positions,
+                                                       prior_sqrt_information,
+                                                       num_priors,
+                                                       normalized_from_metric);
+  PriorFactorData priors =
+      BuildPriorFactors(prior_frame_indices, std::move(normalized_priors));
+  std::vector<StorageType> rig_data =
+      bundle_adjustment_arrays::PackPoses(problem.rigs_from_world);
+  std::vector<StorageType> point_data = std::move(problem.points);
+  const std::vector<StorageType> packed_sensor_calibrations =
+      PackSensorCalibrations(problem.sensors_from_rig, sensor_calibrations);
+  const double preparation_seconds = ElapsedSeconds(preparation_start);
+
+  const Clock::time_point optimization_start = Clock::now();
   CasparSolverSizing sizing;
   sizing.num_pinhole_poses = initial_rigs_from_world.size();
-  sizing.num_points = num_points;
+  sizing.num_points = selected.row_point_indices.size();
   sizing.num_sensor_from_rig_log_scales = 1;
-  sizing.num_row_fixed_rig_pinhole = num_observations;
+  sizing.num_row_fixed_rig_pinhole = observations.point_indices.size();
   sizing.num_row_fixed_rig_pinhole_sensor_calibrations =
       sensors_from_rig.size();
   sizing.num_fixed_rig_position_prior = num_priors;
@@ -156,48 +220,22 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
       static_cast<size_t>(gpu_index >= 0 ? gpu_index : FindBestCudaDevice());
   auto solver =
       CreateSolver(CreateCasparSolverParameters(options), sizing, device_id);
-
-  bundle_adjustment_arrays::NormalizedProblem problem =
-      bundle_adjustment_arrays::NormalizeProblem(normalized_from_metric,
-                                                 initial_rigs_from_world,
-                                                 initial_points,
-                                                 num_points,
-                                                 sensors_from_rig);
-  NormalizedPriors normalized_priors = NormalizePriors(prior_positions,
-                                                       prior_sqrt_information,
-                                                       num_priors,
-                                                       normalized_from_metric);
-  std::vector<StorageType> rig_data =
-      bundle_adjustment_arrays::PackPoses(problem.rigs_from_world);
-  std::vector<StorageType> point_data = std::move(problem.points);
-  const std::vector<StorageType> packed_sensor_calibrations =
-      PackSensorCalibrations(problem.sensors_from_rig, sensor_calibrations);
-  ObservationFactorData observations =
-      BuildObservationFactorData(image_frame_indices,
-                                 image_sensor_indices,
-                                 observation_image_indices,
-                                 observation_point_indices,
-                                 num_observations);
-  PriorFactorData priors =
-      BuildPriorFactorData(prior_frame_indices,
-                           std::move(normalized_priors.prior_positions),
-                           std::move(normalized_priors.prior_sqrt_information));
   const StorageType log_scale = 0;
-
   solver.SetPinholePoseNodesFromStackedHost(
       rig_data.data(), 0, initial_rigs_from_world.size());
-  solver.SetPointNodesFromStackedHost(point_data.data(), 0, num_points);
+  solver.SetPointNodesFromStackedHost(
+      point_data.data(), 0, selected.row_point_indices.size());
   solver.SetSensorFromRigLogScaleNodesFromStackedHost(&log_scale, 0, 1);
   solver.SetRowFixedRigPinholePoseIndicesFromHost(
-      observations.pose_indices.data(), num_observations);
+      observations.pose_indices.data(), observations.pose_indices.size());
   solver.SetRowFixedRigPinholePointIndicesFromHost(
-      observations.point_indices.data(), num_observations);
+      observations.point_indices.data(), observations.point_indices.size());
   solver.SetRowFixedRigPinholeSensorCalibrationDataFromStackedHost(
       packed_sensor_calibrations.data(), 0, problem.sensors_from_rig.size());
   solver.SetRowFixedRigPinholeSensorCalibrationIndicesFromHost(
-      observations.sensor_indices.data(), num_observations);
+      observations.sensor_indices.data(), observations.sensor_indices.size());
   solver.SetRowFixedRigPinholePixelDataFromStackedHost(
-      observation_xy, 0, num_observations);
+      observations.pixels.data(), 0, observations.point_indices.size());
   const StorageType reprojection_loss_scale =
       options.fixed_rig_reprojection_loss_scale;
   solver.SetRowFixedRigPinholeReprojectionLossScaleDataFromStackedHost(
@@ -224,24 +262,29 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
       /*verbose_logging=*/options.collect_iteration_data);
   solver.GetPinholePoseNodesToStackedHost(
       rig_data.data(), 0, initial_rigs_from_world.size());
-  solver.GetPointNodesToStackedHost(point_data.data(), 0, num_points);
+  solver.GetPointNodesToStackedHost(
+      point_data.data(), 0, selected.row_point_indices.size());
   StorageType solved_log_scale;
   solver.GetSensorFromRigLogScaleNodesToStackedHost(&solved_log_scale, 0, 1);
 
-  const Sim3d metric_from_normalized = Inverse(problem.normalized_from_metric);
+  const Sim3d metric_from_normalized = Inverse(normalized_from_metric);
   std::vector<Rigid3d> solved_rigs_from_world =
       bundle_adjustment_arrays::UnpackPoses(rig_data);
   bundle_adjustment_arrays::TransformPoses(solved_rigs_from_world,
                                            metric_from_normalized);
   bundle_adjustment_arrays::TransformPoints(point_data, metric_from_normalized);
 
-  FixedRigPosePriorBundleAdjustmentArraysResult result;
+  CasparRowBundleResult result;
   result.rigs_from_world = std::move(solved_rigs_from_world);
+  result.row_point_indices = std::move(selected.row_point_indices);
   result.points = std::move(point_data);
   result.sensor_from_rig_scale = std::exp(solved_log_scale);
+  result.observation_count = observations.point_indices.size();
+  result.preparation_seconds = preparation_seconds;
+  result.optimization_seconds = ElapsedSeconds(optimization_start);
   result.summary = CasparBundleAdjustmentSummary::Create(solve_result);
   result.summary->num_residuals =
-      static_cast<int>(2 * num_observations + 3 * num_priors);
+      static_cast<int>(2 * result.observation_count + 3 * num_priors);
   result.summary->allocation_size = solver.get_allocation_size();
   return result;
 #endif

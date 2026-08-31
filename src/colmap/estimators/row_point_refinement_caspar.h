@@ -2,6 +2,7 @@
 
 #include "colmap/estimators/caspar/row_reprojection_validation.h"
 #include "colmap/estimators/point_refinement_caspar.h"
+#include "colmap/estimators/row_track_caspar.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,16 +15,7 @@ struct CasparRowPointRefinementOptions : CasparPointRefinementOptions {
 };
 
 struct CasparRowPointRefinementSource {
-  const float* points;
   const float* colors;
-  const int64_t* source_point_indices;
-  size_t num_tracks;
-  const int64_t* observation_offsets;
-  const int32_t* observation_image_indices;
-  const float* observation_xy;
-  const uint32_t* duplicate_observation_indices;
-  size_t num_duplicate_observations;
-  const uint32_t* solved_image_rows;
   const double* solved_world_from_source_world;
 };
 
@@ -44,7 +36,8 @@ struct CasparRowPointRefinementResult {
 };
 
 CasparRowPointRefinementResult RefineRowPointsCaspar(
-    const std::vector<CasparRowPointRefinementSource>& sources,
+    const std::vector<CasparRowTrackSource>& track_sources,
+    const std::vector<CasparRowPointRefinementSource>& refinement_sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
     const uint32_t* point_observation_counts,

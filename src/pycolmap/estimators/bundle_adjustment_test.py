@@ -357,13 +357,9 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
     ]
     image_frame_indices = np.repeat(np.arange(3, dtype=np.uint32), 2)
     image_sensor_indices = np.tile(np.arange(2, dtype=np.uint32), 3)
-    observation_image_indices = np.repeat(
-        np.arange(6, dtype=np.uint32), len(expected_points)
+    observation_xy = np.empty(
+        (len(image_frame_indices) * len(expected_points), 2), np.float32
     )
-    observation_point_indices = np.tile(
-        np.arange(len(expected_points), dtype=np.uint32), 6
-    )
-    observation_xy = np.empty((len(observation_point_indices), 2), np.float32)
     for image_index, (frame_index, sensor_index) in enumerate(
         zip(image_frame_indices, image_sensor_indices, strict=True)
     ):
@@ -386,16 +382,40 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
     options = pycolmap.CasparBundleAdjustmentOptions()
     options.gpu_index = "0"
     options.solver_iter_max = 100
-    result = pycolmap.fixed_rig_pose_prior_bundle_adjustment_arrays(
-        rigs_from_world,
+    row_source = pycolmap.CasparRowTrackSource(
         np.ascontiguousarray(initial_points),
+        np.arange(len(expected_points), dtype=np.int64),
+        np.arange(
+            0,
+            (len(expected_points) + 1) * len(image_frame_indices),
+            len(image_frame_indices),
+            dtype=np.int64,
+        ),
+        np.tile(
+            np.arange(len(image_frame_indices), dtype=np.int32),
+            len(expected_points),
+        ),
+        np.ascontiguousarray(
+            observation_xy.reshape(
+                len(image_frame_indices), len(expected_points), 2
+            )
+            .transpose(1, 0, 2)
+            .reshape(-1, 2)
+        ),
+        np.empty(0, dtype=np.uint32),
+        np.arange(len(image_frame_indices), dtype=np.uint32),
+    )
+    result = pycolmap.caspar_optimize_row(
+        (row_source,),
+        np.arange(len(expected_points) + 1, dtype=np.uint32),
+        np.arange(len(expected_points), dtype=np.uint32),
+        np.full(len(expected_points), len(image_frame_indices), np.uint32),
+        np.arange(len(expected_points), dtype=np.uint32),
+        rigs_from_world,
         image_frame_indices,
         image_sensor_indices,
         sensors_from_rig,
         sensor_calibrations,
-        observation_image_indices,
-        observation_point_indices,
-        observation_xy,
         prior_frame_indices,
         rig_centers.astype(np.float32),
         prior_sqrt_information,
@@ -423,9 +443,10 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
             squared_error += np.square(
                 predicted - observation_xy[start:end]
             ).sum()
-        return np.sqrt(squared_error / len(observation_point_indices))
+        return np.sqrt(squared_error / len(observation_xy))
 
     assert result.summary.is_solution_usable()
+    assert result.observation_count == len(observation_xy)
     assert result.sensor_from_rig_scale == pytest.approx(
         expected_scale, abs=5e-4
     )
@@ -434,7 +455,7 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
 
 
 @caspar_only
-def test_section_array_ba_keeps_endpoints_and_refines_interior():
+def test_row_section_ba_selects_source_points_and_keeps_fixed_frames():
     rng = np.random.default_rng(11)
     section_centers = np.array(
         [
@@ -474,43 +495,70 @@ def test_section_array_ba_keeps_endpoints_and_refines_interior():
     )
     image_frame_indices = np.arange(len(all_centers), dtype=np.uint32)
     image_sensor_indices = np.zeros(len(all_centers), dtype=np.uint32)
-    observation_image_indices = np.repeat(
-        np.arange(len(section_centers), dtype=np.uint32), len(expected_points)
-    )
-    observation_point_indices = np.tile(
-        np.arange(len(expected_points), dtype=np.uint32), len(section_centers)
-    )
-    observation_xy = np.concatenate(
-        [
-            camera.img_from_cam(expected_points - center)
-            for center in section_centers
-        ]
-    ).astype(np.float32)
     initial_points = expected_points + rng.normal(
         0.0, 0.05, expected_points.shape
     ).astype(np.float32)
-    initial_point_error = np.linalg.norm(initial_points - expected_points)
+    initial_point_error = np.linalg.norm(
+        initial_points[:24] - expected_points[:24]
+    )
     initial_pose_error = np.linalg.norm(
         rigs_from_world[2].tgt_origin_in_src() - section_centers[2]
     )
 
+    def source(point_start, point_stop):
+        point_count = point_stop - point_start
+        observation_xy = np.stack(
+            [
+                camera.img_from_cam(
+                    expected_points[point_start:point_stop] - center
+                )
+                for center in section_centers
+            ],
+            axis=1,
+        ).reshape(-1, 2)
+        return pycolmap.CasparRowTrackSource(
+            np.ascontiguousarray(initial_points[point_start:point_stop]),
+            np.arange(point_count, dtype=np.int64),
+            np.arange(
+                0,
+                (point_count + 1) * len(section_centers),
+                len(section_centers),
+                dtype=np.int64,
+            ),
+            np.tile(
+                np.arange(len(section_centers), dtype=np.int32), point_count
+            ),
+            np.ascontiguousarray(observation_xy, dtype=np.float32),
+            (
+                np.array([0], dtype=np.uint32)
+                if point_start == 0
+                else np.empty(0, dtype=np.uint32)
+            ),
+            np.arange(len(section_centers), dtype=np.uint32),
+        )
+
     options = pycolmap.CasparBundleAdjustmentOptions()
     options.gpu_index = "0"
     options.solver_iter_max = 100
-    result = pycolmap.section_bundle_adjustment_arrays(
-        rigs_from_world,
+    result = pycolmap.caspar_refine_row_section(
+        (source(0, 24), source(24, 48)),
+        np.arange(len(expected_points) + 1, dtype=np.uint32),
+        np.arange(len(expected_points), dtype=np.uint32),
+        np.arange(len(expected_points), dtype=np.uint32),
         np.ascontiguousarray(initial_points),
+        rigs_from_world,
         image_frame_indices,
         image_sensor_indices,
         sensors_from_rig,
         sensor_calibrations,
-        observation_image_indices,
-        observation_point_indices,
-        observation_xy,
-        np.array([0, 4], dtype=np.uint32),
+        np.array([False, True, True, True, False, False, False]),
+        np.array([True, False]),
         options,
     )
 
+    np.testing.assert_array_equal(result.row_point_indices, np.arange(24))
+    assert result.observation_count == 119
+    assert result.active_observation_count == 72
     np.testing.assert_array_equal(
         result.rigs_from_world[0].params, rigs_from_world[0].params
     )
@@ -527,9 +575,11 @@ def test_section_array_ba_keeps_endpoints_and_refines_interior():
     assert result.summary.final_score < result.summary.initial_score
     assert (
         np.linalg.norm(
-            result.rigs_from_world[2].tgt_origin_in_src()
-            - section_centers[2]
+            result.rigs_from_world[2].tgt_origin_in_src() - section_centers[2]
         )
         < initial_pose_error
     )
-    assert np.linalg.norm(result.points - expected_points) < initial_point_error
+    assert (
+        np.linalg.norm(result.points - expected_points[:24])
+        < initial_point_error
+    )

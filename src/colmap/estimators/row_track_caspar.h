@@ -1,0 +1,128 @@
+#pragma once
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace colmap {
+
+struct CasparRowTrackSource {
+  const float* points;
+  const int64_t* source_point_indices;
+  const int64_t* observation_offsets;
+  const int32_t* observation_image_indices;
+  const float* observation_xy;
+  const uint32_t* duplicate_observation_indices;
+  const uint32_t* image_rows;
+  size_t num_tracks;
+  size_t num_duplicate_observations;
+};
+
+struct CasparRowPointSelection {
+  std::vector<uint32_t> row_point_indices;
+  std::vector<float> points;
+};
+
+std::vector<uint32_t> RowSourceTrackOffsets(
+    const std::vector<CasparRowTrackSource>& sources);
+
+CasparRowPointSelection SelectRowPointsBySource(
+    const std::vector<CasparRowTrackSource>& sources,
+    const std::vector<uint32_t>& source_track_offsets,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const bool* active_source_mask,
+    const uint32_t* eligible_row_point_indices,
+    const float* eligible_points,
+    size_t num_eligible_points);
+
+CasparRowPointSelection InitializeRowPoints(
+    const std::vector<CasparRowTrackSource>& sources,
+    const std::vector<uint32_t>& source_track_offsets,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const uint32_t* row_point_indices,
+    size_t num_points);
+
+template <typename Callback>
+void ForEachRowPointTrack(const std::vector<CasparRowTrackSource>& sources,
+                          const std::vector<uint32_t>& source_track_offsets,
+                          const uint32_t* point_track_offsets,
+                          const uint32_t* point_track_indices,
+                          const uint32_t row_point,
+                          Callback callback) {
+  const uint32_t point_track_start = point_track_offsets[row_point];
+  const uint32_t point_track_end = point_track_offsets[row_point + 1];
+  size_t source_index = 0;
+  if (point_track_start < point_track_end) {
+    source_index = static_cast<size_t>(
+        std::upper_bound(source_track_offsets.begin() + 1,
+                         source_track_offsets.end(),
+                         point_track_indices[point_track_start]) -
+        source_track_offsets.begin() - 1);
+  }
+  for (uint32_t point_track = point_track_start; point_track < point_track_end;
+       ++point_track) {
+    const uint32_t global_track = point_track_indices[point_track];
+    while (global_track >= source_track_offsets[source_index + 1]) {
+      ++source_index;
+    }
+    const uint32_t track = global_track - source_track_offsets[source_index];
+    callback(source_index, sources[source_index], track);
+  }
+}
+
+template <typename Callback>
+void ForEachRowTrackObservation(const CasparRowTrackSource& source,
+                                const uint32_t track,
+                                Callback callback) {
+  const int64_t observation_start = source.observation_offsets[track];
+  const int64_t observation_end = source.observation_offsets[track + 1];
+  const uint32_t* duplicate = std::lower_bound(
+      source.duplicate_observation_indices,
+      source.duplicate_observation_indices + source.num_duplicate_observations,
+      static_cast<uint32_t>(observation_start));
+  const uint32_t* duplicate_end = std::lower_bound(
+      duplicate,
+      source.duplicate_observation_indices + source.num_duplicate_observations,
+      static_cast<uint32_t>(observation_end));
+  for (int64_t observation = observation_start; observation < observation_end;
+       ++observation) {
+    if (duplicate != duplicate_end && *duplicate == observation) {
+      ++duplicate;
+      continue;
+    }
+    const uint32_t image =
+        source.image_rows[source.observation_image_indices[observation]];
+    callback(image, source.observation_xy + 2 * observation);
+  }
+}
+
+template <typename Callback>
+void ForEachRowObservation(
+    const std::vector<CasparRowTrackSource>& sources,
+    const std::vector<uint32_t>& source_track_offsets,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const std::vector<uint32_t>& selected_row_point_indices,
+    Callback callback) {
+  for (size_t point = 0; point < selected_row_point_indices.size(); ++point) {
+    ForEachRowPointTrack(
+        sources,
+        source_track_offsets,
+        point_track_offsets,
+        point_track_indices,
+        selected_row_point_indices[point],
+        [&](const size_t,
+            const CasparRowTrackSource& source,
+            const uint32_t track) {
+          ForEachRowTrackObservation(
+              source, track, [&](const uint32_t image, const float* xy) {
+                callback(static_cast<uint32_t>(point), image, xy);
+              });
+        });
+  }
+}
+
+}  // namespace colmap

@@ -66,10 +66,12 @@ if(CASPAR_ENABLED)
         point_refinement_caspar.cc
         row_point_refinement_caspar.h
         row_point_refinement_caspar.cc
-        fixed_rig_pose_prior_bundle_adjustment_arrays_caspar.h
-        fixed_rig_pose_prior_bundle_adjustment_arrays_caspar.cc
-        section_bundle_adjustment_arrays_caspar.h
-        section_bundle_adjustment_arrays_caspar.cc
+        row_track_caspar.h
+        row_track_caspar.cc
+        row_bundle_adjustment_caspar.h
+        row_bundle_adjustment_caspar.cc
+        row_section_bundle_adjustment_caspar.h
+        row_section_bundle_adjustment_caspar.cc
     )
 endif()
 

@@ -74,28 +74,34 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
         )
     ).astype(np.float32)
     identity_transforms = np.tile(np.eye(4), (3, 1, 1))
-    first = pycolmap.CasparRowPointRefinementSource(
+    first_tracks = pycolmap.CasparRowTrackSource(
         expected + np.array((0.2, -0.15, 0.3), np.float32),
-        np.array(((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), np.float32),
         np.array((0, 1), np.int64),
         np.array((0, 2, 4), np.int64),
         np.array((0, 1, 0, 2), np.int32),
         first_xy,
         np.empty(0, np.uint32),
         np.array((0, 1, 2), np.uint32),
+    )
+    first = pycolmap.CasparRowPointRefinementSource(
+        first_tracks,
+        np.array(((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), np.float32),
         identity_transforms,
     )
     source_translation = np.eye(4)
     source_translation[:3, 3] = np.array((0.4, -0.2, 0.1))
-    second = pycolmap.CasparRowPointRefinementSource(
+    second_tracks = pycolmap.CasparRowTrackSource(
         (expected[::-1] - source_translation[:3, 3]).astype(np.float32),
-        np.array(((0.0, 0.0, 1.0), (1.0, 1.0, 0.0)), np.float32),
         np.array((0, 1), np.int64),
         np.array((0, 2, 4), np.int64),
         np.array((2, 1, 2, 1), np.int32),
         second_xy,
         second_duplicate_indices,
         np.array((0, 1, 2), np.uint32),
+    )
+    second = pycolmap.CasparRowPointRefinementSource(
+        second_tracks,
+        np.array(((0.0, 0.0, 1.0), (1.0, 1.0, 0.0)), np.float32),
         np.tile(source_translation, (3, 1, 1)),
     )
     options = pycolmap.CasparRowPointRefinementOptions()

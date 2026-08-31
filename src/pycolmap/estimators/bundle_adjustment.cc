@@ -3,10 +3,7 @@
 #include "colmap/estimators/bundle_adjustment_caspar.h"
 #include "colmap/estimators/bundle_adjustment_ceres.h"
 #ifdef CASPAR_ENABLED
-#include "colmap/estimators/bundle_adjustment_arrays_caspar.h"
-#include "colmap/estimators/fixed_rig_pose_prior_bundle_adjustment_arrays_caspar.h"
 #include "colmap/estimators/point_refinement_caspar.h"
-#include "colmap/estimators/section_bundle_adjustment_arrays_caspar.h"
 #endif
 
 #include "pycolmap/helpers.h"
@@ -35,82 +32,6 @@ struct PyCasparPointRefinementResult {
   py::array_t<float> points;
   std::shared_ptr<CasparBundleAdjustmentSummary> summary;
 };
-
-struct PyFixedRigPosePriorBundleAdjustmentArraysResult {
-  std::vector<Rigid3d> rigs_from_world;
-  py::array_t<float> points;
-  double sensor_from_rig_scale;
-  std::shared_ptr<CasparBundleAdjustmentSummary> summary;
-};
-
-struct PySectionBundleAdjustmentArraysResult {
-  std::vector<Rigid3d> rigs_from_world;
-  py::array_t<float> points;
-  std::shared_ptr<CasparBundleAdjustmentSummary> summary;
-};
-
-struct RigArraySizes {
-  size_t points;
-  size_t images;
-  size_t observations;
-};
-
-RigArraySizes CheckRigArrays(const std::vector<Rigid3d>& rigs_from_world,
-                             const FloatArray& points,
-                             const Uint32Array& image_frame_indices,
-                             const Uint32Array& image_sensor_indices,
-                             const std::vector<Rigid3d>& sensors_from_rig,
-                             const FloatArray& sensor_calibrations,
-                             const Uint32Array& observation_image_indices,
-                             const Uint32Array& observation_point_indices,
-                             const FloatArray& observation_xy) {
-  THROW_CHECK_GE(rigs_from_world.size(), 2)
-      << "Bundle adjustment requires at least two rig frames";
-  THROW_CHECK_EQ(points.ndim(), 2);
-  THROW_CHECK_EQ(points.shape(1), 3);
-  THROW_CHECK_GT(points.shape(0), 0);
-  THROW_CHECK_EQ(image_frame_indices.ndim(), 1);
-  THROW_CHECK_EQ(image_sensor_indices.ndim(), 1);
-  const size_t num_images = image_frame_indices.shape(0);
-  THROW_CHECK_GT(num_images, 0);
-  THROW_CHECK_EQ(image_sensor_indices.shape(0), num_images);
-  THROW_CHECK_GT(sensors_from_rig.size(), 0);
-  THROW_CHECK_EQ(sensor_calibrations.ndim(), 2);
-  THROW_CHECK_EQ(sensor_calibrations.shape(0), sensors_from_rig.size());
-  THROW_CHECK_EQ(sensor_calibrations.shape(1), 4);
-  THROW_CHECK_EQ(observation_image_indices.ndim(), 1);
-  THROW_CHECK_EQ(observation_point_indices.ndim(), 1);
-  THROW_CHECK_EQ(observation_xy.ndim(), 2);
-  THROW_CHECK_EQ(observation_xy.shape(1), 2);
-  const size_t num_observations = observation_image_indices.shape(0);
-  THROW_CHECK_GT(num_observations, 0);
-  THROW_CHECK_EQ(observation_point_indices.shape(0), num_observations);
-  THROW_CHECK_EQ(observation_xy.shape(0), num_observations);
-  return {static_cast<size_t>(points.shape(0)), num_images, num_observations};
-}
-
-void CheckRigArrayIndices(const std::vector<Rigid3d>& rigs_from_world,
-                          const Uint32Array& image_frame_indices,
-                          const Uint32Array& image_sensor_indices,
-                          const std::vector<Rigid3d>& sensors_from_rig,
-                          const Uint32Array& observation_image_indices,
-                          const Uint32Array& observation_point_indices,
-                          const RigArraySizes& sizes) {
-  THROW_CHECK_LT(*std::max_element(image_frame_indices.data(),
-                                   image_frame_indices.data() + sizes.images),
-                 rigs_from_world.size());
-  THROW_CHECK_LT(*std::max_element(image_sensor_indices.data(),
-                                   image_sensor_indices.data() + sizes.images),
-                 sensors_from_rig.size());
-  THROW_CHECK_LT(
-      *std::max_element(observation_image_indices.data(),
-                        observation_image_indices.data() + sizes.observations),
-      sizes.images);
-  THROW_CHECK_LT(
-      *std::max_element(observation_point_indices.data(),
-                        observation_point_indices.data() + sizes.observations),
-      sizes.points);
-}
 
 py::array_t<float> PointArray(std::vector<float>&& values,
                               const size_t num_points) {
@@ -177,179 +98,6 @@ PyCasparPointRefinementResult RefineFixedCameraPinholePoints(
           std::move(result.summary)};
 }
 
-PyFixedRigPosePriorBundleAdjustmentArraysResult
-FixedRigPosePriorBundleAdjustmentArrays(
-    const std::vector<Rigid3d>& rigs_from_world,
-    const FloatArray& points,
-    const Uint32Array& image_frame_indices,
-    const Uint32Array& image_sensor_indices,
-    const std::vector<Rigid3d>& sensors_from_rig,
-    const FloatArray& sensor_calibrations,
-    const Uint32Array& observation_image_indices,
-    const Uint32Array& observation_point_indices,
-    const FloatArray& observation_xy,
-    const Uint32Array& prior_frame_indices,
-    const FloatArray& prior_positions,
-    const FloatArray& prior_sqrt_information,
-    const CasparBundleAdjustmentOptions& options) {
-  const RigArraySizes sizes = CheckRigArrays(rigs_from_world,
-                                             points,
-                                             image_frame_indices,
-                                             image_sensor_indices,
-                                             sensors_from_rig,
-                                             sensor_calibrations,
-                                             observation_image_indices,
-                                             observation_point_indices,
-                                             observation_xy);
-  THROW_CHECK_EQ(prior_frame_indices.ndim(), 1);
-  THROW_CHECK_EQ(prior_positions.ndim(), 2);
-  THROW_CHECK_EQ(prior_positions.shape(1), 3);
-  THROW_CHECK_EQ(prior_sqrt_information.ndim(), 3);
-  THROW_CHECK_EQ(prior_sqrt_information.shape(1), 3);
-  THROW_CHECK_EQ(prior_sqrt_information.shape(2), 3);
-  const size_t num_priors = prior_frame_indices.shape(0);
-  THROW_CHECK_GE(num_priors, 3);
-  THROW_CHECK_EQ(prior_positions.shape(0), num_priors);
-  THROW_CHECK_EQ(prior_sqrt_information.shape(0), num_priors);
-
-  FixedRigPosePriorBundleAdjustmentArraysResult result;
-  {
-    py::gil_scoped_release release;
-    CheckRigArrayIndices(rigs_from_world,
-                         image_frame_indices,
-                         image_sensor_indices,
-                         sensors_from_rig,
-                         observation_image_indices,
-                         observation_point_indices,
-                         sizes);
-    THROW_CHECK_LT(*std::max_element(prior_frame_indices.data(),
-                                     prior_frame_indices.data() + num_priors),
-                   rigs_from_world.size());
-    const Sim3d normalized_from_metric =
-        bundle_adjustment_arrays::ComputeNormalization(
-            rigs_from_world,
-            image_frame_indices.data(),
-            image_sensor_indices.data(),
-            sizes.images,
-            sensors_from_rig);
-    result = FixedRigPosePriorBundleAdjustmentArraysCaspar(
-        rigs_from_world,
-        points.data(),
-        sizes.points,
-        image_frame_indices.data(),
-        image_sensor_indices.data(),
-        sizes.images,
-        sensors_from_rig,
-        normalized_from_metric,
-        sensor_calibrations.data(),
-        observation_image_indices.data(),
-        observation_point_indices.data(),
-        observation_xy.data(),
-        sizes.observations,
-        prior_frame_indices.data(),
-        prior_positions.data(),
-        prior_sqrt_information.data(),
-        num_priors,
-        options);
-  }
-  return {std::move(result.rigs_from_world),
-          PointArray(std::move(result.points), sizes.points),
-          result.sensor_from_rig_scale,
-          std::move(result.summary)};
-}
-
-PySectionBundleAdjustmentArraysResult SectionBundleAdjustmentArrays(
-    const std::vector<Rigid3d>& rigs_from_world,
-    const FloatArray& points,
-    const Uint32Array& image_frame_indices,
-    const Uint32Array& image_sensor_indices,
-    const std::vector<Rigid3d>& sensors_from_rig,
-    const FloatArray& sensor_calibrations,
-    const Uint32Array& observation_image_indices,
-    const Uint32Array& observation_point_indices,
-    const FloatArray& observation_xy,
-    const Uint32Array& fixed_frame_indices,
-    const CasparBundleAdjustmentOptions& options) {
-  const RigArraySizes sizes = CheckRigArrays(rigs_from_world,
-                                             points,
-                                             image_frame_indices,
-                                             image_sensor_indices,
-                                             sensors_from_rig,
-                                             sensor_calibrations,
-                                             observation_image_indices,
-                                             observation_point_indices,
-                                             observation_xy);
-  THROW_CHECK_EQ(fixed_frame_indices.ndim(), 1);
-  const size_t num_fixed_frames = fixed_frame_indices.shape(0);
-  THROW_CHECK_GE(num_fixed_frames, 2)
-      << "Section bundle adjustment requires at least two fixed rig frames";
-  THROW_CHECK_LT(num_fixed_frames, rigs_from_world.size())
-      << "Section bundle adjustment requires at least one variable rig frame";
-
-  SectionBundleAdjustmentArraysResult result;
-  {
-    py::gil_scoped_release release;
-    CheckRigArrayIndices(rigs_from_world,
-                         image_frame_indices,
-                         image_sensor_indices,
-                         sensors_from_rig,
-                         observation_image_indices,
-                         observation_point_indices,
-                         sizes);
-    std::vector<bool> fixed(rigs_from_world.size(), false);
-    for (size_t index = 0; index < num_fixed_frames; ++index) {
-      const uint32_t frame = fixed_frame_indices.data()[index];
-      THROW_CHECK_LT(frame, rigs_from_world.size());
-      THROW_CHECK(!fixed[frame]) << "Fixed rig frames must be unique";
-      fixed[frame] = true;
-    }
-    std::vector<bool> selected_images(sizes.images, false);
-    for (size_t observation = 0; observation < sizes.observations;
-         ++observation) {
-      const uint32_t image = observation_image_indices.data()[observation];
-      const uint32_t frame = image_frame_indices.data()[image];
-      if (!fixed[frame]) {
-        selected_images[image] = true;
-      }
-    }
-    std::vector<uint32_t> active_images;
-    active_images.reserve(sizes.images);
-    for (size_t image = 0; image < sizes.images; ++image) {
-      if (selected_images[image]) {
-        active_images.push_back(image);
-      }
-    }
-    THROW_CHECK_GT(active_images.size(), 0)
-        << "Section bundle adjustment requires observed variable frames";
-    const Sim3d normalized_from_metric =
-        bundle_adjustment_arrays::ComputeNormalization(
-            rigs_from_world,
-            image_frame_indices.data(),
-            image_sensor_indices.data(),
-            active_images.data(),
-            active_images.size(),
-            sensors_from_rig);
-    result =
-        SectionBundleAdjustmentArraysCaspar(rigs_from_world,
-                                            points.data(),
-                                            sizes.points,
-                                            image_frame_indices.data(),
-                                            image_sensor_indices.data(),
-                                            sensors_from_rig,
-                                            normalized_from_metric,
-                                            sensor_calibrations.data(),
-                                            observation_image_indices.data(),
-                                            observation_point_indices.data(),
-                                            observation_xy.data(),
-                                            sizes.observations,
-                                            fixed_frame_indices.data(),
-                                            num_fixed_frames,
-                                            options);
-  }
-  return {std::move(result.rigs_from_world),
-          PointArray(std::move(result.points), sizes.points),
-          std::move(result.summary)};
-}
 #endif
 
 class PyBundleAdjuster : public BundleAdjuster,
@@ -508,25 +256,6 @@ void BindBundleAdjuster(py::module& m) {
       .def_readonly("points", &PyCasparPointRefinementResult::points)
       .def_readonly("summary", &PyCasparPointRefinementResult::summary);
 
-  py::classh<PyFixedRigPosePriorBundleAdjustmentArraysResult>(
-      m, "FixedRigPosePriorBundleAdjustmentArraysResult")
-      .def_readonly(
-          "rigs_from_world",
-          &PyFixedRigPosePriorBundleAdjustmentArraysResult::rigs_from_world)
-      .def_readonly("points",
-                    &PyFixedRigPosePriorBundleAdjustmentArraysResult::points)
-      .def_readonly("sensor_from_rig_scale",
-                    &PyFixedRigPosePriorBundleAdjustmentArraysResult::
-                        sensor_from_rig_scale)
-      .def_readonly("summary",
-                    &PyFixedRigPosePriorBundleAdjustmentArraysResult::summary);
-
-  py::classh<PySectionBundleAdjustmentArraysResult>(
-      m, "SectionBundleAdjustmentArraysResult")
-      .def_readonly("rigs_from_world",
-                    &PySectionBundleAdjustmentArraysResult::rigs_from_world)
-      .def_readonly("points", &PySectionBundleAdjustmentArraysResult::points)
-      .def_readonly("summary", &PySectionBundleAdjustmentArraysResult::summary);
 #endif
 
   auto PyBundleAdjustmentGauge =
@@ -878,41 +607,5 @@ void BindBundleAdjuster(py::module& m) {
         "options"_a = CasparPointRefinementOptions(),
         "Refine 3D points against fixed distortion-free 3x4 projection "
         "matrices with CASPAR.");
-  m.def("fixed_rig_pose_prior_bundle_adjustment_arrays",
-        FixedRigPosePriorBundleAdjustmentArrays,
-        "rigs_from_world"_a,
-        "points"_a.noconvert(),
-        "image_frame_indices"_a.noconvert(),
-        "image_sensor_indices"_a.noconvert(),
-        "sensors_from_rig"_a,
-        "sensor_calibrations"_a.noconvert(),
-        "observation_image_indices"_a.noconvert(),
-        "observation_point_indices"_a.noconvert(),
-        "observation_xy"_a.noconvert(),
-        "prior_frame_indices"_a.noconvert(),
-        "prior_positions"_a.noconvert(),
-        "prior_sqrt_information"_a.noconvert(),
-        "options"_a = CasparBundleAdjustmentOptions(),
-        "Jointly optimize rig-frame poses, points, and one multiplicative "
-        "sensor-from-rig translation scale from flat pinhole observation "
-        "arrays and direct rig-frame position priors. Reprojection and "
-        "position priors use norm-wise pseudo-Huber losses; intrinsics and "
-        "sensor rotations are fixed.");
-  m.def("section_bundle_adjustment_arrays",
-        SectionBundleAdjustmentArrays,
-        "rigs_from_world"_a,
-        "points"_a.noconvert(),
-        "image_frame_indices"_a.noconvert(),
-        "image_sensor_indices"_a.noconvert(),
-        "sensors_from_rig"_a,
-        "sensor_calibrations"_a.noconvert(),
-        "observation_image_indices"_a.noconvert(),
-        "observation_point_indices"_a.noconvert(),
-        "observation_xy"_a.noconvert(),
-        "fixed_frame_indices"_a.noconvert(),
-        "options"_a = CasparBundleAdjustmentOptions(),
-        "Jointly refine non-fixed rig-frame poses and 3D points from flat "
-        "pinhole observation arrays. Fixed frame poses, sensor-from-rig "
-        "poses, intrinsics, and the established global scale remain exact.");
 #endif
 }
