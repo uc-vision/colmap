@@ -1,7 +1,7 @@
 #include "colmap/estimators/fixed_rig_pose_prior_bundle_adjustment_arrays_caspar.h"
 
+#include "colmap/estimators/bundle_adjustment_arrays_caspar.h"
 #include "colmap/estimators/caspar/caspar_model_adapter.h"
-#include "colmap/geometry/pose.h"
 #include "colmap/geometry/sim3.h"
 #include "colmap/util/cuda.h"
 #include "colmap/util/logging.h"
@@ -16,7 +16,6 @@
 namespace colmap {
 namespace {
 
-using PackedPose = Eigen::Matrix<StorageType, 7, 1>;
 using PackedSensorCalibration = Eigen::Matrix<StorageType, 11, 1>;
 using InputCalibration = Eigen::Matrix<float, 4, 1>;
 using InputSqrtInformation = Eigen::Matrix<float, 3, 3, Eigen::RowMajor>;
@@ -34,33 +33,10 @@ struct PriorFactorData {
   std::vector<StorageType> sqrt_information;
 };
 
-struct NormalizedProblem {
-  Sim3d normalized_from_metric;
-  std::vector<Rigid3d> rigs_from_world;
-  std::vector<Rigid3d> sensors_from_rig;
-  std::vector<StorageType> points;
+struct NormalizedPriors {
   std::vector<StorageType> prior_positions;
   std::vector<StorageType> prior_sqrt_information;
 };
-
-std::vector<StorageType> PackPoses(const std::vector<Rigid3d>& poses) {
-  std::vector<StorageType> packed(7 * poses.size());
-  for (size_t index = 0; index < poses.size(); ++index) {
-    Eigen::Map<PackedPose>(packed.data() + 7 * index) =
-        poses[index].params.cast<StorageType>();
-  }
-  return packed;
-}
-
-std::vector<Rigid3d> UnpackPoses(const std::vector<StorageType>& packed) {
-  std::vector<Rigid3d> poses(packed.size() / 7);
-  for (size_t index = 0; index < poses.size(); ++index) {
-    poses[index].params =
-        Eigen::Map<const PackedPose>(packed.data() + 7 * index).cast<double>();
-    poses[index].rotation().normalize();
-  }
-  return poses;
-}
 
 std::vector<StorageType> PackSensorCalibrations(
     const std::vector<Rigid3d>& sensors_from_rig,
@@ -74,16 +50,6 @@ std::vector<StorageType> PackSensorCalibrations(
             .cast<StorageType>();
   }
   return packed;
-}
-
-void TransformPoints(std::vector<StorageType>& points,
-                     const Sim3d& transformed_from_source) {
-  for (size_t index = 0; index < points.size() / 3; ++index) {
-    Eigen::Map<Eigen::Matrix<StorageType, 3, 1>> point(points.data() +
-                                                       3 * index);
-    const Eigen::Vector3d source_point = point.cast<double>();
-    point = (transformed_from_source * source_point).cast<StorageType>();
-  }
 }
 
 std::vector<StorageType> NormalizeSqrtInformation(
@@ -101,38 +67,20 @@ std::vector<StorageType> NormalizeSqrtInformation(
   return normalized;
 }
 
-NormalizedProblem NormalizeProblem(
-    const Sim3d& normalized_from_metric,
-    const std::vector<Rigid3d>& initial_rigs_from_world,
-    const float* initial_points,
-    const size_t num_points,
-    const std::vector<Rigid3d>& sensors_from_rig,
-    const float* prior_positions,
-    const float* prior_sqrt_information,
-    const size_t num_priors) {
-  NormalizedProblem problem{
-      normalized_from_metric,
-      initial_rigs_from_world,
-      sensors_from_rig,
-      std::vector<StorageType>(initial_points, initial_points + 3 * num_points),
+NormalizedPriors NormalizePriors(const float* prior_positions,
+                                 const float* prior_sqrt_information,
+                                 const size_t num_priors,
+                                 const Sim3d& normalized_from_metric) {
+  NormalizedPriors priors{
       std::vector<StorageType>(prior_positions,
                                prior_positions + 3 * num_priors),
       {},
   };
-  for (Rigid3d& rig_from_world : problem.rigs_from_world) {
-    rig_from_world =
-        TransformCameraWorld(problem.normalized_from_metric, rig_from_world);
-  }
-  for (Rigid3d& sensor_from_rig : problem.sensors_from_rig) {
-    sensor_from_rig.translation() *= problem.normalized_from_metric.scale();
-  }
-  TransformPoints(problem.points, problem.normalized_from_metric);
-  TransformPoints(problem.prior_positions, problem.normalized_from_metric);
-  problem.prior_sqrt_information =
-      NormalizeSqrtInformation(prior_sqrt_information,
-                               num_priors,
-                               problem.normalized_from_metric.scale());
-  return problem;
+  bundle_adjustment_arrays::TransformPoints(priors.prior_positions,
+                                            normalized_from_metric);
+  priors.prior_sqrt_information = NormalizeSqrtInformation(
+      prior_sqrt_information, num_priors, normalized_from_metric.scale());
+  return priors;
 }
 
 ObservationFactorData BuildObservationFactorData(
@@ -209,15 +157,18 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
   auto solver =
       CreateSolver(CreateCasparSolverParameters(options), sizing, device_id);
 
-  NormalizedProblem problem = NormalizeProblem(normalized_from_metric,
-                                               initial_rigs_from_world,
-                                               initial_points,
-                                               num_points,
-                                               sensors_from_rig,
-                                               prior_positions,
-                                               prior_sqrt_information,
-                                               num_priors);
-  std::vector<StorageType> rig_data = PackPoses(problem.rigs_from_world);
+  bundle_adjustment_arrays::NormalizedProblem problem =
+      bundle_adjustment_arrays::NormalizeProblem(normalized_from_metric,
+                                                 initial_rigs_from_world,
+                                                 initial_points,
+                                                 num_points,
+                                                 sensors_from_rig);
+  NormalizedPriors normalized_priors = NormalizePriors(prior_positions,
+                                                       prior_sqrt_information,
+                                                       num_priors,
+                                                       normalized_from_metric);
+  std::vector<StorageType> rig_data =
+      bundle_adjustment_arrays::PackPoses(problem.rigs_from_world);
   std::vector<StorageType> point_data = std::move(problem.points);
   const std::vector<StorageType> packed_sensor_calibrations =
       PackSensorCalibrations(problem.sensors_from_rig, sensor_calibrations);
@@ -229,8 +180,8 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
                                  num_observations);
   PriorFactorData priors =
       BuildPriorFactorData(prior_frame_indices,
-                           std::move(problem.prior_positions),
-                           std::move(problem.prior_sqrt_information));
+                           std::move(normalized_priors.prior_positions),
+                           std::move(normalized_priors.prior_sqrt_information));
   const StorageType log_scale = 0;
 
   solver.SetPinholePoseNodesFromStackedHost(
@@ -278,12 +229,11 @@ FixedRigPosePriorBundleAdjustmentArraysCaspar(
   solver.GetSensorFromRigLogScaleNodesToStackedHost(&solved_log_scale, 0, 1);
 
   const Sim3d metric_from_normalized = Inverse(problem.normalized_from_metric);
-  std::vector<Rigid3d> solved_rigs_from_world = UnpackPoses(rig_data);
-  for (Rigid3d& rig_from_world : solved_rigs_from_world) {
-    rig_from_world =
-        TransformCameraWorld(metric_from_normalized, rig_from_world);
-  }
-  TransformPoints(point_data, metric_from_normalized);
+  std::vector<Rigid3d> solved_rigs_from_world =
+      bundle_adjustment_arrays::UnpackPoses(rig_data);
+  bundle_adjustment_arrays::TransformPoses(solved_rigs_from_world,
+                                           metric_from_normalized);
+  bundle_adjustment_arrays::TransformPoints(point_data, metric_from_normalized);
 
   FixedRigPosePriorBundleAdjustmentArraysResult result;
   result.rigs_from_world = std::move(solved_rigs_from_world);

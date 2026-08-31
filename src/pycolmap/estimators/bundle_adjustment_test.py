@@ -431,3 +431,105 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
     )
     assert reprojection_rmse(result.sensor_from_rig_scale) < 1e-2
     assert reprojection_rmse(1.0) > 0.1
+
+
+@caspar_only
+def test_section_array_ba_keeps_endpoints_and_refines_interior():
+    rng = np.random.default_rng(11)
+    section_centers = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.01, 0.0],
+            [2.0, 0.02, 0.0],
+            [3.0, 0.01, 0.0],
+            [4.0, 0.0, 0.0],
+        ]
+    )
+    all_centers = np.vstack(
+        [section_centers, [-1e6, 0.0, 0.0], [1e6, 0.0, 0.0]]
+    )
+    expected_points = np.column_stack(
+        [
+            rng.uniform(-0.5, 2.5, 48),
+            rng.uniform(-0.8, 0.8, 48),
+            rng.uniform(5.0, 8.0, 48),
+        ]
+    ).astype(np.float32)
+    rigs_from_world = [
+        pycolmap.Rigid3d(np.column_stack([np.eye(3), -center]))
+        for center in all_centers
+    ]
+    rigs_from_world[2] = pycolmap.Rigid3d(
+        np.column_stack([np.eye(3), -np.array([2.18, -0.06, 0.04])])
+    )
+    sensors_from_rig = [pycolmap.Rigid3d()]
+    sensor_calibrations = np.array(
+        [[900.0, 905.0, 640.0, 480.0]], dtype=np.float32
+    )
+    camera = pycolmap.Camera(
+        model="PINHOLE",
+        width=1280,
+        height=960,
+        params=sensor_calibrations[0],
+    )
+    image_frame_indices = np.arange(len(all_centers), dtype=np.uint32)
+    image_sensor_indices = np.zeros(len(all_centers), dtype=np.uint32)
+    observation_image_indices = np.repeat(
+        np.arange(len(section_centers), dtype=np.uint32), len(expected_points)
+    )
+    observation_point_indices = np.tile(
+        np.arange(len(expected_points), dtype=np.uint32), len(section_centers)
+    )
+    observation_xy = np.concatenate(
+        [
+            camera.img_from_cam(expected_points - center)
+            for center in section_centers
+        ]
+    ).astype(np.float32)
+    initial_points = expected_points + rng.normal(
+        0.0, 0.05, expected_points.shape
+    ).astype(np.float32)
+    initial_point_error = np.linalg.norm(initial_points - expected_points)
+    initial_pose_error = np.linalg.norm(
+        rigs_from_world[2].tgt_origin_in_src() - section_centers[2]
+    )
+
+    options = pycolmap.CasparBundleAdjustmentOptions()
+    options.gpu_index = "0"
+    options.solver_iter_max = 100
+    result = pycolmap.section_bundle_adjustment_arrays(
+        rigs_from_world,
+        np.ascontiguousarray(initial_points),
+        image_frame_indices,
+        image_sensor_indices,
+        sensors_from_rig,
+        sensor_calibrations,
+        observation_image_indices,
+        observation_point_indices,
+        observation_xy,
+        np.array([0, 4], dtype=np.uint32),
+        options,
+    )
+
+    np.testing.assert_array_equal(
+        result.rigs_from_world[0].params, rigs_from_world[0].params
+    )
+    np.testing.assert_array_equal(
+        result.rigs_from_world[4].params, rigs_from_world[4].params
+    )
+    np.testing.assert_array_equal(
+        result.rigs_from_world[5].params, rigs_from_world[5].params
+    )
+    np.testing.assert_array_equal(
+        result.rigs_from_world[6].params, rigs_from_world[6].params
+    )
+    assert result.summary.is_solution_usable()
+    assert result.summary.final_score < result.summary.initial_score
+    assert (
+        np.linalg.norm(
+            result.rigs_from_world[2].tgt_origin_in_src()
+            - section_centers[2]
+        )
+        < initial_pose_error
+    )
+    assert np.linalg.norm(result.points - expected_points) < initial_point_error
