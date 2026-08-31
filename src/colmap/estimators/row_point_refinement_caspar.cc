@@ -69,9 +69,7 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
     const size_t point_start,
     const size_t point_end,
     const size_t observation_count,
-    const uint32_t* initialized_row_point_indices,
-    const float* initialized_points,
-    const size_t num_initialized_points,
+    const float* initial_points,
     float* row_colors) {
   PackedPointChunk<IncludeObservationOffsets> chunk;
   chunk.initial_points.resize((point_end - point_start) * 3);
@@ -82,17 +80,8 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
   chunk.observation_image_indices.resize(observation_count);
   chunk.observation_xy.resize(observation_count * 2);
 
-  size_t initialized_index = 0;
-  if (num_initialized_points > 0) {
-    initialized_index =
-        std::lower_bound(initialized_row_point_indices,
-                         initialized_row_point_indices + num_initialized_points,
-                         point_start) -
-        initialized_row_point_indices;
-  }
   size_t packed_observation = 0;
   for (size_t row_point = point_start; row_point < point_end; ++row_point) {
-    Eigen::Vector3f point_sum = Eigen::Vector3f::Zero();
     Eigen::Vector3f color_sum = Eigen::Vector3f::Zero();
     const uint32_t track_start = point_track_offsets[row_point];
     const uint32_t track_end = point_track_offsets[row_point + 1];
@@ -108,7 +97,6 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
           const CasparRowPointRefinementSource& refinement =
               refinement_sources[source_index];
           const int64_t source_point_index = tracks.source_point_indices[track];
-          point_sum += SolvedRowTrackPoint(tracks, refinement, track);
           color_sum += ReadStridedVector3(refinement.colors,
                                           refinement.color_row_stride,
                                           refinement.color_column_stride,
@@ -129,15 +117,10 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
     const float source_count = static_cast<float>(track_end - track_start);
     Eigen::Map<Eigen::Vector3f> initial_point(chunk.initial_points.data() +
                                               (row_point - point_start) * 3);
-    initial_point = point_sum / source_count;
+    initial_point =
+        Eigen::Map<const Eigen::Vector3f>(initial_points + row_point * 3);
     Eigen::Map<Eigen::Vector3f>(row_colors + row_point * 3) =
         color_sum / source_count;
-    if (initialized_index < num_initialized_points &&
-        initialized_row_point_indices[initialized_index] == row_point) {
-      initial_point = Eigen::Map<const Eigen::Vector3f>(initialized_points +
-                                                        initialized_index * 3);
-      ++initialized_index;
-    }
     if constexpr (IncludeObservationOffsets) {
       chunk.observation_offsets[row_point - point_start + 1] =
           static_cast<uint32_t>(packed_observation);
@@ -148,27 +131,25 @@ PackedPointChunk<IncludeObservationOffsets> PackPointChunk(
 
 }  // namespace
 
-std::vector<float> InitializeSectionRowPoints(
+std::vector<float> InitializeAllRowPoints(
     const std::vector<CasparRowTrackSource>& track_sources,
     const std::vector<CasparRowPointRefinementSource>& refinement_sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
-    const uint32_t* selected_row_point_indices,
-    const size_t num_selected_points,
+    const size_t num_points,
     const uint32_t* initialized_row_point_indices,
     const float* initialized_points,
     const size_t num_initialized_points) {
   const std::vector<uint32_t> source_track_offsets =
       RowSourceTrackOffsets(track_sources);
-  std::vector<float> points(3 * num_selected_points);
+  std::vector<float> points(3 * num_points);
   size_t initialized_index = 0;
-  for (size_t point = 0; point < num_selected_points; ++point) {
-    const uint32_t row_point = selected_row_point_indices[point];
+  for (uint32_t row_point = 0; row_point < num_points; ++row_point) {
     while (initialized_index < num_initialized_points &&
            initialized_row_point_indices[initialized_index] < row_point) {
       ++initialized_index;
     }
-    Eigen::Map<Eigen::Vector3f> point_position(points.data() + 3 * point);
+    Eigen::Map<Eigen::Vector3f> point_position(points.data() + 3 * row_point);
     if (initialized_index < num_initialized_points &&
         initialized_row_point_indices[initialized_index] == row_point) {
       point_position = Eigen::Map<const Eigen::Vector3f>(initialized_points +
@@ -205,9 +186,7 @@ CasparRowPointRefinementResult RefineRowPointsCasparImpl(
     const size_t num_points,
     const float* image_from_world,
     const size_t num_images,
-    const uint32_t* initialized_row_point_indices,
-    const float* initialized_points,
-    const size_t num_initialized_points,
+    const float* initial_points,
     const size_t maximum_chunk_points,
     const size_t maximum_chunk_observations,
     const CasparRowPointRefinementOptions& options) {
@@ -261,9 +240,7 @@ CasparRowPointRefinementResult RefineRowPointsCasparImpl(
                                              point_start,
                                              point_end,
                                              observation_count,
-                                             initialized_row_point_indices,
-                                             initialized_points,
-                                             num_initialized_points,
+                                             initial_points,
                                              output.colors.data());
     output.packing_seconds += ElapsedSeconds(packing_start);
     const Clock::time_point optimization_start = Clock::now();
@@ -335,9 +312,7 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
     const size_t num_points,
     const float* image_from_world,
     const size_t num_images,
-    const uint32_t* initialized_row_point_indices,
-    const float* initialized_points,
-    const size_t num_initialized_points,
+    const float* initial_points,
     const size_t maximum_chunk_points,
     const size_t maximum_chunk_observations,
     const CasparRowPointRefinementOptions& options) {
@@ -350,9 +325,7 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
                                            num_points,
                                            image_from_world,
                                            num_images,
-                                           initialized_row_point_indices,
-                                           initialized_points,
-                                           num_initialized_points,
+                                           initial_points,
                                            maximum_chunk_points,
                                            maximum_chunk_observations,
                                            options);
@@ -365,9 +338,7 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
                                           num_points,
                                           image_from_world,
                                           num_images,
-                                          initialized_row_point_indices,
-                                          initialized_points,
-                                          num_initialized_points,
+                                          initial_points,
                                           maximum_chunk_points,
                                           maximum_chunk_observations,
                                           options);

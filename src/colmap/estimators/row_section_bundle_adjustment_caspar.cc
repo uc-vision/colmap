@@ -66,6 +66,45 @@ struct SectionProblem {
   size_t active_observation_count;
 };
 
+struct SectionObservations {
+  std::vector<bool> active_images;
+  std::vector<bool> active_frames;
+  size_t observation_count = 0;
+  size_t active_observation_count = 0;
+};
+
+SectionObservations AnalyzeObservations(
+    const std::vector<CasparRowTrackSource>& sources,
+    const std::vector<uint32_t>& source_track_offsets,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const std::vector<uint32_t>& row_point_indices,
+    const uint32_t* image_frame_indices,
+    const bool* active_frame_mask,
+    const size_t num_frames,
+    const size_t num_images) {
+  SectionObservations observations{
+      std::vector<bool>(num_images, false),
+      std::vector<bool>(num_frames, false),
+  };
+  ForEachRowObservation(
+      sources,
+      source_track_offsets,
+      point_track_offsets,
+      point_track_indices,
+      row_point_indices,
+      [&](const uint32_t, const uint32_t image, const float*) {
+        const uint32_t frame = image_frame_indices[image];
+        ++observations.observation_count;
+        if (active_frame_mask[frame]) {
+          ++observations.active_observation_count;
+          observations.active_images[image] = true;
+          observations.active_frames[frame] = true;
+        }
+      });
+  return observations;
+}
+
 SectionProblem BuildProblem(const std::vector<CasparRowTrackSource>& sources,
                             const std::vector<uint32_t>& source_track_offsets,
                             const uint32_t* point_track_offsets,
@@ -78,31 +117,22 @@ SectionProblem BuildProblem(const std::vector<CasparRowTrackSource>& sources,
                             const std::vector<Rigid3d>& sensors_from_rig,
                             const float* sensor_calibrations,
                             const bool* active_frame_mask) {
-  size_t active_observation_count = 0;
-  size_t fixed_observation_count = 0;
-  std::vector<bool> observed_active_images(num_images, false);
-  std::vector<bool> observed_active_frames(initial_rigs_from_world.size(),
-                                           false);
-  ForEachRowObservation(
-      sources,
-      source_track_offsets,
-      point_track_offsets,
-      point_track_indices,
-      selected.row_point_indices,
-      [&](const uint32_t, const uint32_t image, const float*) {
-        const uint32_t frame = image_frame_indices[image];
-        if (active_frame_mask[frame]) {
-          ++active_observation_count;
-          observed_active_images[image] = true;
-          observed_active_frames[frame] = true;
-        } else {
-          ++fixed_observation_count;
-        }
-      });
+  const SectionObservations observations =
+      AnalyzeObservations(sources,
+                          source_track_offsets,
+                          point_track_offsets,
+                          point_track_indices,
+                          selected.row_point_indices,
+                          image_frame_indices,
+                          active_frame_mask,
+                          initial_rigs_from_world.size(),
+                          num_images);
+  const size_t fixed_observation_count =
+      observations.observation_count - observations.active_observation_count;
 
   std::vector<uint32_t> active_images;
   for (uint32_t image = 0; image < num_images; ++image) {
-    if (observed_active_images[image]) {
+    if (observations.active_images[image]) {
       active_images.push_back(image);
     }
   }
@@ -123,11 +153,11 @@ SectionProblem BuildProblem(const std::vector<CasparRowTrackSource>& sources,
       std::vector<unsigned int>(initial_rigs_from_world.size()),
       {},
       {},
-      active_observation_count + fixed_observation_count,
-      active_observation_count,
+      observations.observation_count,
+      observations.active_observation_count,
   };
-  for (size_t frame = 0; frame < observed_active_frames.size(); ++frame) {
-    if (observed_active_frames[frame]) {
+  for (size_t frame = 0; frame < observations.active_frames.size(); ++frame) {
+    if (observations.active_frames[frame]) {
       problem.active_pose_indices[frame] = problem.active_frame_indices.size();
       problem.active_frame_indices.push_back(frame);
     }
@@ -137,7 +167,9 @@ SectionProblem BuildProblem(const std::vector<CasparRowTrackSource>& sources,
       problem.factors.variants[static_cast<int>(kActiveVariant)];
   VariantData& fixed =
       problem.factors.variants[static_cast<int>(kFixedVariant)];
-  ReserveFactors(active, active_observation_count, /*fixed_pose=*/false);
+  ReserveFactors(active,
+                 observations.active_observation_count,
+                 /*fixed_pose=*/false);
   ReserveFactors(fixed, fixed_observation_count, /*fixed_pose=*/true);
   ForEachRowObservation(
       sources,
@@ -172,13 +204,42 @@ SectionProblem BuildProblem(const std::vector<CasparRowTrackSource>& sources,
 
 }  // namespace
 
+CasparRowSectionStats ComputeRowSectionStats(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const size_t num_row_points,
+    const uint32_t* image_frame_indices,
+    const bool* active_frame_mask,
+    const size_t num_frames,
+    const size_t num_images) {
+  const std::vector<uint32_t> source_track_offsets =
+      RowSourceTrackOffsets(sources);
+  const std::vector<uint32_t> row_point_indices = SelectRowPointsByFrame(
+      sources, image_frame_indices, active_frame_mask, num_row_points);
+  const SectionObservations observations =
+      AnalyzeObservations(sources,
+                          source_track_offsets,
+                          point_track_offsets,
+                          point_track_indices,
+                          row_point_indices,
+                          image_frame_indices,
+                          active_frame_mask,
+                          num_frames,
+                          num_images);
+  return {
+      row_point_indices.size(),
+      observations.observation_count,
+      observations.active_observation_count,
+  };
+}
+
 CasparRowSectionResult RefineRowSectionCaspar(
     const std::vector<CasparRowTrackSource>& sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
-    const uint32_t* eligible_row_point_indices,
-    const float* eligible_points,
-    const size_t num_eligible_points,
+    float* row_points,
+    const size_t num_row_points,
     const std::vector<Rigid3d>& initial_rigs_from_world,
     const uint32_t* image_frame_indices,
     const uint32_t* image_sensor_indices,
@@ -186,7 +247,6 @@ CasparRowSectionResult RefineRowSectionCaspar(
     const std::vector<Rigid3d>& sensors_from_rig,
     const float* sensor_calibrations,
     const bool* active_frame_mask,
-    const bool* active_source_mask,
     const CasparBundleAdjustmentOptions& options) {
 #ifdef CASPAR_USE_DOUBLE
   LOG(FATAL_THROW) << "Caspar row section BA requires float precision";
@@ -195,15 +255,15 @@ CasparRowSectionResult RefineRowSectionCaspar(
   const Clock::time_point preparation_start = Clock::now();
   const std::vector<uint32_t> source_track_offsets =
       RowSourceTrackOffsets(sources);
-  CasparRowPointSelection selected =
-      SelectRowPointsBySource(sources,
-                              source_track_offsets,
-                              point_track_offsets,
-                              point_track_indices,
-                              active_source_mask,
-                              eligible_row_point_indices,
-                              eligible_points,
-                              num_eligible_points);
+  CasparRowPointSelection selected;
+  selected.row_point_indices = SelectRowPointsByFrame(
+      sources, image_frame_indices, active_frame_mask, num_row_points);
+  selected.points.reserve(3 * selected.row_point_indices.size());
+  for (const uint32_t row_point : selected.row_point_indices) {
+    selected.points.insert(selected.points.end(),
+                           row_points + 3 * row_point,
+                           row_points + 3 * row_point + 3);
+  }
   SectionProblem problem = BuildProblem(sources,
                                         source_track_offsets,
                                         point_track_offsets,
@@ -267,6 +327,11 @@ CasparRowSectionResult RefineRowSectionCaspar(
       Inverse(problem.normalized.normalized_from_metric);
   bundle_adjustment_arrays::TransformPoses(active_rigs, metric_from_normalized);
   bundle_adjustment_arrays::TransformPoints(point_data, metric_from_normalized);
+  for (size_t point = 0; point < selected.row_point_indices.size(); ++point) {
+    std::copy_n(point_data.data() + 3 * point,
+                3,
+                row_points + 3 * selected.row_point_indices[point]);
+  }
 
   CasparRowSectionResult result;
   result.rigs_from_world = initial_rigs_from_world;
@@ -274,8 +339,7 @@ CasparRowSectionResult RefineRowSectionCaspar(
     result.rigs_from_world[problem.active_frame_indices[index]] =
         active_rigs[index];
   }
-  result.row_point_indices = std::move(selected.row_point_indices);
-  result.points = std::move(point_data);
+  result.point_count = selected.row_point_indices.size();
   result.observation_count = problem.observation_count;
   result.active_observation_count = problem.active_observation_count;
   result.preparation_seconds = preparation_seconds;

@@ -37,13 +37,12 @@ struct CasparRowPointRefinementResult {
   CasparReprojectionErrorSummary reprojection;
 };
 
-std::vector<float> InitializeSectionRowPoints(
+std::vector<float> InitializeAllRowPoints(
     const std::vector<CasparRowTrackSource>& track_sources,
     const std::vector<CasparRowPointRefinementSource>& refinement_sources,
     const uint32_t* point_track_offsets,
     const uint32_t* point_track_indices,
-    const uint32_t* selected_row_point_indices,
-    size_t num_selected_points,
+    size_t num_points,
     const uint32_t* initialized_row_point_indices,
     const float* initialized_points,
     size_t num_initialized_points);
@@ -57,9 +56,7 @@ CasparRowPointRefinementResult RefineRowPointsCaspar(
     size_t num_points,
     const float* image_from_world,
     size_t num_images,
-    const uint32_t* initialized_row_point_indices,
-    const float* initialized_points,
-    size_t num_initialized_points,
+    const float* initial_points,
     size_t maximum_chunk_points,
     size_t maximum_chunk_observations,
     const CasparRowPointRefinementOptions& options);

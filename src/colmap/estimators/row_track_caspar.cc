@@ -14,38 +14,47 @@ std::vector<uint32_t> RowSourceTrackOffsets(
   return offsets;
 }
 
-CasparRowPointSelection SelectRowPointsBySource(
+std::vector<uint32_t> SelectRowPointsByFrame(
     const std::vector<CasparRowTrackSource>& sources,
-    const std::vector<uint32_t>& source_track_offsets,
-    const uint32_t* point_track_offsets,
-    const uint32_t* point_track_indices,
-    const bool* active_source_mask,
-    const uint32_t* eligible_row_point_indices,
-    const float* eligible_points,
-    const size_t num_eligible_points) {
-  CasparRowPointSelection selected;
-  selected.row_point_indices.reserve(num_eligible_points);
-  selected.points.reserve(3 * num_eligible_points);
-  for (size_t eligible = 0; eligible < num_eligible_points; ++eligible) {
-    const uint32_t row_point = eligible_row_point_indices[eligible];
-    bool selected_point = false;
-    ForEachRowPointTrack(sources,
-                         source_track_offsets,
-                         point_track_offsets,
-                         point_track_indices,
-                         row_point,
-                         [&](const size_t source_index,
-                             const CasparRowTrackSource&,
-                             const uint32_t) {
-                           selected_point |= active_source_mask[source_index];
-                         });
-    if (!selected_point) {
+    const uint32_t* image_frame_indices,
+    const bool* active_frame_mask,
+    const size_t num_row_points) {
+  size_t candidate_track_count = 0;
+  for (const CasparRowTrackSource& source : sources) {
+    for (size_t image = 0; image < source.num_images; ++image) {
+      if (active_frame_mask[image_frame_indices[source.image_rows[image]]]) {
+        candidate_track_count += source.num_tracks;
+        break;
+      }
+    }
+  }
+  std::vector<uint32_t> selected;
+  selected.reserve(candidate_track_count);
+  std::vector<uint8_t> selected_point(num_row_points, uint8_t{0});
+  for (const CasparRowTrackSource& source : sources) {
+    bool source_is_candidate = false;
+    for (size_t image = 0; image < source.num_images; ++image) {
+      if (active_frame_mask[image_frame_indices[source.image_rows[image]]]) {
+        source_is_candidate = true;
+        break;
+      }
+    }
+    if (!source_is_candidate) {
       continue;
     }
-    selected.row_point_indices.push_back(row_point);
-    selected.points.insert(selected.points.end(),
-                           eligible_points + 3 * eligible,
-                           eligible_points + 3 * eligible + 3);
+    for (uint32_t track = 0; track < source.num_tracks; ++track) {
+      bool observed_active_frame = false;
+      ForEachRowTrackObservation(
+          source, track, [&](const uint32_t image, const float*) {
+            observed_active_frame |=
+                active_frame_mask[image_frame_indices[image]];
+          });
+      const uint32_t row_point = source.row_point_indices[track];
+      if (observed_active_frame && !selected_point[row_point]) {
+        selected_point[row_point] = 1;
+        selected.push_back(row_point);
+      }
+    }
   }
   return selected;
 }

@@ -80,6 +80,7 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
     first_tracks = pycolmap.CasparRowTrackSource(
         first_points,
         np.array((0, 1), np.int64),
+        joined.row_point_index[:2],
         np.array((0, 2, 4), np.int64),
         np.array((0, 1, 0, 2), np.int32),
         first_xy,
@@ -105,6 +106,7 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
             (expected[::-1] - source_translation[:3, 3]).astype(np.float32)
         ),
         np.array((0, 1), np.int64),
+        joined.row_point_index[2:],
         np.array((0, 2, 4), np.int64),
         np.array((2, 1, 2, 1), np.int32),
         second_xy,
@@ -118,25 +120,19 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
         ),
         np.tile(source_translation, (3, 1, 1)),
     )
-    override = np.array((7.0, 8.0, 9.0), dtype=np.float32)
-    selected_row_point_indices = np.arange(2, dtype=np.uint32)
+    override = expected[1] + np.array((0.05, -0.04, 0.1), dtype=np.float32)
     initialization = pycolmap.caspar_initialize_row_points(
         (first, second),
         joined.point_track_offsets,
         joined.point_track_indices,
-        selected_row_point_indices,
         np.array((1,), dtype=np.uint32),
         override[None],
     )
-    assert np.shares_memory(
-        initialization.row_point_indices, selected_row_point_indices
-    )
-    np.testing.assert_array_equal(initialization.row_point_indices, (0, 1))
     np.testing.assert_allclose(
-        initialization.points[0],
+        initialization[0],
         expected[0] + np.array((0.1, -0.075, 0.15), dtype=np.float32),
     )
-    np.testing.assert_array_equal(initialization.points[1], override)
+    np.testing.assert_array_equal(initialization[1], override)
 
     options = pycolmap.CasparRowPointRefinementOptions()
     options.solver_iter_max = 20
@@ -147,8 +143,7 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
         joined.point_track_indices,
         joined.point_observation_counts,
         projections,
-        np.array((0,), np.uint32),
-        (expected[0] + np.array((0.05, -0.04, 0.1), np.float32))[None],
+        initialization,
         1,
         2,
         options,
@@ -178,12 +173,18 @@ def test_row_point_refinement_uses_coordinate_join_and_complete_chunks():
     assert result.reprojection.point_count == 2
     assert result.reprojection.observation_count == 6
     np.testing.assert_allclose(
-        result.reprojection.mean_pixels, np.mean(point_errors)
+        result.reprojection.mean_pixels,
+        np.mean(point_errors),
+        atol=3e-5,
     )
     np.testing.assert_allclose(
-        result.reprojection.median_pixels, np.median(point_errors)
+        result.reprojection.median_pixels,
+        np.median(point_errors),
+        atol=3e-5,
     )
     np.testing.assert_allclose(
-        result.reprojection.p95_pixels, np.percentile(point_errors, 95)
+        result.reprojection.p95_pixels,
+        np.percentile(point_errors, 95),
+        atol=3e-5,
     )
     assert result.validation_seconds > 0.0

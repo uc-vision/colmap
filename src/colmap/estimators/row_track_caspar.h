@@ -14,12 +14,14 @@ struct CasparRowTrackSource {
   std::ptrdiff_t point_row_stride;
   std::ptrdiff_t point_column_stride;
   const int64_t* source_point_indices;
+  const uint32_t* row_point_indices;
   const int64_t* observation_offsets;
   const int32_t* observation_image_indices;
   const float* observation_xy;
   const uint32_t* duplicate_observation_indices;
   const uint32_t* image_rows;
   size_t num_tracks;
+  size_t num_images;
   size_t num_duplicate_observations;
 };
 
@@ -48,15 +50,11 @@ struct CasparRowPointSelection {
 std::vector<uint32_t> RowSourceTrackOffsets(
     const std::vector<CasparRowTrackSource>& sources);
 
-CasparRowPointSelection SelectRowPointsBySource(
+std::vector<uint32_t> SelectRowPointsByFrame(
     const std::vector<CasparRowTrackSource>& sources,
-    const std::vector<uint32_t>& source_track_offsets,
-    const uint32_t* point_track_offsets,
-    const uint32_t* point_track_indices,
-    const bool* active_source_mask,
-    const uint32_t* eligible_row_point_indices,
-    const float* eligible_points,
-    size_t num_eligible_points);
+    const uint32_t* image_frame_indices,
+    const bool* active_frame_mask,
+    size_t num_row_points);
 
 CasparRowPointSelection InitializeRowPoints(
     const std::vector<CasparRowTrackSource>& sources,

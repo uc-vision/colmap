@@ -386,6 +386,7 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
     row_source = pycolmap.CasparRowTrackSource(
         source_points,
         np.arange(len(expected_points), dtype=np.int64),
+        np.arange(len(expected_points), dtype=np.uint32),
         np.arange(
             0,
             (len(expected_points) + 1) * len(image_frame_indices),
@@ -458,7 +459,7 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
 
 
 @caspar_only
-def test_row_section_ba_selects_source_points_and_keeps_fixed_frames():
+def test_row_section_ba_updates_all_points_observed_by_active_frames():
     rng = np.random.default_rng(11)
     section_centers = np.array(
         [
@@ -501,9 +502,7 @@ def test_row_section_ba_selects_source_points_and_keeps_fixed_frames():
     initial_points = expected_points + rng.normal(
         0.0, 0.05, expected_points.shape
     ).astype(np.float32)
-    initial_point_error = np.linalg.norm(
-        initial_points[:24] - expected_points[:24]
-    )
+    initial_point_error = np.linalg.norm(initial_points - expected_points)
     initial_pose_error = np.linalg.norm(
         rigs_from_world[2].tgt_origin_in_src() - section_centers[2]
     )
@@ -522,6 +521,7 @@ def test_row_section_ba_selects_source_points_and_keeps_fixed_frames():
         return pycolmap.CasparRowTrackSource(
             np.ascontiguousarray(initial_points[point_start:point_stop]),
             np.arange(point_count, dtype=np.int64),
+            np.arange(point_start, point_stop, dtype=np.uint32),
             np.arange(
                 0,
                 (point_count + 1) * len(section_centers),
@@ -543,25 +543,39 @@ def test_row_section_ba_selects_source_points_and_keeps_fixed_frames():
     options = pycolmap.CasparBundleAdjustmentOptions()
     options.gpu_index = "0"
     options.solver_iter_max = 100
-    result = pycolmap.caspar_refine_row_section(
-        (source(0, 24), source(24, 48)),
+    row_points = np.ascontiguousarray(initial_points.copy())
+    sources = (source(0, 24), source(24, 48))
+    active_frames = np.array(
+        [False, True, True, True, False, False, False]
+    )
+    stats = pycolmap.caspar_row_section_stats(
+        sources,
         np.arange(len(expected_points) + 1, dtype=np.uint32),
         np.arange(len(expected_points), dtype=np.uint32),
+        image_frame_indices,
+        active_frames,
+    )
+    result = pycolmap.caspar_refine_row_section(
+        sources,
+        np.arange(len(expected_points) + 1, dtype=np.uint32),
         np.arange(len(expected_points), dtype=np.uint32),
-        np.ascontiguousarray(initial_points),
+        row_points,
         rigs_from_world,
         image_frame_indices,
         image_sensor_indices,
         sensors_from_rig,
         sensor_calibrations,
-        np.array([False, True, True, True, False, False, False]),
-        np.array([True, False]),
+        active_frames,
         options,
     )
 
-    np.testing.assert_array_equal(result.row_point_indices, np.arange(24))
-    assert result.observation_count == 119
-    assert result.active_observation_count == 72
+    assert stats.point_count == result.point_count == len(expected_points)
+    assert stats.observation_count == result.observation_count == 239
+    assert (
+        stats.active_observation_count
+        == result.active_observation_count
+        == 144
+    )
     np.testing.assert_array_equal(
         result.rigs_from_world[0].params, rigs_from_world[0].params
     )
@@ -583,6 +597,6 @@ def test_row_section_ba_selects_source_points_and_keeps_fixed_frames():
         < initial_pose_error
     )
     assert (
-        np.linalg.norm(result.points - expected_points[:24])
+        np.linalg.norm(row_points - expected_points)
         < initial_point_error
     )
