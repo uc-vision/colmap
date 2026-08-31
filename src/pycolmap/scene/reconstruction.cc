@@ -166,13 +166,11 @@ py::array_t<point3D_t> AddPoints3DFromArrays(
                          point2D_indices(observation_index));
       }
       point3D_ids_ptr[point_index] = reconstruction.AddPoint3D(
-          Eigen::Vector3d(xyz(point_index, 0),
-                          xyz(point_index, 1),
-                          xyz(point_index, 2)),
+          Eigen::Vector3d(
+              xyz(point_index, 0), xyz(point_index, 1), xyz(point_index, 2)),
           std::move(track),
-          Eigen::Vector3ub(rgb(point_index, 0),
-                           rgb(point_index, 1),
-                           rgb(point_index, 2)));
+          Eigen::Vector3ub(
+              rgb(point_index, 0), rgb(point_index, 1), rgb(point_index, 2)));
     }
   }
   return point3D_ids;
