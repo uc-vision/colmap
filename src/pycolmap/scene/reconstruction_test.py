@@ -220,9 +220,7 @@ def test_reconstruction_add_points3d_from_arrays():
     np.testing.assert_allclose(
         tracks["point_xyz"], [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
     )
-    np.testing.assert_array_equal(
-        tracks["observation_image_ids"], [1, 2, 1, 2]
-    )
+    np.testing.assert_array_equal(tracks["observation_image_ids"], [1, 2, 1, 2])
     np.testing.assert_array_equal(
         tracks["observation_point2D_indices"], [0, 0, 1, 1]
     )
@@ -267,10 +265,9 @@ def test_reconstruction_compute_point_reprojection_errors(
         residuals = []
         for element in point.track.elements:
             image = synthetic_reconstruction.image(element.image_id)
-            residual = (
-                image.point2D(element.point2D_idx).xy
-                - image.project_point(point.xyz)
-            )
+            residual = image.point2D(
+                element.point2D_idx
+            ).xy - image.project_point(point.xyz)
             residuals.append(
                 np.linalg.norm(residual_transforms[image.camera_id] @ residual)
             )
