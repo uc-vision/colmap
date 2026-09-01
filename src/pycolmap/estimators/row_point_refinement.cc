@@ -106,7 +106,7 @@ struct PyCasparRowSectionResult {
 
 struct PyCasparRowPointSelection {
   py::array_t<uint32_t> point_indices;
-  bool interior_quota_truncated;
+  bool quota_truncated;
 };
 
 struct PyCasparRowBundleResult {
@@ -336,7 +336,6 @@ PyCasparRowPointSelection SelectRowPoints(
   {
     py::gil_scoped_release release;
     selection = SelectCasparRowPoints(native_sources,
-                                      source_support.data(),
                                       image_frame_indices.data(),
                                       image_sensor_indices.data(),
                                       sensor_dimensions.data(),
@@ -347,7 +346,7 @@ PyCasparRowPointSelection SelectRowPoints(
   }
   return {
       IndexArray(std::move(selection.point_indices)),
-      selection.interior_quota_truncated,
+      selection.quota_truncated,
   };
 }
 
@@ -683,8 +682,8 @@ void BindRowPointRefinement(py::module& m) {
 
   py::classh<PyCasparRowPointSelection>(m, "CasparRowPointSelection")
       .def_readonly("point_indices", &PyCasparRowPointSelection::point_indices)
-      .def_readonly("interior_quota_truncated",
-                    &PyCasparRowPointSelection::interior_quota_truncated);
+      .def_readonly("quota_truncated",
+                    &PyCasparRowPointSelection::quota_truncated);
 
   py::classh<PyCasparRowSectionResult>(m, "CasparRowSectionResult")
       .def_readonly("rigs_from_world",

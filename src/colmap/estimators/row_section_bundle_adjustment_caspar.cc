@@ -220,7 +220,6 @@ std::vector<CasparRowSectionStats> ComputeRowSectionStats(
   const std::vector<uint32_t> source_track_offsets =
       RowSourceTrackOffsets(sources);
   const CasparRowTiers assignment = AssignCasparRowTiers(sources,
-                                                         source_support,
                                                          image_frame_indices,
                                                          image_sensor_indices,
                                                          sensor_dimensions,
@@ -293,7 +292,6 @@ CasparRowSectionResult RefineRowSectionCaspar(
       RowSourceTrackOffsets(sources);
   CasparRowTrackSelection track_selection =
       SelectCasparRowPoints(sources,
-                            source_support,
                             image_frame_indices,
                             image_sensor_indices,
                             sensor_dimensions,

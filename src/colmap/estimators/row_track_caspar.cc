@@ -14,11 +14,23 @@ size_t RowTrackLength(const CasparRowTrackSource& source,
                              source.observation_offsets[track]);
 }
 
-void FillInteriorTrackOrder(const CasparRowTrackSource& source,
-                            const uint16_t* source_support,
-                            const size_t minimum_track_length,
-                            std::vector<uint32_t>& bucket_end,
-                            std::vector<uint32_t>& ordered_tracks) {
+std::vector<size_t> RowPointTrackLengths(
+    const std::vector<CasparRowTrackSource>& sources,
+    const size_t num_row_points) {
+  std::vector<size_t> lengths(num_row_points);
+  for (const CasparRowTrackSource& source : sources) {
+    for (uint32_t track = 0; track < source.num_tracks; ++track) {
+      lengths[source.row_point_indices[track]] += RowTrackLength(source, track);
+    }
+  }
+  return lengths;
+}
+
+void FillTrackOrder(const CasparRowTrackSource& source,
+                    const std::vector<size_t>& row_point_track_lengths,
+                    const size_t minimum_track_length,
+                    std::vector<uint32_t>& bucket_end,
+                    std::vector<uint32_t>& ordered_tracks) {
   uint32_t end = 0;
   for (auto bucket = bucket_end.rbegin(); bucket != bucket_end.rend();
        ++bucket) {
@@ -28,10 +40,8 @@ void FillInteriorTrackOrder(const CasparRowTrackSource& source,
   ordered_tracks.resize(end);
   for (size_t track = source.num_tracks; track > 0; --track) {
     const uint32_t track_index = static_cast<uint32_t>(track - 1);
-    if (source_support[source.row_point_indices[track_index]] != 1) {
-      continue;
-    }
-    const size_t length = RowTrackLength(source, track_index);
+    const size_t length =
+        row_point_track_lengths[source.row_point_indices[track_index]];
     if (length >= minimum_track_length) {
       ordered_tracks[--bucket_end[length]] = track_index;
     }
@@ -52,7 +62,6 @@ std::vector<uint32_t> RowSourceTrackOffsets(
 
 CasparRowTiers AssignCasparRowTiers(
     const std::vector<CasparRowTrackSource>& sources,
-    const uint16_t* source_support,
     const uint32_t* image_frame_indices,
     const uint32_t* image_sensor_indices,
     const float* sensor_dimensions,
@@ -65,6 +74,8 @@ CasparRowTiers AssignCasparRowTiers(
   CasparRowTiers assignment{std::vector<uint8_t>(num_row_points, no_tier),
                             false};
   const uint32_t maximum_density = density_tiers[num_density_tiers - 1];
+  const std::vector<size_t> row_point_track_lengths =
+      RowPointTrackLengths(sources, num_row_points);
   std::vector<bool> denied_point(maximum_density > 0 ? num_row_points : 0,
                                  false);
   std::vector<uint32_t> stratum_count;
@@ -83,44 +94,30 @@ CasparRowTiers AssignCasparRowTiers(
     }
     bucket_end.clear();
     for (uint32_t track = 0; track < source.num_tracks; ++track) {
-      const uint32_t row_point = source.row_point_indices[track];
-      const uint16_t support = source_support[row_point];
-      if (support == 1) {
-        const size_t length = RowTrackLength(source, track);
-        if (length >= minimum_track_length) {
-          if (maximum_density == 0) {
-            assignment.interior_quota_truncated = true;
-          } else {
-            if (bucket_end.size() <= length) {
-              bucket_end.resize(length + 1);
-            }
-            ++bucket_end[length];
-          }
+      const size_t length =
+          row_point_track_lengths[source.row_point_indices[track]];
+      if (length < minimum_track_length) {
+        continue;
+      }
+      if (maximum_density == 0) {
+        assignment.quota_truncated = true;
+      } else {
+        if (bucket_end.size() <= length) {
+          bucket_end.resize(length + 1);
         }
-        continue;
+        ++bucket_end[length];
       }
-      if (assignment.first_tier[row_point] == 0) {
-        continue;
-      }
-      ForEachRowTrackObservation(
-          source,
-          track,
-          [&](const uint32_t, const uint32_t image, const float*) {
-            if (active_frame_mask[image_frame_indices[image]]) {
-              assignment.first_tier[row_point] = 0;
-            }
-          });
     }
     if (maximum_density == 0) {
       continue;
     }
 
     stratum_count.assign(source.num_images * kSpatialCellCount, uint32_t{0});
-    FillInteriorTrackOrder(source,
-                           source_support,
-                           minimum_track_length,
-                           bucket_end,
-                           ordered_tracks);
+    FillTrackOrder(source,
+                   row_point_track_lengths,
+                   minimum_track_length,
+                   bucket_end,
+                   ordered_tracks);
     for (const uint32_t track : ordered_tracks) {
       const uint32_t row_point = source.row_point_indices[track];
       uint32_t first_density = 0;
@@ -172,7 +169,7 @@ CasparRowTiers AssignCasparRowTiers(
     for (uint32_t row_point = 0; row_point < num_row_points; ++row_point) {
       if (denied_point[row_point] &&
           assignment.first_tier[row_point] == no_tier) {
-        assignment.interior_quota_truncated = true;
+        assignment.quota_truncated = true;
         break;
       }
     }
@@ -182,7 +179,6 @@ CasparRowTiers AssignCasparRowTiers(
 
 CasparRowTrackSelection SelectCasparRowPoints(
     const std::vector<CasparRowTrackSource>& sources,
-    const uint16_t* source_support,
     const uint32_t* image_frame_indices,
     const uint32_t* image_sensor_indices,
     const float* sensor_dimensions,
@@ -192,7 +188,6 @@ CasparRowTrackSelection SelectCasparRowPoints(
     const uint32_t tracks_per_spatial_cell) {
   const CasparRowTiers assignment =
       AssignCasparRowTiers(sources,
-                           source_support,
                            image_frame_indices,
                            image_sensor_indices,
                            sensor_dimensions,
@@ -210,7 +205,7 @@ CasparRowTrackSelection SelectCasparRowPoints(
       *selected_point++ = row_point;
     }
   }
-  selection.interior_quota_truncated = assignment.interior_quota_truncated;
+  selection.quota_truncated = assignment.quota_truncated;
   return selection;
 }
 

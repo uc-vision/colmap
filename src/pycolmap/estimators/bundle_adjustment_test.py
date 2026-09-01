@@ -459,7 +459,7 @@ def test_fixed_rig_array_ba_solves_live_sensor_translation_scale():
 
 
 @caspar_only
-def test_row_section_selection_preserves_cross_source_and_prefers_long_tracks():
+def test_row_section_selection_samples_all_sources_and_prefers_long_tracks():
     first = pycolmap.CasparRowTrackSource(
         np.zeros((6, 3), dtype=np.float32),
         np.arange(6, dtype=np.int64),
@@ -522,7 +522,7 @@ def test_row_section_selection_preserves_cross_source_and_prefers_long_tracks():
         1,
         np.array((0, 1, 2), dtype=np.uint32),
     )
-    cross_source_only = pycolmap.caspar_select_row_points(
+    zero_density = pycolmap.caspar_select_row_points(
         sources,
         source_support,
         image_frame_indices,
@@ -563,20 +563,20 @@ def test_row_section_selection_preserves_cross_source_and_prefers_long_tracks():
         1,
     )
 
-    np.testing.assert_array_equal(selected.point_indices, (0, 1, 3))
-    assert selected.interior_quota_truncated
-    assert [tier.point_count for tier in stats] == [1, 3, 4]
-    assert [tier.observation_count for tier in stats] == [2, 6, 7]
-    assert [tier.active_observation_count for tier in stats] == [1, 4, 5]
+    np.testing.assert_array_equal(selected.point_indices, (0, 1, 4))
+    assert selected.quota_truncated
+    assert [tier.point_count for tier in stats] == [0, 3, 4]
+    assert [tier.observation_count for tier in stats] == [0, 5, 6]
+    assert [tier.active_observation_count for tier in stats] == [0, 3, 4]
     assert stats[1].point_count == len(selected.point_indices)
-    np.testing.assert_array_equal(cross_source_only.point_indices, (0,))
-    assert cross_source_only.interior_quota_truncated
-    np.testing.assert_array_equal(denser.point_indices, (0, 1, 2, 3))
-    assert not denser.interior_quota_truncated
-    np.testing.assert_array_equal(whole_row.point_indices, (0, 1, 3, 4))
-    assert whole_row.interior_quota_truncated
+    assert len(zero_density.point_indices) == 0
+    assert zero_density.quota_truncated
+    np.testing.assert_array_equal(denser.point_indices, (0, 1, 2, 4))
+    assert not denser.quota_truncated
+    np.testing.assert_array_equal(whole_row.point_indices, (0, 1, 4))
+    assert whole_row.quota_truncated
     np.testing.assert_array_equal(sibling_only.point_indices, (0, 1))
-    assert not sibling_only.interior_quota_truncated
+    assert not sibling_only.quota_truncated
 
 
 @caspar_only

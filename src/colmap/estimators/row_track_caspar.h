@@ -49,12 +49,12 @@ struct CasparRowPointSelection {
 
 struct CasparRowTrackSelection {
   std::vector<uint32_t> point_indices;
-  bool interior_quota_truncated = false;
+  bool quota_truncated = false;
 };
 
 struct CasparRowTiers {
   std::vector<uint8_t> first_tier;
-  bool interior_quota_truncated = false;
+  bool quota_truncated = false;
 };
 
 std::vector<uint32_t> RowSourceTrackOffsets(
@@ -62,7 +62,6 @@ std::vector<uint32_t> RowSourceTrackOffsets(
 
 CasparRowTiers AssignCasparRowTiers(
     const std::vector<CasparRowTrackSource>& sources,
-    const uint16_t* source_support,
     const uint32_t* image_frame_indices,
     const uint32_t* image_sensor_indices,
     const float* sensor_dimensions,
@@ -74,7 +73,6 @@ CasparRowTiers AssignCasparRowTiers(
 
 CasparRowTrackSelection SelectCasparRowPoints(
     const std::vector<CasparRowTrackSource>& sources,
-    const uint16_t* source_support,
     const uint32_t* image_frame_indices,
     const uint32_t* image_sensor_indices,
     const float* sensor_dimensions,
