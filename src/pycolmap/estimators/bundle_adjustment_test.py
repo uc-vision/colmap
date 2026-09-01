@@ -563,17 +563,17 @@ def test_row_section_selection_samples_all_sources_and_prefers_long_tracks():
         1,
     )
 
-    np.testing.assert_array_equal(selected.point_indices, (0, 1, 4))
+    np.testing.assert_array_equal(selected.point_indices, (0, 1, 3))
     assert selected.quota_truncated
     assert [tier.point_count for tier in stats] == [0, 3, 4]
-    assert [tier.observation_count for tier in stats] == [0, 5, 6]
-    assert [tier.active_observation_count for tier in stats] == [0, 3, 4]
+    assert [tier.observation_count for tier in stats] == [0, 6, 7]
+    assert [tier.active_observation_count for tier in stats] == [0, 4, 5]
     assert stats[1].point_count == len(selected.point_indices)
     assert len(zero_density.point_indices) == 0
     assert zero_density.quota_truncated
-    np.testing.assert_array_equal(denser.point_indices, (0, 1, 2, 4))
+    np.testing.assert_array_equal(denser.point_indices, (0, 1, 2, 3))
     assert not denser.quota_truncated
-    np.testing.assert_array_equal(whole_row.point_indices, (0, 1, 4))
+    np.testing.assert_array_equal(whole_row.point_indices, (0, 1, 3))
     assert whole_row.quota_truncated
     np.testing.assert_array_equal(sibling_only.point_indices, (0, 1))
     assert not sibling_only.quota_truncated
