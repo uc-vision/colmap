@@ -1,5 +1,7 @@
 #include "colmap/estimators/row_track_caspar.h"
 
+#include <limits>
+
 #include <Eigen/Core>
 
 namespace colmap {
@@ -50,8 +52,7 @@ void FillTrackOrder(const CasparRowTrackSource& source,
 
 }  // namespace
 
-uint32_t CasparRowTrackQuotaPerImage(
-    const uint32_t tracks_per_spatial_cell) {
+uint32_t CasparRowTrackQuotaPerImage(const uint32_t tracks_per_spatial_cell) {
   return tracks_per_spatial_cell * kSpatialCellCount;
 }
 
@@ -176,6 +177,104 @@ CasparRowTiers AssignCasparRowTiers(
           assignment.first_tier[row_point] == no_tier) {
         assignment.quota_truncated = true;
         break;
+      }
+    }
+  }
+  return assignment;
+}
+
+CasparRowSectionDensities AssignCasparRowSectionDensities(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
+    const bool* active_frame_masks,
+    const size_t num_sections,
+    const size_t num_frames,
+    const size_t num_row_points,
+    const size_t minimum_track_length) {
+  const uint32_t unselected = std::numeric_limits<uint32_t>::max();
+  CasparRowSectionDensities assignment{
+      std::vector<uint32_t>(num_sections * num_row_points, unselected),
+      RowPointTrackLengths(sources, num_row_points)};
+
+  std::vector<uint32_t> frame_section_offsets(num_frames + 1);
+  for (size_t frame = 0; frame < num_frames; ++frame) {
+    for (size_t section = 0; section < num_sections; ++section) {
+      frame_section_offsets[frame + 1] +=
+          active_frame_masks[section * num_frames + frame];
+    }
+    frame_section_offsets[frame + 1] += frame_section_offsets[frame];
+  }
+  std::vector<uint32_t> frame_sections(frame_section_offsets.back());
+  std::vector<uint32_t> frame_section_write = frame_section_offsets;
+  for (uint32_t frame = 0; frame < num_frames; ++frame) {
+    for (uint32_t section = 0; section < num_sections; ++section) {
+      if (active_frame_masks[section * num_frames + frame]) {
+        frame_sections[frame_section_write[frame]++] = section;
+      }
+    }
+  }
+
+  std::vector<uint32_t> bucket_end;
+  std::vector<uint32_t> ordered_tracks;
+  std::vector<uint32_t> first_density(num_sections);
+  for (const CasparRowTrackSource& source : sources) {
+    bucket_end.clear();
+    for (uint32_t track = 0; track < source.num_tracks; ++track) {
+      const size_t length =
+          assignment.observation_counts[source.row_point_indices[track]];
+      if (length >= minimum_track_length) {
+        if (bucket_end.size() <= length) {
+          bucket_end.resize(length + 1);
+        }
+        ++bucket_end[length];
+      }
+    }
+    FillTrackOrder(source,
+                   assignment.observation_counts,
+                   minimum_track_length,
+                   bucket_end,
+                   ordered_tracks);
+    std::vector<uint32_t> stratum_counts(num_sections * source.num_images *
+                                         kSpatialCellCount);
+    for (const uint32_t track : ordered_tracks) {
+      std::fill(first_density.begin(), first_density.end(), unselected);
+      ForEachRowTrackObservation(
+          source,
+          track,
+          [&](const uint32_t source_image,
+              const uint32_t image,
+              const float* xy) {
+            const uint32_t frame = image_frame_indices[image];
+            const float* dimensions =
+                sensor_dimensions + 2 * image_sensor_indices[image];
+            if (xy[0] < 0.0f || xy[0] >= dimensions[0] || xy[1] < 0.0f ||
+                xy[1] >= dimensions[1]) {
+              return;
+            }
+            const uint32_t cell_x =
+                static_cast<uint32_t>(xy[0] * kSpatialGridSide / dimensions[0]);
+            const uint32_t cell_y =
+                static_cast<uint32_t>(xy[1] * kSpatialGridSide / dimensions[1]);
+            const uint32_t cell = cell_y * kSpatialGridSide + cell_x;
+            for (uint32_t membership = frame_section_offsets[frame];
+                 membership < frame_section_offsets[frame + 1];
+                 ++membership) {
+              const uint32_t section = frame_sections[membership];
+              uint32_t& count =
+                  stratum_counts[(section * source.num_images + source_image) *
+                                     kSpatialCellCount +
+                                 cell];
+              ++count;
+              first_density[section] = std::min(first_density[section], count);
+            }
+          });
+      const uint32_t row_point = source.row_point_indices[track];
+      for (size_t section = 0; section < num_sections; ++section) {
+        uint32_t& density =
+            assignment.first_density[section * num_row_points + row_point];
+        density = std::min(density, first_density[section]);
       }
     }
   }

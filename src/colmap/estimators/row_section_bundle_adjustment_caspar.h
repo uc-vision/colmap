@@ -18,6 +18,11 @@ struct CasparRowSectionStats {
   bool quota_truncated = false;
 };
 
+struct CasparRowSectionPlanStats {
+  uint32_t tracks_per_spatial_cell = 0;
+  size_t upper_bytes = 0;
+};
+
 struct CasparRowSectionResult {
   std::vector<Rigid3d> rigs_from_world;
   size_t point_count = 0;
@@ -41,6 +46,21 @@ std::vector<CasparRowSectionStats> ComputeRowSectionStats(
     size_t minimum_track_length,
     const uint32_t* density_tiers,
     size_t num_density_tiers);
+
+CasparRowSectionPlanStats ComputeRowSectionsPlanStats(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    size_t num_row_points,
+    const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
+    const bool* active_frame_masks,
+    size_t num_sections,
+    size_t num_frames,
+    size_t minimum_track_length,
+    size_t budget_bytes,
+    size_t sensor_count);
 
 CasparRowSectionResult RefineRowSectionCaspar(
     const std::vector<CasparRowTrackSource>& sources,

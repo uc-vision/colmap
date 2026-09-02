@@ -522,6 +522,18 @@ def test_row_section_selection_samples_all_sources_and_prefers_long_tracks():
         1,
         np.array((0, 1, 2), dtype=np.uint32),
     )
+    plan = pycolmap.caspar_row_sections_plan_stats(
+        sources,
+        point_track_offsets,
+        point_track_indices,
+        source_support,
+        image_frame_indices,
+        image_sensor_indices,
+        sensor_dimensions,
+        np.array((active_frames, (False, True, False))),
+        1,
+        10_000,
+    )
     zero_density = pycolmap.caspar_select_row_points(
         sources,
         source_support,
@@ -569,6 +581,7 @@ def test_row_section_selection_samples_all_sources_and_prefers_long_tracks():
     assert [tier.observation_count for tier in stats] == [0, 6, 7]
     assert [tier.active_observation_count for tier in stats] == [0, 4, 5]
     assert stats[1].point_count == len(selected.point_indices)
+    assert plan.tracks_per_spatial_cell == 2
     assert len(zero_density.point_indices) == 0
     assert zero_density.quota_truncated
     np.testing.assert_array_equal(denser.point_indices, (0, 1, 2, 3))

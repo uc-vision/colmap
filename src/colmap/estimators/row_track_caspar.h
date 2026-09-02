@@ -57,6 +57,11 @@ struct CasparRowTiers {
   bool quota_truncated = false;
 };
 
+struct CasparRowSectionDensities {
+  std::vector<uint32_t> first_density;
+  std::vector<size_t> observation_counts;
+};
+
 std::vector<uint32_t> RowSourceTrackOffsets(
     const std::vector<CasparRowTrackSource>& sources);
 
@@ -72,6 +77,17 @@ CasparRowTiers AssignCasparRowTiers(
     size_t minimum_track_length,
     const uint32_t* density_tiers,
     size_t num_density_tiers);
+
+CasparRowSectionDensities AssignCasparRowSectionDensities(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
+    const bool* active_frame_masks,
+    size_t num_sections,
+    size_t num_frames,
+    size_t num_row_points,
+    size_t minimum_track_length);
 
 CasparRowTrackSelection SelectCasparRowPoints(
     const std::vector<CasparRowTrackSource>& sources,

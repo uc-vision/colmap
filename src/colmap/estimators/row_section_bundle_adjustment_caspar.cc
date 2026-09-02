@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <utility>
 
 namespace colmap {
@@ -22,6 +23,14 @@ constexpr FactorVariant kFixedVariant =
 
 double ElapsedSeconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+size_t SectionUpperBytes(const CasparRowSectionStats& stats,
+                         const size_t frame_count,
+                         const size_t sensor_count) {
+  return 320 * stats.point_count + 288 * stats.active_observation_count +
+         160 * (stats.observation_count - stats.active_observation_count) +
+         1024 * frame_count + 92 * sensor_count + 620;
 }
 
 void ReserveFactors(VariantData& factors,
@@ -264,6 +273,128 @@ std::vector<CasparRowSectionStats> ComputeRowSectionStats(
   }
   stats.back().quota_truncated = assignment.quota_truncated;
   return stats;
+}
+
+CasparRowSectionPlanStats ComputeRowSectionsPlanStats(
+    const std::vector<CasparRowTrackSource>& sources,
+    const uint32_t* point_track_offsets,
+    const uint32_t* point_track_indices,
+    const size_t num_row_points,
+    const uint32_t* image_frame_indices,
+    const uint32_t* image_sensor_indices,
+    const float* sensor_dimensions,
+    const bool* active_frame_masks,
+    const size_t num_sections,
+    const size_t num_frames,
+    const size_t minimum_track_length,
+    const size_t budget_bytes,
+    const size_t sensor_count) {
+  const uint32_t unselected = std::numeric_limits<uint32_t>::max();
+  CasparRowSectionDensities assignment =
+      AssignCasparRowSectionDensities(sources,
+                                      image_frame_indices,
+                                      image_sensor_indices,
+                                      sensor_dimensions,
+                                      active_frame_masks,
+                                      num_sections,
+                                      num_frames,
+                                      num_row_points,
+                                      minimum_track_length);
+  std::vector<uint32_t> maximum_density(num_sections);
+  for (size_t section = 0; section < num_sections; ++section) {
+    const uint32_t* densities =
+        assignment.first_density.data() + section * num_row_points;
+    for (size_t point = 0; point < num_row_points; ++point) {
+      if (densities[point] != unselected) {
+        maximum_density[section] =
+            std::max(maximum_density[section], densities[point]);
+      }
+    }
+  }
+  std::vector<std::vector<CasparRowSectionStats>> histograms(num_sections);
+  for (size_t section = 0; section < num_sections; ++section) {
+    histograms[section].resize(maximum_density[section] + 1);
+  }
+  for (size_t point = 0; point < num_row_points; ++point) {
+    for (size_t section = 0; section < num_sections; ++section) {
+      const uint32_t density =
+          assignment.first_density[section * num_row_points + point];
+      if (density != unselected) {
+        CasparRowSectionStats& stats = histograms[section][density];
+        ++stats.point_count;
+        stats.observation_count += assignment.observation_counts[point];
+      }
+    }
+  }
+
+  std::vector<uint32_t> frame_section_offsets(num_frames + 1);
+  for (size_t frame = 0; frame < num_frames; ++frame) {
+    for (size_t section = 0; section < num_sections; ++section) {
+      frame_section_offsets[frame + 1] +=
+          active_frame_masks[section * num_frames + frame];
+    }
+    frame_section_offsets[frame + 1] += frame_section_offsets[frame];
+  }
+  std::vector<uint32_t> frame_sections(frame_section_offsets.back());
+  std::vector<uint32_t> writes = frame_section_offsets;
+  for (uint32_t frame = 0; frame < num_frames; ++frame) {
+    for (uint32_t section = 0; section < num_sections; ++section) {
+      if (active_frame_masks[section * num_frames + frame]) {
+        frame_sections[writes[frame]++] = section;
+      }
+    }
+  }
+  for (const CasparRowTrackSource& source : sources) {
+    for (uint32_t track = 0; track < source.num_tracks; ++track) {
+      const uint32_t point = source.row_point_indices[track];
+      ForEachRowTrackObservation(
+          source,
+          track,
+          [&](const uint32_t, const uint32_t image, const float*) {
+            const uint32_t frame = image_frame_indices[image];
+            for (uint32_t membership = frame_section_offsets[frame];
+                 membership < frame_section_offsets[frame + 1];
+                 ++membership) {
+              const uint32_t section = frame_sections[membership];
+              const uint32_t density =
+                  assignment.first_density[section * num_row_points + point];
+              if (density != unselected) {
+                ++histograms[section][density].active_observation_count;
+              }
+            }
+          });
+    }
+  }
+  assignment = {};
+
+  uint32_t largest_density = 0;
+  for (const uint32_t density : maximum_density) {
+    largest_density = std::max(largest_density, density);
+  }
+  CasparRowSectionPlanStats plan;
+  for (uint32_t density = 0; density <= largest_density; ++density) {
+    size_t largest_bytes = 0;
+    for (size_t section = 0; section < num_sections; ++section) {
+      std::vector<CasparRowSectionStats>& histogram = histograms[section];
+      if (density > 0 && density < histogram.size()) {
+        CasparRowSectionStats& stats = histogram[density];
+        const CasparRowSectionStats& previous = histogram[density - 1];
+        stats.point_count += previous.point_count;
+        stats.observation_count += previous.observation_count;
+        stats.active_observation_count += previous.active_observation_count;
+      }
+      const CasparRowSectionStats& stats =
+          histogram[std::min<size_t>(density, histogram.size() - 1)];
+      largest_bytes = std::max(
+          largest_bytes, SectionUpperBytes(stats, num_frames, sensor_count));
+    }
+    if (largest_bytes > budget_bytes) {
+      break;
+    }
+    plan.tracks_per_spatial_cell = density;
+    plan.upper_bytes = largest_bytes;
+  }
+  return plan;
 }
 
 CasparRowSectionResult RefineRowSectionCaspar(

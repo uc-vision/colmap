@@ -391,6 +391,54 @@ std::vector<CasparRowSectionStats> RowSectionStats(
   return stats;
 }
 
+CasparRowSectionPlanStats RowSectionsPlanStats(
+    const std::vector<const PyCasparRowTrackSource*>& sources,
+    const Uint32Array& point_track_offsets,
+    const Uint32Array& point_track_indices,
+    const Uint16Array& source_support,
+    const Uint32Array& image_frame_indices,
+    const Uint32Array& image_sensor_indices,
+    const FloatArray& sensor_dimensions,
+    const BoolArray& active_frame_masks,
+    const size_t minimum_track_length,
+    const size_t budget_bytes) {
+  THROW_CHECK_GT(sources.size(), 0);
+  const std::vector<CasparRowTrackSource> native_sources =
+      NativeRowTrackSources(sources);
+  CheckRowPointTracks(point_track_offsets, point_track_indices, source_support);
+  CheckRowImageArrays(image_frame_indices, image_sensor_indices);
+  THROW_CHECK_EQ(sensor_dimensions.ndim(), 2);
+  THROW_CHECK_EQ(sensor_dimensions.shape(1), 2);
+  THROW_CHECK_EQ(active_frame_masks.ndim(), 2);
+  THROW_CHECK_GT(active_frame_masks.shape(0), 0);
+  THROW_CHECK_LT(*std::max_element(
+                     image_frame_indices.data(),
+                     image_frame_indices.data() + image_frame_indices.shape(0)),
+                 active_frame_masks.shape(1));
+  THROW_CHECK_LT(*std::max_element(image_sensor_indices.data(),
+                                   image_sensor_indices.data() +
+                                       image_sensor_indices.shape(0)),
+                 sensor_dimensions.shape(0));
+  CasparRowSectionPlanStats stats;
+  {
+    py::gil_scoped_release release;
+    stats = ComputeRowSectionsPlanStats(native_sources,
+                                        point_track_offsets.data(),
+                                        point_track_indices.data(),
+                                        source_support.shape(0),
+                                        image_frame_indices.data(),
+                                        image_sensor_indices.data(),
+                                        sensor_dimensions.data(),
+                                        active_frame_masks.data(),
+                                        active_frame_masks.shape(0),
+                                        active_frame_masks.shape(1),
+                                        minimum_track_length,
+                                        budget_bytes,
+                                        sensor_dimensions.shape(0));
+  }
+  return stats;
+}
+
 PyCasparRowSectionResult RefineRowSection(
     const std::vector<const PyCasparRowTrackSource*>& sources,
     const Uint32Array& point_track_offsets,
@@ -705,8 +753,12 @@ void BindRowPointRefinement(py::module& m) {
                     &CasparRowSectionStats::observation_count)
       .def_readonly("active_observation_count",
                     &CasparRowSectionStats::active_observation_count)
-      .def_readonly("quota_truncated",
-                    &CasparRowSectionStats::quota_truncated);
+      .def_readonly("quota_truncated", &CasparRowSectionStats::quota_truncated);
+
+  py::classh<CasparRowSectionPlanStats>(m, "CasparRowSectionPlanStats")
+      .def_readonly("tracks_per_spatial_cell",
+                    &CasparRowSectionPlanStats::tracks_per_spatial_cell)
+      .def_readonly("upper_bytes", &CasparRowSectionPlanStats::upper_bytes);
 
   py::classh<PyCasparRowBundleResult>(m, "CasparRowBundleResult")
       .def_readonly("rigs_from_world",
@@ -796,6 +848,19 @@ void BindRowPointRefinement(py::module& m) {
         "tiers"_a.noconvert(),
         "Measure cumulative native row-section workloads for ascending "
         "spatial-density tiers in one track scan.");
+  m.def("caspar_row_sections_plan_stats",
+        RowSectionsPlanStats,
+        "sources"_a,
+        "point_track_offsets"_a.noconvert(),
+        "point_track_indices"_a.noconvert(),
+        "source_support"_a.noconvert(),
+        "image_frame_indices"_a.noconvert(),
+        "image_sensor_indices"_a.noconvert(),
+        "sensor_dimensions"_a.noconvert(),
+        "active_frame_masks"_a.noconvert(),
+        "minimum_track_length"_a,
+        "budget_bytes"_a,
+        "Choose the largest safe shared section density in one native pass.");
   m.def("caspar_optimize_row",
         OptimizeRow,
         "sources"_a,
