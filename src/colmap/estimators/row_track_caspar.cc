@@ -50,6 +50,11 @@ void FillTrackOrder(const CasparRowTrackSource& source,
 
 }  // namespace
 
+uint32_t CasparRowTracksPerImage(
+    const uint32_t tracks_per_spatial_cell) {
+  return tracks_per_spatial_cell * kSpatialCellCount;
+}
+
 std::vector<uint32_t> RowSourceTrackOffsets(
     const std::vector<CasparRowTrackSource>& sources) {
   std::vector<uint32_t> offsets(sources.size() + 1);

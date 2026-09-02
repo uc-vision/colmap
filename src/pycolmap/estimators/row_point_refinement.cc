@@ -704,7 +704,9 @@ void BindRowPointRefinement(py::module& m) {
       .def_readonly("observation_count",
                     &CasparRowSectionStats::observation_count)
       .def_readonly("active_observation_count",
-                    &CasparRowSectionStats::active_observation_count);
+                    &CasparRowSectionStats::active_observation_count)
+      .def_readonly("quota_truncated",
+                    &CasparRowSectionStats::quota_truncated);
 
   py::classh<PyCasparRowBundleResult>(m, "CasparRowBundleResult")
       .def_readonly("rigs_from_world",
@@ -731,6 +733,10 @@ void BindRowPointRefinement(py::module& m) {
         "initialized_points"_a.noconvert(),
         "Initialize every canonical row point from solved source coordinates, "
         "preserving global bundle-adjustment overrides.");
+  m.def("caspar_row_tracks_per_image",
+        CasparRowTracksPerImage,
+        "tracks_per_spatial_cell"_a,
+        "Return the image-level track cap for a spatial sampling density.");
   m.def("caspar_refine_row_points",
         RefineRowPoints,
         "sources"_a,

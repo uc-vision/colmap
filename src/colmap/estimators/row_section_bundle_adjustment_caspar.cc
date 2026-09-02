@@ -262,6 +262,7 @@ std::vector<CasparRowSectionStats> ComputeRowSectionStats(
     stats[tier].active_observation_count +=
         stats[tier - 1].active_observation_count;
   }
+  stats.back().quota_truncated = assignment.quota_truncated;
   return stats;
 }
 

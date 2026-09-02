@@ -15,6 +15,7 @@ struct CasparRowSectionStats {
   size_t point_count = 0;
   size_t observation_count = 0;
   size_t active_observation_count = 0;
+  bool quota_truncated = false;
 };
 
 struct CasparRowSectionResult {
