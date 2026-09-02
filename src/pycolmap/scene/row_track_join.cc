@@ -1,4 +1,5 @@
 #include "colmap/util/hash_containers.h"
+#include "colmap/util/logging.h"
 
 #include "pycolmap/pybind11_extension.h"
 
@@ -22,6 +23,8 @@ namespace {
 using FloatArray = py::array_t<float, py::array::c_style>;
 using Int32Array = py::array_t<int32_t, py::array::c_style>;
 using Int64Array = py::array_t<int64_t, py::array::c_style>;
+using Uint32Array = py::array_t<uint32_t, py::array::c_style>;
+using Uint64Array = py::array_t<uint64_t, py::array::c_style>;
 
 constexpr float kObservationTolerancePixels = 1.0f;
 constexpr float kObservationToleranceSquared =
@@ -53,6 +56,25 @@ struct RowTrackJoin {
   py::array_t<uint32_t> point_observation_counts;
   py::array_t<int64_t> duplicate_observation_offsets;
   py::array_t<uint32_t> duplicate_observation_indices;
+};
+
+struct FeatureTracks {
+  Uint32Array observation_offsets;
+  Uint64Array observation_codes;
+};
+
+struct FeatureEdge {
+  uint64_t first;
+  uint64_t second;
+
+  bool operator<(const FeatureEdge& other) const {
+    return first < other.first ||
+           (first == other.first && second < other.second);
+  }
+
+  bool operator==(const FeatureEdge& other) const {
+    return first == other.first && second == other.second;
+  }
 };
 
 struct CanonicalObservation {
@@ -286,6 +308,158 @@ RowTrackJoin JoinRowTracks(const std::vector<const RowTrackSource*>& sources) {
                       std::move(duplicate_indices)};
 }
 
+FeatureTracks BuildFeatureTracks(const Uint32Array& image_ids1,
+                                 const Uint32Array& image_ids2,
+                                 const Uint64Array& match_offsets,
+                                 const Uint32Array& matches) {
+  THROW_CHECK_EQ(image_ids1.ndim(), 1);
+  THROW_CHECK_EQ(image_ids2.ndim(), 1);
+  THROW_CHECK_EQ(image_ids1.shape(0), image_ids2.shape(0));
+  const size_t num_pairs = image_ids1.shape(0);
+  THROW_CHECK_EQ(match_offsets.ndim(), 1);
+  THROW_CHECK_EQ(match_offsets.shape(0), num_pairs + 1);
+  THROW_CHECK_EQ(matches.ndim(), 2);
+  THROW_CHECK_EQ(matches.shape(1), 2);
+  THROW_CHECK_EQ(match_offsets.data()[0], 0);
+  THROW_CHECK_EQ(match_offsets.data()[num_pairs], matches.shape(0));
+
+  std::vector<uint32_t> output_offsets;
+  std::vector<uint64_t> output_codes;
+  {
+    py::gil_scoped_release release;
+    std::vector<FeatureEdge> edges;
+    edges.reserve(matches.shape(0));
+    for (size_t pair = 0; pair < num_pairs; ++pair) {
+      const uint64_t image1 = image_ids1.data()[pair];
+      const uint64_t image2 = image_ids2.data()[pair];
+      for (uint64_t match = match_offsets.data()[pair];
+           match < match_offsets.data()[pair + 1];
+           ++match) {
+        uint64_t first = (image1 << 32) | matches.data()[2 * match];
+        uint64_t second = (image2 << 32) | matches.data()[2 * match + 1];
+        if (second < first) {
+          std::swap(first, second);
+        }
+        edges.push_back({first, second});
+      }
+    }
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+
+    std::vector<uint32_t> image_ids;
+    image_ids.reserve(2 * num_pairs);
+    image_ids.insert(
+        image_ids.end(), image_ids1.data(), image_ids1.data() + num_pairs);
+    image_ids.insert(
+        image_ids.end(), image_ids2.data(), image_ids2.data() + num_pairs);
+    std::sort(image_ids.begin(), image_ids.end());
+    image_ids.erase(std::unique(image_ids.begin(), image_ids.end()),
+                    image_ids.end());
+    FlatHashMap<uint32_t, uint32_t> image_slots;
+    for (uint32_t slot = 0; slot < image_ids.size(); ++slot) {
+      image_slots.emplace(image_ids[slot], slot);
+    }
+    const size_t image_mask_words = (image_ids.size() + 63) / 64;
+
+    FlatHashMap<uint64_t, uint32_t> nodes;
+    nodes.reserve(edges.size());
+    std::vector<uint32_t> parent;
+    std::vector<uint64_t> codes;
+    std::vector<uint64_t> image_masks;
+    auto add_node = [&](const uint64_t code) {
+      const uint32_t node = parent.size();
+      nodes.emplace(code, node);
+      parent.push_back(node);
+      codes.push_back(code);
+      image_masks.resize(image_masks.size() + image_mask_words, 0);
+      const uint32_t image_slot = image_slots.at(code >> 32);
+      image_masks[node * image_mask_words + image_slot / 64] |=
+          uint64_t{1} << (image_slot % 64);
+      return node;
+    };
+    auto node_for = [&](const uint64_t code) {
+      const auto node = nodes.find(code);
+      return node == nodes.end() ? add_node(code) : node->second;
+    };
+    auto find_root = [&parent](uint32_t node) {
+      while (parent[node] != node) {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+      }
+      return node;
+    };
+
+    for (const FeatureEdge& edge : edges) {
+      uint32_t root1 = find_root(node_for(edge.first));
+      uint32_t root2 = find_root(node_for(edge.second));
+      if (root1 == root2) {
+        continue;
+      }
+      bool images_overlap = false;
+      for (size_t word = 0; word < image_mask_words; ++word) {
+        images_overlap |= image_masks[root1 * image_mask_words + word] &
+                          image_masks[root2 * image_mask_words + word];
+      }
+      if (images_overlap) {
+        continue;
+      }
+      if (codes[root2] < codes[root1]) {
+        std::swap(root1, root2);
+      }
+      parent[root2] = root1;
+      for (size_t word = 0; word < image_mask_words; ++word) {
+        image_masks[root1 * image_mask_words + word] |=
+            image_masks[root2 * image_mask_words + word];
+      }
+    }
+
+    std::vector<uint32_t> component_sizes(parent.size(), 0);
+    for (uint32_t node = 0; node < parent.size(); ++node) {
+      parent[node] = find_root(node);
+      ++component_sizes[parent[node]];
+    }
+    std::vector<uint32_t> roots;
+    for (uint32_t node = 0; node < parent.size(); ++node) {
+      if (parent[node] == node && component_sizes[node] >= 2) {
+        roots.push_back(node);
+      }
+    }
+    std::sort(
+        roots.begin(), roots.end(), [&codes](uint32_t first, uint32_t second) {
+          return codes[first] < codes[second];
+        });
+    std::vector<uint32_t> track_indices(parent.size(), kInvalidIndex);
+    output_offsets.resize(roots.size() + 1, 0);
+    for (size_t track = 0; track < roots.size(); ++track) {
+      track_indices[roots[track]] = track;
+      output_offsets[track + 1] =
+          output_offsets[track] + component_sizes[roots[track]];
+    }
+    output_codes.resize(output_offsets.back());
+    std::vector<uint32_t> cursors = output_offsets;
+    for (uint32_t node = 0; node < parent.size(); ++node) {
+      const uint32_t track = track_indices[parent[node]];
+      if (track != kInvalidIndex) {
+        output_codes[cursors[track]++] = codes[node];
+      }
+    }
+    for (size_t track = 0; track < roots.size(); ++track) {
+      std::sort(output_codes.begin() + output_offsets[track],
+                output_codes.begin() + output_offsets[track + 1]);
+    }
+  }
+
+  Uint32Array observation_offsets(output_offsets.size());
+  std::copy(output_offsets.begin(),
+            output_offsets.end(),
+            observation_offsets.mutable_data());
+  Uint64Array observation_codes(output_codes.size());
+  std::copy(output_codes.begin(),
+            output_codes.end(),
+            observation_codes.mutable_data());
+  return {std::move(observation_offsets), std::move(observation_codes)};
+}
+
 }  // namespace
 
 void BindRowTrackJoin(py::module& m) {
@@ -314,8 +488,20 @@ void BindRowTrackJoin(py::module& m) {
       .def_readonly("duplicate_observation_indices",
                     &RowTrackJoin::duplicate_observation_indices);
 
+  py::classh<FeatureTracks>(m, "FeatureTracks")
+      .def_readonly("observation_offsets", &FeatureTracks::observation_offsets)
+      .def_readonly("observation_codes", &FeatureTracks::observation_codes);
+
   m.def("join_row_tracks",
         &JoinRowTracks,
         "sources"_a,
         "Join row tracks by shared-image observation coordinates.");
+  m.def(
+      "build_feature_tracks",
+      &BuildFeatureTracks,
+      "image_ids1"_a,
+      "image_ids2"_a,
+      "match_offsets"_a,
+      "matches"_a,
+      "Build deterministic feature tracks with at most one feature per image.");
 }
