@@ -50,7 +50,7 @@ void FillTrackOrder(const CasparRowTrackSource& source,
 
 }  // namespace
 
-uint32_t CasparRowTracksPerImage(
+uint32_t CasparRowTrackQuotaPerImage(
     const uint32_t tracks_per_spatial_cell) {
   return tracks_per_spatial_cell * kSpatialCellCount;
 }

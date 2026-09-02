@@ -60,7 +60,7 @@ struct CasparRowTiers {
 std::vector<uint32_t> RowSourceTrackOffsets(
     const std::vector<CasparRowTrackSource>& sources);
 
-uint32_t CasparRowTracksPerImage(uint32_t tracks_per_spatial_cell);
+uint32_t CasparRowTrackQuotaPerImage(uint32_t tracks_per_spatial_cell);
 
 CasparRowTiers AssignCasparRowTiers(
     const std::vector<CasparRowTrackSource>& sources,

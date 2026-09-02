@@ -733,10 +733,10 @@ void BindRowPointRefinement(py::module& m) {
         "initialized_points"_a.noconvert(),
         "Initialize every canonical row point from solved source coordinates, "
         "preserving global bundle-adjustment overrides.");
-  m.def("caspar_row_tracks_per_image",
-        CasparRowTracksPerImage,
+  m.def("caspar_row_track_quota_per_image",
+        CasparRowTrackQuotaPerImage,
         "tracks_per_spatial_cell"_a,
-        "Return the image-level track cap for a spatial sampling density.");
+        "Return the image-level track admission quota for a spatial density.");
   m.def("caspar_refine_row_points",
         RefineRowPoints,
         "sources"_a,
